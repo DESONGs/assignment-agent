@@ -1,0 +1,48 @@
+{
+  "version": "document-prompt-registry-v1",
+  "documents": [
+    {
+      "docType": "meeting-minutes",
+      "promptFile": "meeting-minutes.md",
+      "aliases": ["meeting", "minutes", "meeting-minutes", "会议纪要", "纪要"],
+      "parallelizable": false,
+      "requiredSections": ["会议主题", "核心结论", "主议题章节", "行动项", "风险与开放问题", "最终判断"]
+    },
+    {
+      "docType": "prd",
+      "promptFile": "prd.md",
+      "aliases": ["prd", "product", "product-requirements", "产品", "产品需求"],
+      "parallelizable": true,
+      "operationOverlays": { "document_revision": "document-revision-overlay.md" },
+      "dependsOn": [],
+      "requiredSections": ["产品定位", "目标用户", "核心场景", "MVP 范围", "暂不做范围", "功能需求", "非功能需求", "验收标准", "待确认问题"]
+    },
+    {
+      "docType": "ops-plan",
+      "promptFile": "ops-plan.md",
+      "aliases": ["ops", "ops-plan", "operations", "运营", "运营方案"],
+      "parallelizable": true,
+      "operationOverlays": { "document_revision": "document-revision-overlay.md" },
+      "requiredSections": ["运营目标", "对象与分层", "运营节奏", "渠道与触点", "SOP", "指标体系", "人员分工", "风险预案", "复盘机制", "飞书任务与日历建议"]
+    },
+    {
+      "docType": "tech-architecture",
+      "promptFile": "tech-architecture.md",
+      "aliases": ["architecture", "tech-architecture", "technical-architecture", "架构", "技术架构"],
+      "parallelizable": true,
+      "operationOverlays": { "document_revision": "document-revision-overlay.md" },
+      "dependsOn": ["prd"],
+      "requiredSections": ["架构目标", "模块边界", "Runtime Flow", "数据流", "安全边界", "模型与 provider 路由", "失败模式与降级", "测试计划", "待确认技术问题"]
+    },
+    {
+      "docType": "customer-requirement-checklist",
+      "promptFile": "customer-requirement-checklist.md",
+      "aliases": ["checklist", "requirement-checklist", "customer-requirements", "需求确认", "客户需求"],
+      "parallelizable": true,
+      "operationOverlays": { "document_revision": "document-revision-overlay.md" },
+      "dependsOn": ["prd", "tech-architecture"],
+      "audience": "FDE",
+      "requiredSections": ["FDE 沟通使用方式", "已确认事实摘要", "PRD 待确认项", "技术架构待确认项", "现场部署与权限确认", "输入材料确认", "输出交付物确认", "验收标准确认", "风险与阻塞项", "下一次沟通问题清单"]
+    }
+  ]
+}

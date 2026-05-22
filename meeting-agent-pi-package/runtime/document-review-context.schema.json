@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/document-review-context.schema.json",
+  "title": "Document Review Context",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "operation",
+    "sourceRun",
+    "status",
+    "sourceDocuments",
+    "comments",
+    "matchSummary",
+    "commentAccess",
+    "contextPolicy",
+    "rawSecretsReturned",
+    "rawMediaExternalUpload"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "document-review-context-v1" },
+    "operation": { "const": "document_revision" },
+    "sourceRun": { "type": "string" },
+    "status": {
+      "enum": ["ready", "partial_ready", "body_ready_comments_not_available", "comment_api_permission_blocked", "blocked"]
+    },
+    "userInstruction": { "type": "string" },
+    "sourceDocuments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sourceId", "fileName", "bodyHash", "commentAccess", "comments"],
+        "properties": {
+          "sourceId": { "type": "string" },
+          "fileName": { "type": ["string", "null"] },
+          "fileType": { "type": ["string", "null"] },
+          "fileTokenPresent": { "type": "boolean" },
+          "fileTokenHash": { "type": ["string", "null"] },
+          "documentBodyPointer": { "type": ["string", "null"] },
+          "bodyHash": { "type": "string" },
+          "bodyPreview": { "type": "string" },
+          "commentAccess": { "$ref": "#/$defs/commentAccess" },
+          "comments": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/comment" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "comments": { "type": "array", "items": { "$ref": "#/$defs/comment" } },
+    "matchSummary": {
+      "type": "object",
+      "required": ["totalComments", "matchedExact", "weakMatched", "unmatched", "sourcesWithUnavailableComments"],
+      "properties": {
+        "totalComments": { "type": "integer" },
+        "matchedExact": { "type": "integer" },
+        "weakMatched": { "type": "integer" },
+        "unmatched": { "type": "integer" },
+        "exportedBodyDetected": { "type": "integer" },
+        "sourcesWithUnavailableComments": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "commentAccess": {
+      "$ref": "#/$defs/commentAccess"
+    },
+    "contextPolicy": { "type": "object" },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "$defs": {
+    "commentAccess": {
+      "type": "object",
+      "properties": {
+        "status": { "type": ["string", "null"] },
+        "method": { "enum": ["cli", "sdk", "export_body_detected", "unavailable"] },
+        "identityTried": { "type": "array", "items": { "type": "string" } },
+        "requiredScopes": { "type": "array", "items": { "type": "string" } },
+        "apiStatus": { "type": ["string", "null"] },
+        "commentThreadCount": { "type": "integer" },
+        "replyCount": { "type": "integer" },
+        "unresolvedCount": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "comment": {
+      "type": "object",
+      "required": ["sourceId", "commentId", "quote", "commentText", "replies", "matchStatus", "matchReason"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "commentId": { "type": ["string", "null"] },
+        "quote": { "type": "string" },
+        "commentText": { "type": "string" },
+        "replies": { "type": "array", "items": { "type": "object" } },
+        "matchStatus": {
+          "enum": ["exact_unique", "exact_multiple", "fuzzy", "unmatched", "exported_body_detected"]
+        },
+        "matchReason": { "type": "string" },
+        "bodyAnchorPreview": { "type": "string" },
+        "bodyAnchorHash": { "type": ["string", "null"] },
+        "matchCount": { "type": "integer" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

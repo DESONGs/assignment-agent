@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/feishu-wiki-target-registry.schema.json",
+  "title": "Feishu Wiki Target Registry",
+  "type": "object",
+  "required": ["schemaVersion", "spaces", "projectNodes", "runNodes", "categoryNodes", "documentNodes", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "feishu-wiki-target-registry-v1" },
+    "updatedAt": { "type": ["string", "null"] },
+    "spaces": { "type": "object" },
+    "projectNodes": { "type": "object" },
+    "runNodes": { "type": "object" },
+    "categoryNodes": { "type": "object" },
+    "documentNodes": { "type": "object" },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}

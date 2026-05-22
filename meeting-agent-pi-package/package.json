@@ -1,0 +1,35 @@
+{
+  "name": "meeting-agent-pi-package",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PI package for meeting conclusion, document writing, official lark-cli Feishu workflows, Rokid Lingzhu ingestion, and Hermes sidecar learning.",
+  "keywords": [
+    "pi-package",
+    "meeting-agent",
+    "feishu",
+    "rokid",
+    "hermes-sidecar"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "peerDependencies": {
+    "@larksuiteoapi/node-sdk": ">=1.24.0",
+    "@earendil-works/pi-coding-agent": ">=0.1.0",
+    "typebox": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@larksuiteoapi/node-sdk": {
+      "optional": true
+    }
+  }
+}

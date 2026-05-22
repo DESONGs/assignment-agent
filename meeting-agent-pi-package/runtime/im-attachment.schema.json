@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/im-attachment.schema.json",
+  "title": "Unified IM Attachment",
+  "type": "object",
+  "required": ["schemaVersion", "channel", "attachmentId", "resourceType", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "im-attachment-v1" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "attachmentId": { "type": "string" },
+    "resourceType": { "enum": ["file", "audio", "image", "video"] },
+    "fileName": { "type": ["string", "null"] },
+    "mimeType": { "type": ["string", "null"] },
+    "sourcePath": { "type": ["string", "null"] },
+    "localPath": { "type": ["string", "null"] },
+    "sha256": { "type": ["string", "null"] },
+    "rawMediaExternalUpload": { "const": false },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}

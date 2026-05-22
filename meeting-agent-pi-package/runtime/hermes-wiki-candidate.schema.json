@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/hermes-wiki-candidate.schema.json",
+  "title": "Hermes Wiki Candidate",
+  "type": "object",
+  "required": ["schemaVersion", "sourceRun", "candidateType", "title", "summary", "knowledgeClaims", "implicitKnowledge", "projectContext", "evidencePointers", "transferability", "scopeOfValidity", "riskFlags", "publishDefault", "targetWikiPlan", "rawSecretsReturned", "rawMediaExternalUpload"],
+  "properties": {
+    "schemaVersion": { "const": "hermes-wiki-candidate-v1" },
+    "sourceRun": { "type": ["string", "null"] },
+    "candidateType": {
+      "enum": ["industry_knowledge", "task_retrospective", "skill_thinking", "prompt_qa_proposal", "failure_mode", "implicit_knowledge"]
+    },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "knowledgeClaims": { "type": "array" },
+    "implicitKnowledge": { "type": "array" },
+    "projectContext": { "type": "array" },
+    "evidencePointers": { "type": "array" },
+    "transferability": { "enum": ["high", "medium", "low"] },
+    "scopeOfValidity": { "type": "string" },
+    "riskFlags": { "type": "array" },
+    "publishDefault": { "const": "candidate" },
+    "targetWikiPlan": { "type": "object" },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "additionalProperties": true
+}

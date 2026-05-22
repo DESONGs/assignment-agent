@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/runtime-metrics.schema.json",
+  "title": "Meeting Agent Runtime Metrics",
+  "type": "object",
+  "required": [
+    "runId",
+    "taskType",
+    "startedAt",
+    "status",
+    "enabledCapabilities",
+    "modelCalls",
+    "toolCalls",
+    "externalCalls",
+    "generatedArtifacts",
+    "qaGate",
+    "plannerDecisions",
+    "policyDecisions",
+    "workerDecisions",
+    "capabilitySelections",
+    "packageAudits"
+  ],
+  "properties": {
+    "runId": { "type": "string" },
+    "taskType": { "type": "string" },
+    "summary": { "type": "string" },
+    "startedAt": { "type": "string" },
+    "finishedAt": { "type": ["string", "null"] },
+    "status": { "enum": ["running", "pass", "needs_fix", "blocked", "failed"] },
+    "enabledCapabilities": { "type": "array", "items": { "type": "string" } },
+    "modelCalls": { "type": "array" },
+    "toolCalls": { "type": "array" },
+    "externalCalls": { "type": "array" },
+    "tokenUsage": {
+      "type": "object",
+      "properties": {
+        "prompt": { "type": "number" },
+        "completion": { "type": "number" },
+        "cached": { "type": "number" },
+        "total": { "type": "number" }
+      }
+    },
+    "contextBudget": {
+      "type": "object",
+      "properties": {
+        "estimatedInputTokens": { "type": "number" },
+        "retainedEvidenceItems": { "type": "number" },
+        "offloadedEvidenceItems": { "type": "number" }
+      }
+    },
+    "generatedArtifacts": { "type": "array" },
+    "qaGate": {
+      "type": "object",
+      "required": ["status", "issues"],
+      "properties": {
+        "status": { "enum": ["pass", "needs_fix", "blocked", "not_run"] },
+        "issues": { "type": "array" }
+      }
+    },
+    "plannerDecisions": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "policyDecisions": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "workerDecisions": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "capabilitySelections": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "packageAudits": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "rawSecretsReturned": { "type": "boolean" },
+    "rawTranscriptIncluded": { "type": "boolean" },
+    "rawPayloadRejected": { "type": "boolean" },
+    "rejectedRawPayloadEvents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/feishu-run-state.schema.json",
+  "title": "Feishu Agent Run State",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "status", "updatedAt", "steps", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "feishu-run-state-v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["accepted", "running", "completed", "needs_fix", "blocked", "failed"] },
+    "updatedAt": { "type": "string" },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "at"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "enum": ["pending", "running", "completed", "needs_fix", "blocked", "failed", "skipped"] },
+          "at": { "type": "string" },
+          "reason": { "type": "string" },
+          "artifact": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "sourceEventPath": { "type": ["string", "null"] },
+    "taskPath": { "type": ["string", "null"] },
+    "agentOutputPath": { "type": ["string", "null"] },
+    "publishPath": { "type": ["string", "null"] },
+    "replyPath": { "type": ["string", "null"] },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "additionalProperties": true
+}

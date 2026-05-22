@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/im-reply.schema.json",
+  "title": "Unified IM Reply",
+  "type": "object",
+  "required": ["schemaVersion", "channel", "replyTarget", "status", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "im-reply-v1" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "replyTarget": { "type": "object", "additionalProperties": true },
+    "replyKind": { "enum": ["reply", "progress", "publish_status", "unsupported"] },
+    "status": { "enum": ["planned", "sent", "failed", "skipped", "dry_run"] },
+    "text": { "type": ["string", "null"] },
+    "markdown": { "type": ["string", "null"] },
+    "userVisibleRunId": { "const": false },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}

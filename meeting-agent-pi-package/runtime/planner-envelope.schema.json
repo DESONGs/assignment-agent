@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/planner-envelope.schema.json",
+  "title": "Agentic Office Planner Envelope",
+  "type": "object",
+  "required": [
+    "goal",
+    "taskType",
+    "successCriteria",
+    "constraints",
+    "capabilitiesNeeded",
+    "toolPlan",
+    "parallelizableWorkers",
+    "policyRisks",
+    "requiredArtifacts",
+    "stopConditions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "planner-envelope-v1" },
+    "goal": { "type": "string", "minLength": 1 },
+    "taskType": {
+      "enum": [
+        "meeting_minutes",
+        "doc_writer",
+        "feishu_bot",
+        "wechat_adapter",
+        "document_lifecycle",
+        "retrieval",
+        "memory",
+        "calendar",
+        "task_management",
+        "research",
+        "mixed"
+      ]
+    },
+    "successCriteria": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "capabilitiesNeeded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["capabilityId", "reason", "loadMode", "contextCost"],
+        "properties": {
+          "capabilityId": { "type": "string" },
+          "reason": { "type": "string" },
+          "loadMode": { "enum": ["always_on", "lazy"] },
+          "contextCost": { "enum": ["low", "medium", "high"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "toolPlan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["toolIntent", "toolName", "reason", "policyCheckRequired"],
+        "properties": {
+          "toolIntent": {
+            "enum": [
+              "read",
+              "draft",
+              "write_private",
+              "publish_customer_visible",
+              "notify_people",
+              "mutate_calendar",
+              "assign_task",
+              "external_web",
+              "install_dependency",
+              "persist_memory"
+            ]
+          },
+          "toolName": { "type": "string" },
+          "reason": { "type": "string" },
+          "policyCheckRequired": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "parallelizableWorkers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["component", "reason", "writeScope"],
+        "properties": {
+          "component": { "type": "string" },
+          "reason": { "type": "string" },
+          "writeScope": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "policyRisks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["actionIntent", "reason"],
+        "properties": {
+          "actionIntent": {
+            "enum": [
+              "read",
+              "draft",
+              "write_private",
+              "publish_customer_visible",
+              "notify_people",
+              "mutate_calendar",
+              "assign_task",
+              "external_web",
+              "install_dependency",
+              "persist_memory"
+            ]
+          },
+          "reason": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "requiredArtifacts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "stopConditions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "fixedWorkflow": { "const": false },
+    "rawSecretsReturned": { "const": false },
+    "rawTranscriptIncluded": { "const": false },
+    "createdAt": { "type": "string" }
+  },
+  "additionalProperties": true
+}

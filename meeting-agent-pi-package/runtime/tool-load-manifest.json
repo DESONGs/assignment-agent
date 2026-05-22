@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "defaultTools": [
+    "planner-runtime.ts",
+    "model-routing.ts",
+    "model-provider.ts",
+    "document-generation.ts",
+    "document-worker-runtime.ts",
+    "qa-gate.ts",
+    "policy-gate.ts",
+    "office-runtime.ts"
+  ],
+  "profileTools": {
+    "fast_answer": [
+      "model-routing.ts",
+      "model-provider.ts"
+    ],
+    "file_summary": [
+      "model-routing.ts",
+      "model-provider.ts",
+      "source-context-runtime.ts"
+    ],
+    "audio_minutes": [
+      "planner-runtime.ts",
+      "source-context-runtime.ts",
+      "model-routing.ts",
+      "model-provider.ts",
+      "document-generation.ts",
+      "document-worker-runtime.ts",
+      "qa-gate.ts",
+      "policy-gate.ts",
+      "office-runtime.ts",
+      "media-tools.ts"
+    ],
+    "document_generation": [
+      "planner-runtime.ts",
+      "source-context-runtime.ts",
+      "model-routing.ts",
+      "model-provider.ts",
+      "document-generation.ts",
+      "document-worker-runtime.ts",
+      "qa-gate.ts",
+      "policy-gate.ts",
+      "office-runtime.ts"
+    ],
+    "document_revision": [
+      "planner-runtime.ts",
+      "source-context-runtime.ts",
+      "model-routing.ts",
+      "model-provider.ts",
+      "document-generation.ts",
+      "document-worker-runtime.ts",
+      "qa-gate.ts",
+      "policy-gate.ts",
+      "office-runtime.ts"
+    ],
+    "multi_source_synthesis": [
+      "planner-runtime.ts",
+      "source-context-runtime.ts",
+      "model-routing.ts",
+      "model-provider.ts",
+      "document-generation.ts",
+      "document-worker-runtime.ts",
+      "qa-gate.ts",
+      "policy-gate.ts",
+      "office-runtime.ts",
+      "context-offload.ts"
+    ],
+    "publish_only": [
+      "planner-runtime.ts",
+      "qa-gate.ts",
+      "policy-gate.ts",
+      "office-runtime.ts"
+    ],
+    "unsupported": [
+      "planner-runtime.ts",
+      "policy-gate.ts"
+    ]
+  }
+}

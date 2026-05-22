@@ -1,0 +1,588 @@
+{
+  "version": "runtime-capability-registry-v2",
+  "defaults": {
+    "loadPolicy": "lazy-by-planner-and-policy-gate",
+    "alwaysOn": [
+      "planner-runtime",
+      "policy-gate",
+      "qa-safety-review",
+      "runtime-observability",
+      "capability-registry"
+    ]
+  },
+  "capabilities": [
+    {
+      "capabilityId": "planner-runtime",
+      "status": "available",
+      "description": "Builds an auditable planner envelope before selecting optional office capabilities.",
+      "defaultLoad": true,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft"],
+      "policy": ["no fixed meeting workflow for short tasks", "capability selection must be explainable"],
+      "observability": ["plannerDecisions", "capabilitySelections"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local deterministic planner heuristic; does not read secrets or raw transcript bodies."
+      },
+      "triggers": ["all tasks", "plan", "planner", "envelope"],
+      "guardrails": ["fixedWorkflow=false", "no secrets", "no raw transcript in envelope"]
+    },
+    {
+      "capabilityId": "policy-gate",
+      "status": "available",
+      "description": "Checks action boundaries before publishing, notifying, installing, writing private content, or using external web access.",
+      "defaultLoad": true,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency", "persist_memory"],
+      "policy": ["secret leak blocked", "raw media external upload blocked", "confirmation required for irreversible actions"],
+      "observability": ["policyDecisions"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local rule gate; returns pass, needs_confirmation, or blocked without generating business workflow."
+      },
+      "triggers": ["publish", "notify", "calendar", "install", "web", "secret", "policy"],
+      "guardrails": ["policy only judges action boundary", "does not generate business content"]
+    },
+    {
+      "capabilityId": "meeting-minutes",
+      "status": "available",
+      "description": "Produces evidence-grounded meeting minutes for meeting or transcript scenarios.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-skill",
+      "toolIntents": ["read", "draft", "write_private"],
+      "policy": ["meeting facts must come from transcript/evidence", "external web cannot invent meeting facts"],
+      "observability": ["plannerDecisions", "qaGate", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local prompt/skill only; raw transcript must stay in local artifacts or evidence pointers."
+      },
+      "triggers": ["meeting minutes", "summary", "transcript", "meeting", "会议", "纪要"],
+      "guardrails": ["evidence required", "no raw transcript in user output", "topicMap for long meetings"]
+    },
+    {
+      "capabilityId": "doc-writer",
+      "status": "available",
+      "description": "Drafts or edits private documents through document-prompt-registry, document_prompt_render_batch, and optional provider-backed document workers.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-skill",
+      "toolIntents": ["draft", "write_private"],
+      "policy": ["private drafts pass unless secrets or external publication are requested"],
+      "observability": ["plannerDecisions", "workerDecisions", "modelCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Prompt registry and worker path keeps document structure in prompts/*.md and blocks secrets before provider calls."
+      },
+      "triggers": ["doc", "document", "write", "draft", "PRD", "文档", "撰写"],
+      "guardrails": ["do not auto-enable meeting pipeline", "write_private before publish", "document structure comes from prompt registry"]
+    },
+    {
+      "capabilityId": "model-provider",
+      "status": "available",
+      "description": "Checks DeepSeek/Xiaomi/mock provider readiness and generates text through redacted OpenAI-compatible provider calls.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["draft"],
+      "policy": ["model_route_plan required", "model_route_record required", "no secrets or raw request bodies returned"],
+      "observability": ["modelCalls", "policyDecisions"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Uses Node fetch without extra dependencies; DeepSeek default base URL is configured, Xiaomi requires explicit XIAOMI_BASE_URL."
+      },
+      "triggers": ["model provider", "DeepSeek", "Xiaomi", "document worker", "model_generate_text"],
+      "guardrails": ["redacted errors only", "Xiaomi endpoint not hardcoded", "raw request body never returned"]
+    },
+    {
+      "capabilityId": "document-revision",
+      "status": "available",
+      "description": "Revises an existing office document by combining the exported document body, bounded review-context, prompt registry base prompt, and document-revision overlay.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["draft", "write_private", "publish_customer_visible"],
+      "policy": ["non-destructive revisions may pass for explicit Feishu requests", "delete/clear/remove remains blocked", "overwrite requires explicit target token/link or current-session generated document"],
+      "observability": ["plannerDecisions", "workerDecisions", "policyDecisions", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Revision uses bounded review-context and prompt overlay; it does not add a second orchestrator or store full raw files in metrics."
+      },
+      "triggers": ["document revision", "revise", "review comments", "批注", "评论", "修改内容", "修订", "重新优化", "覆盖修改"],
+      "guardrails": ["use document-prompt-registry base prompt", "revision overlay only", "write review-context.json", "QA gate checks comment coverage"]
+    },
+    {
+      "capabilityId": "feishu-document-review-context",
+      "status": "available",
+      "description": "Fetches Feishu document review context through lark-cli comment APIs, with SDK fallback and exported-body detection as bounded context for document-revision.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "lark-cli",
+      "toolIntents": ["read"],
+      "policy": ["read-only", "do not expose raw tokens", "comments are evidence context, not workflow decisions"],
+      "observability": ["toolCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "CLI-first read-only comment context; readiness depends on docs:document.comment:read or equivalent Drive/Docs scopes. Missing scope is recorded instead of inventing comments."
+      },
+      "triggers": ["Feishu comments", "docx comments", "批注", "评论", "修订建议"],
+      "guardrails": ["bounded comment anchors only", "source-scoped comments with matchStatus", "no full document in metrics", "missing comment access is explicit in review-context", "lark-cli drive file.comments list before SDK fallback"]
+    },
+    {
+      "capabilityId": "document-worker-runtime",
+      "status": "available",
+      "description": "Runs bounded context-pack document work units through provider-backed parallel workers and returns ordered Markdown plus QA inputs.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["draft", "write_private"],
+      "policy": ["workers are task-shaped", "QA gate required before publish", "Policy Gate required before Feishu/customer-visible actions"],
+      "observability": ["workerDecisions", "modelCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Parallel runtime consumes bounded context packs, records model routes/context provenance, and does not write Feishu/calendar/task state."
+      },
+      "triggers": ["parallel document", "document_workers_run", "prd", "ops-plan", "tech-architecture", "多文档"],
+      "guardrails": ["contextPackRef required for long documents", "taskIndex order retained", "no hardcoded document scaffold", "no monolithic source prompt"]
+    },
+    {
+      "capabilityId": "qa-safety-review",
+      "status": "available",
+      "description": "Content QA gate for evidence coverage, entity isolation, title sync, Feishu readiness, and publish blockers.",
+      "defaultLoad": true,
+      "contextCost": "low",
+      "toolPackage": "local-skill",
+      "toolIntents": ["read", "draft", "publish_customer_visible"],
+      "policy": ["qa gate judges content quality, policy gate judges action boundary"],
+      "observability": ["qaGate"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local QA rules; does not require network or credentials."
+      },
+      "triggers": ["publish", "qa", "review", "gate", "复核"],
+      "guardrails": ["machine readable gate", "blocking issues stop publish"]
+    },
+    {
+      "capabilityId": "runtime-observability",
+      "status": "available",
+      "description": "Records sanitized runtime evidence across planner, capability, policy, worker, model, tool, artifact, and package audit decisions.",
+      "defaultLoad": true,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read"],
+      "policy": ["no secrets in metrics", "no raw transcript in metrics"],
+      "observability": ["plannerDecisions", "policyDecisions", "workerDecisions", "capabilitySelections", "packageAudits"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Metrics writer blocks secret-like fields and raw meeting content payloads."
+      },
+      "triggers": ["all tasks", "metrics", "usage", "observability"],
+      "guardrails": ["no secrets", "no raw transcript", "raw payload fail-closed"]
+    },
+    {
+      "capabilityId": "capability-registry",
+      "status": "available",
+      "description": "Lists and checks available capabilities without loading optional integrations or executing commands.",
+      "defaultLoad": true,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read"],
+      "policy": ["path lookup only", "no arbitrary command execution", "third-party requires audit before enable"],
+      "observability": ["capabilitySelections"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Read-only registry and PATH/env readiness checks; no package install side effects."
+      },
+      "triggers": ["capability", "registry", "tool availability", "能力"],
+      "guardrails": ["lazy by default", "no install during check"]
+    },
+    {
+      "capabilityId": "feishu-cli",
+      "status": "available",
+      "description": "Uses the official Feishu/Lark CLI for private document, drive, and workspace operations when explicitly selected.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "write_private", "publish_customer_visible", "notify_people"],
+      "policy": ["Feishu inbound explicit write/publish can pass for non-deletion actions", "notify and destructive actions remain gated", "secret-scan redaction required"],
+      "observability": ["toolCalls", "externalCalls", "policyDecisions"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local wrapper redacts auth status and defaults to secret-scan."
+      },
+      "triggers": ["feishu", "lark", "docs", "drive", "飞书"],
+      "commands": ["lark-cli"],
+      "guardrails": ["default secret-scan redaction", "auth status redacted", "official CLI passthrough only"]
+    },
+    {
+      "capabilityId": "feishu-bot-gateway",
+      "status": "available",
+      "description": "Receives Feishu bot events and replies through a local gateway; MCP is not required for chat reply.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "notify_people"],
+      "policy": ["bot replies require event-scope authorization", "remote handler disabled unless explicitly configured"],
+      "observability": ["toolCalls", "externalCalls", "policyDecisions"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Gateway redacts logs, defaults to localhost handler, and does not require MCP."
+      },
+      "triggers": ["bot reply", "机器人不回复", "im.message.receive_v1", "飞书机器人"],
+      "env": ["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
+      "optionalEnv": ["FEISHU_BOT_REPLY_MODE", "FEISHU_BOT_HANDLER_URL", "FEISHU_BOT_HANDLER_TIMEOUT_MS", "FEISHU_BOT_ALLOW_REMOTE_HANDLER", "FEISHU_AGENT_ASYNC"],
+      "permissions": ["im.message.receive_v1", "im:message:send_as_bot", "im:message.p2p_msg", "im:message.group_at_msg"],
+      "testCommand": "node meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs",
+      "guardrails": ["no secrets returned", "handler localhost-only by default", "redacted gateway logs", "MCP not required for chat reply"]
+    },
+    {
+      "capabilityId": "feishu-agent-bridge",
+      "status": "available",
+      "description": "Consumes Feishu inbound events through official lark-cli, resolves attachments locally, invokes the PI planner/document pipeline, and publishes approved results back to Feishu.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-tools",
+      "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people"],
+      "policy": ["CLI-first event consume", "raw media stays local", "QA Gate required before Feishu publish", "Policy Gate blocks destructive actions", "MCP not required"],
+      "observability": ["plannerDecisions", "policyDecisions", "workerDecisions", "toolCalls", "externalCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local runner/handler use official lark-cli, write sanitized runtime artifacts, default to fixture/mock dry-run when auth is unavailable, and keep remote handlers disabled unless explicitly configured."
+      },
+      "triggers": ["feishu inbound", "feishu agent bridge", "event consume", "附件", "飞书双向", "飞书机器人处理", "飞书发布"],
+      "commands": ["lark-cli"],
+      "cliOperations": ["lark-cli event consume", "lark-cli im +messages-reply", "lark-cli im +messages-resources-download", "lark-cli markdown +create", "lark-cli markdown +overwrite", "lark-cli drive +create-folder", "lark-cli drive +upload"],
+      "env": ["FEISHU_EVENT_KEY"],
+      "optionalEnv": ["FEISHU_AGENT_HANDLER_URL", "FEISHU_AGENT_EXEC_MODE", "FEISHU_AGENT_PUBLISH_MODE", "FEISHU_AGENT_REPLY_MODE", "FEISHU_AGENT_FOLDER_TOKEN"],
+      "runtimeSchemas": ["feishu-event.schema.json", "feishu-task.schema.json", "feishu-run-state.schema.json"],
+      "guardrails": ["lazy load only", "runner only normalizes and forwards events", "handler owns task artifacts and orchestration", "publisher reads QA/Policy results before live publish", "document structures come from prompt registry"]
+    },
+    {
+      "capabilityId": "wechat-adapter",
+      "status": "available",
+      "description": "Maps WeChat fixture/local messages and attachments into unified IM events, then reuses the same office runner/runtime path without copying Feishu workflow logic.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-tools",
+      "toolIntents": ["read", "draft", "notify_people"],
+      "policy": ["adapter skeleton only", "no live wechatcli by default", "no Feishu cloud document assumptions", "user-facing replies must not expose runId"],
+      "observability": ["plannerDecisions", "toolCalls", "externalCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Fixture/local adapter only; it writes sanitized artifacts and calls the same handler/runner path instead of introducing a second orchestrator."
+      },
+      "triggers": ["wechat", "wechatcli", "微信", "微信群", "微信附件"],
+      "runtimeSchemas": ["im-event.schema.json", "im-attachment.schema.json", "im-reply.schema.json", "office-task-state.schema.json"],
+      "guardrails": ["fixture-only in this iteration", "reuse task_execution_runner", "no office_task_pipeline", "no raw media external upload"]
+    },
+    {
+      "capabilityId": "file-context-service",
+      "status": "available",
+      "description": "Shared file-context classification and progressive disclosure rules for Feishu, WeChat, and local file tasks.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-tools",
+      "toolIntents": ["read", "draft"],
+      "policy": ["audio local ASR only", "text files may use bounded text fallback", "image/video unsupported", "no full large file in metrics"],
+      "observability": ["contextBudget", "toolCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local helper only; records hashes, bounded previews and source paths, with raw media kept local."
+      },
+      "triggers": ["file context", "附件", "PDF", "Word", "Excel", "音频", "录音", "图片", "视频"],
+      "runtimeSchemas": ["file-context.schema.json", "im-attachment.schema.json"],
+      "guardrails": ["progressive disclosure", "raw audio local only", "unsupported media returns 目前暂不支持该功能"]
+    },
+    {
+      "capabilityId": "office-runtime",
+      "status": "available",
+      "description": "Local office object runtime for document lifecycle metadata, pointer-only retrieval index, and reviewable memory proposals.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft", "write_private", "persist_memory"],
+      "policy": ["delete/clear/remove/destroy blocked", "existing document modification requires explicit target", "memory writes are proposals until confirmed"],
+      "observability": ["plannerDecisions", "policyDecisions", "generatedArtifacts", "capabilitySelections"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Workspace-bounded local metadata tools; stores references, hashes, bounded previews, sourceRun and version metadata, never raw transcripts or full file text."
+      },
+      "triggers": ["document lifecycle", "overwrite", "rewrite section", "diff", "retrieval", "memory", "偏好", "检索", "覆盖修改", "版本"],
+      "runtimeSchemas": ["office-context.schema.json", "office-object.schema.json", "document-lifecycle.schema.json", "retrieval-index.schema.json"],
+      "guardrails": ["pointer-only retrieval", "sourceRun required for generated docs", "delete actions blocked", "no automatic memory persistence"]
+    },
+    {
+      "capabilityId": "calendar-task",
+      "status": "available",
+      "description": "Creates calendar events, reminders, and assigned tasks through the approved office connector path after confirmation.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "mutate_calendar", "assign_task", "notify_people"],
+      "policy": ["mutate_calendar requires confirmation", "assign_task requires confirmation", "notify_people requires confirmation"],
+      "observability": ["policyDecisions", "toolCalls", "externalCalls"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Uses existing Feishu CLI/approved connector path; no new package install."
+      },
+      "triggers": ["calendar", "schedule", "todo", "task", "日历", "排期", "任务"],
+      "commands": ["lark-cli"],
+      "guardrails": ["confirmation before mutation", "record action artifact before notify"]
+    },
+    {
+      "capabilityId": "local-asr",
+      "status": "available",
+      "description": "Runs local audio transcription without external raw media upload; video素材 is not accepted by the Feishu bridge.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read"],
+      "policy": ["raw media external upload blocked", "loopback service only"],
+      "observability": ["toolCalls", "generatedArtifacts", "contextBudget"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local ASR path enforces loopback URL and input/output root allowlists."
+      },
+      "triggers": ["audio", "transcribe", "ASR", "录音", "音频", "转写"],
+      "optionalEnv": ["LOCAL_ASR_SERVICE_URL", "LOCAL_ASR_BEARER_TOKEN", "LOCAL_ASR_INPUT_ROOTS", "LOCAL_ASR_OUTPUT_ROOTS", "LOCAL_ASR_MODEL_DIR"],
+      "guardrails": ["raw media local only", "service URL loopback only", "optional bearer token", "input/output root allowlist", "no external fallback"]
+    },
+    {
+      "capabilityId": "rokid-import",
+      "status": "available",
+      "description": "Imports local Rokid/Lingzhu export artifacts while keeping media local.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read"],
+      "policy": ["raw media external upload blocked"],
+      "observability": ["toolCalls", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local export ingestion only; hashes media and does not upload raw files."
+      },
+      "triggers": ["rokid", "lingzhu", "眼镜", "导出目录"],
+      "guardrails": ["local export first", "streaming media hashes", "no raw upload"]
+    },
+    {
+      "capabilityId": "agent-team-runtime",
+      "status": "available",
+      "description": "Runs task-shaped parallel workers for long meetings or multi-document analysis after planner identifies independent work scopes.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft"],
+      "policy": ["workers are components selected per task, not fixed persona roles"],
+      "observability": ["workerDecisions", "plannerDecisions", "toolCalls"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local worker runtime has bounded task count and evidence trace requirements."
+      },
+      "triggers": ["long meeting", "multi document", "parallel QA", "subagent", "agent team", "长会议", "多文档", "并行", "PRD"],
+      "guardrails": ["task-shaped workers", "no permanent role explosion", "evidence trace required"]
+    },
+    {
+      "capabilityId": "source-context-runtime",
+      "status": "available",
+      "description": "Builds the runtime context plane: source records, structured source segments, deterministic retrieval plans, bounded context packs, work units, and pre-generation context gates.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft", "retrieval"],
+      "policy": ["file-context is ingestion only", "context-offload is storage only", "model calls consume bounded context packs"],
+      "observability": ["contextPackId", "sourceSegmentIds", "promptBudgetChars", "retrievalReasons", "contextGate"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local workspace-bounded context pack builder; no vector database and no raw media upload."
+      },
+      "triggers": ["file context", "document generation", "document revision", "multi source", "ASR transcript", "context plane", "上下文", "多源", "批注修订"],
+      "guardrails": ["deterministic retrieval before vector store", "section-scoped context packs", "pre-generation context gate"]
+    },
+    {
+      "capabilityId": "context-offload",
+      "status": "available",
+      "description": "Offloads bulky transcript or evidence content into bounded local artifacts and keeps pointers in model context.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft"],
+      "policy": ["raw transcript local artifact only", "bounded readback"],
+      "observability": ["contextBudget", "generatedArtifacts"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local artifact writer enforces workspace-bounded paths and readback caps."
+      },
+      "triggers": ["long meeting", "raw transcript", "context prune", "evidence offload", "长会议", "上下文"],
+      "guardrails": ["raw transcript local artifact", "bounded readback", "main context keeps pointers"]
+    },
+    {
+      "capabilityId": "model-fallback",
+      "status": "available",
+      "description": "Routes model usage with explicit fallback records instead of silent provider swaps.",
+      "defaultLoad": false,
+      "contextCost": "low",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "draft"],
+      "policy": ["automatic fallback allowed with model-route artifact", "blocked providers cannot be used"],
+      "observability": ["modelCalls", "plannerDecisions"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Local routing metadata only; no credential logging."
+      },
+      "triggers": ["model unavailable", "provider fallback", "routing", "DeepSeek"],
+      "guardrails": ["automatic fallback allowed", "model-route.json required", "no silent fallback"]
+    },
+    {
+      "capabilityId": "web-access",
+      "status": "candidate",
+      "description": "Fetches official or current documentation for time-sensitive SDK, MCP, API, and model questions with source records.",
+      "defaultLoad": false,
+      "contextCost": "high",
+      "toolPackage": "third-party-or-mcp",
+      "toolIntents": ["external_web", "read"],
+      "policy": ["not used for meeting facts", "sources required", "external_web must pass policy gate"],
+      "observability": ["externalCalls", "policyDecisions", "packageAudits"],
+      "installState": "not_installed",
+      "securityReview": {
+        "status": "pending",
+        "summary": "Candidate only; must audit package/source, network behavior, env reads, file writes, prompt injection handling, credential handling, and disable path before install.",
+        "requiredBeforeEnable": ["package-audit artifact", "policy_gate_check external_web", "smoke test with source record"],
+        "auditArtifactRequired": true
+      },
+      "candidatePackages": ["pi-web-access"],
+      "triggers": ["latest docs", "SDK", "MCP", "model API", "官方文档", "最新"],
+      "guardrails": ["not used for meeting facts", "sources required", "lazy load only"]
+    },
+    {
+      "capabilityId": "mcp-adapter",
+      "status": "candidate",
+      "description": "Adapts task-selected MCP tools into PI only after a package/security audit and credential isolation review.",
+      "defaultLoad": false,
+      "contextCost": "high",
+      "toolPackage": "third-party",
+      "toolIntents": ["read", "external_web"],
+      "policy": ["lazy load only", "credential isolation", "no MCP requirement for Feishu bot reply"],
+      "observability": ["packageAudits", "toolCalls", "policyDecisions"],
+      "installState": "not_installed",
+      "securityReview": {
+        "status": "pending",
+        "summary": "Candidate only; must audit server command, env reads, network/file access, prompt injection risk, and disable path.",
+        "requiredBeforeEnable": ["package-audit artifact", "credential boundary review", "smoke test"],
+        "auditArtifactRequired": true
+      },
+      "candidatePackages": ["pi-mcp-adapter"],
+      "triggers": ["MCP", "tool server"],
+      "guardrails": ["lazy load only", "credential isolation", "no default load"]
+    },
+    {
+      "capabilityId": "usage-context-cache-graph",
+      "status": "candidate",
+      "description": "Third-party candidate for usage, context, time, and cache graph observability if local metrics become insufficient.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "third-party",
+      "toolIntents": ["read"],
+      "policy": ["no secrets in telemetry", "no raw transcript in telemetry"],
+      "observability": ["packageAudits", "contextBudget", "capabilitySelections"],
+      "installState": "not_installed",
+      "securityReview": {
+        "status": "pending",
+        "summary": "Candidate only; must audit telemetry sinks, local file writes, env reads, retention policy, and disable path.",
+        "requiredBeforeEnable": ["package-audit artifact", "telemetry sink review", "smoke test with redaction"],
+        "auditArtifactRequired": true
+      },
+      "candidatePackages": ["pi-usage-context-cache-graph"],
+      "triggers": ["usage", "context", "cache graph", "runtime observability"],
+      "guardrails": ["disabled by default", "no raw content telemetry"]
+    },
+    {
+      "capabilityId": "skill-selector",
+      "status": "candidate",
+      "description": "Third-party candidate for selecting skills from a large catalog when local planner heuristics are insufficient.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "third-party",
+      "toolIntents": ["read", "draft"],
+      "policy": ["planner decision must remain auditable", "no hidden prompt injection"],
+      "observability": ["packageAudits", "capabilitySelections"],
+      "installState": "not_installed",
+      "securityReview": {
+        "status": "pending",
+        "summary": "Candidate only; must audit prompt construction, external calls, env reads, file writes, and disable path.",
+        "requiredBeforeEnable": ["package-audit artifact", "prompt injection review", "smoke test"],
+        "auditArtifactRequired": true
+      },
+      "candidatePackages": ["pi-skill-selector"],
+      "triggers": ["skill selector", "large skill catalog", "能力选择"],
+      "guardrails": ["disabled by default", "planner output remains explicit"]
+    },
+    {
+      "capabilityId": "third-party-subagents",
+      "status": "candidate",
+      "description": "Optional replacement or complement to local agent-team-runtime after package audit proves safer or more capable parallel worker execution.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "third-party",
+      "toolIntents": ["read", "draft"],
+      "policy": ["task-shaped workers only", "no fixed role explosion", "no default load"],
+      "observability": ["packageAudits", "workerDecisions"],
+      "installState": "not_installed",
+      "securityReview": {
+        "status": "pending",
+        "summary": "Candidate only; must audit process isolation, context sharing, artifact access, env reads, network behavior, and disable path.",
+        "requiredBeforeEnable": ["package-audit artifact", "worker isolation review", "smoke test"],
+        "auditArtifactRequired": true
+      },
+      "candidatePackages": ["pi-subagents"],
+      "triggers": ["replace local agent-team-runtime", "parallel worker package"],
+      "guardrails": ["supply-chain review first", "no default load"]
+    },
+    {
+      "capabilityId": "multi-edit",
+      "status": "candidate",
+      "description": "Third-party candidate for structured multi-file edits when document or code changes need safer section-level patching.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "third-party",
+      "toolIntents": ["write_private", "draft"],
+      "policy": ["dry-run required before write", "workspace-bounded writes only", "audit before install"],
+      "observability": ["packageAudits", "toolCalls", "capabilitySelections"],
+      "installState": "not_installed",
+      "securityReview": {
+        "status": "pending",
+        "summary": "Candidate only; must audit filesystem write scope, patch format, rollback/disable path, env reads, and prompt injection handling.",
+        "requiredBeforeEnable": ["package-audit artifact", "workspace write-scope review", "dry-run smoke test"],
+        "auditArtifactRequired": true
+      },
+      "candidatePackages": ["pi-multi-edit"],
+      "triggers": ["multi edit", "section patch", "large file edit", "批量编辑"],
+      "guardrails": ["disabled by default", "no arbitrary file writes"]
+    }
+  ]
+}

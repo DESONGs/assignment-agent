@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.meeting-agent/schemas/proposal.schema.json",
+  "title": "Meeting Agent Sidecar Proposal",
+  "type": "object",
+  "required": [
+    "type",
+    "content",
+    "rationale",
+    "sourceRunId",
+    "requiresHumanReview"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "project_fact",
+        "process_lesson",
+        "prompt_patch",
+        "skill_patch",
+        "eval_case"
+      ]
+    },
+    "content": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "sourceRunId": {
+      "type": "string"
+    },
+    "requiresHumanReview": {
+      "type": "boolean",
+      "const": true
+    },
+    "riskLevel": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "regressionTests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

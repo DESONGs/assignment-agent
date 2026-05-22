@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/document-prompt-registry.schema.json",
+  "title": "Document Prompt Registry",
+  "type": "object",
+  "required": ["version", "documents"],
+  "properties": {
+    "version": { "type": "string" },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["docType", "promptFile", "aliases", "parallelizable", "requiredSections"],
+        "properties": {
+          "docType": { "type": "string" },
+          "promptFile": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.md$" },
+          "aliases": { "type": "array", "items": { "type": "string" } },
+          "parallelizable": { "type": "boolean" },
+          "dependsOn": { "type": "array", "items": { "type": "string" } },
+          "audience": { "type": "string" },
+          "operationOverlays": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.md$" }
+          },
+          "requiredSections": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

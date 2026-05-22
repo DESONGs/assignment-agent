@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/wiki-publish-plan.schema.json",
+  "title": "Feishu Wiki Publish Plan",
+  "type": "object",
+  "required": ["schemaVersion", "target", "rootMode", "treePolicy", "projectTitle", "runTitle", "nodes", "documents", "rawSecretsReturned", "rawMediaExternalUpload"],
+  "properties": {
+    "schemaVersion": { "const": "wiki-publish-plan-v1" },
+    "target": { "enum": ["user-deliverables", "hermes-thinking"] },
+    "spaceId": { "type": ["string", "null"] },
+    "rootNodeToken": { "type": ["string", "null"] },
+    "rootMode": { "enum": ["configured_space", "configured_root_node", "my_library", "configured_space_or_root_required"] },
+    "treePolicy": { "const": "dynamic_content_based" },
+    "projectTitle": { "type": "string" },
+    "runTitle": { "type": "string" },
+    "nodes": { "type": "array" },
+    "documents": { "type": "array" },
+    "sourceRun": { "type": ["string", "null"] },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "additionalProperties": true
+}

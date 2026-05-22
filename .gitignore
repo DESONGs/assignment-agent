@@ -1,0 +1,37 @@
+.env.local
+.enc.local
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+.obsidian/
+
+# Local runtime state and dependency/model caches.
+.pi/
+.hf-cache/
+.hf-home/
+.uv-cache/
+.uv-python/
+.venv*/
+models/*
+!models/README.md
+runtime-runs/
+
+# Generated QA artifacts can contain raw transcript, model response, Feishu
+# stdout/stderr, or local evidence payloads. Keep only README/marker docs in
+# reviewable history.
+qa-runs/**/*.json
+qa-runs/**/*.jsonl
+qa-runs/**/*.txt
+qa-runs/**/*.wav
+qa-runs/**/*.mp3
+qa-runs/**/*.m4a
+qa-runs/**/*.mp4
+qa-runs/**/__pycache__/
+qa-runs/**/semantic/internal-model-artifacts/*.md
+qa-runs/**/semantic-clean/*.response.json
+!qa-runs/**/README.md
+!qa-runs/**/.non-production
+
+# Public repository policy: keep local run outputs, local model weights,
+# dependency caches, local app state, and machine-specific config out of git.

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/publish-target.schema.json",
+  "title": "Office Publish Target",
+  "type": "object",
+  "required": ["schemaVersion", "channel", "targetType", "destructiveActionsAllowed", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "publish-target-v1" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "targetType": { "enum": ["chat_session_folder", "explicit_file_token", "local_artifact", "none"] },
+    "folderToken": { "type": ["string", "null"] },
+    "fileToken": { "type": ["string", "null"] },
+    "destructiveActionsAllowed": { "const": false },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}
