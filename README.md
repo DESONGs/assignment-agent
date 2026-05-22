@@ -1,341 +1,140 @@
-# Meeting Agent Workspace
+# Meeting Document Agent
 
-This workspace contains a PI-first meeting agent package plus a Hermes-inspired
-learning sidecar.
+一个本地优先的会议终结与办公文档 Agent。
 
-The architecture separates execution from learning:
+它面向高频会议、客户沟通、技术方案讨论和运营复盘：把录音、飞书消息、飞书文档、本地文件和后续补充材料整理成可追溯的会议纪要，并继续生成 PRD、技术架构、运营方案、客户需求确认表、复盘文档等交付物。
 
-- PI is the active execution kernel for meeting ingestion, document generation,
-  official `lark-cli` Feishu operations, and Rokid tool use.
-- Hermes is treated as a read-only learning sidecar that reviews sanitized task
-  trajectories and proposes memory, prompt, skill, and eval improvements.
-- Human review is the only path from proposals back into production skills or
-  prompts.
+当前仓库是一个脱敏后的源码发布版本：代码、prompt、schema、wiki 和复盘文档已保留；本地模型权重、运行产物、缓存、虚拟环境、真实配置和本地文件没有上传。
 
-## Layout
+## 这个项目解决什么问题
+
+会议结束后，信息通常散落在录音、聊天记录、飞书文件、个人记忆和后续补充里。这个 Agent 的目标不是只做摘要，而是把会议材料整理成下一步可以执行、可以复查、可以沉淀到知识库的办公资产。
+
+典型输出包括：
+
+- 会议纪要：主题、背景、结论、分歧、行动项、风险、开放问题。
+- PRD：产品目标、用户、范围、功能需求、非功能需求、验收标准。
+- 技术架构：系统边界、模块、数据流、模型路由、部署运维、测试计划。
+- 运营方案：目标、对象、节奏、SOP、指标、风险预案、复盘机制。
+- 客户需求确认表：下一次沟通中需要确认的问题和交付边界。
+- 项目复盘：架构、运行、运维、开发问题、数据管理等阶段性总结。
+
+## 当前能力
+
+- Feishu 入口：通过官方 `lark-cli` 接收事件、下载附件、创建 Markdown 文档、发布到 Drive/Wiki、回复消息。
+- 本地音频转写：使用本机 Qwen3-ASR HTTP 服务，原始音频不上传外部模型。
+- 文档生成：通过 Prompt Registry 和 Document Worker 生成会议纪要、PRD、架构、运营、客户确认表。
+- 文档修订：读取飞书文档正文和评论上下文，按批注或修改意见重新优化文档。
+- 多源证据：把多个文件、音频、链接和评论上下文统一成可追溯 source context。
+- QA / Policy：交付前检查事实、章节、隐私、权限和发布边界。
+- Hermes 学习侧车：只读取脱敏 trajectory，输出 memory、prompt、skill、eval proposal，不直接改生产系统。
+- 本地数据治理：runtime artifacts、CAS、SQLite metadata、ASR/file cache、retention sweeper。
+
+## 仓库结构
 
 ```text
-meeting-agent-pi-package/  PI package: skills, prompts, and extensions
-hermes-learning-sidecar/   Read-only sidecar for retrospectives and proposals
-src/                       Shared schemas and examples
-assigment agent wiki/      Current PRD, architecture, prompt, skill, safety, and retrospective docs
-wiki/                      Additional synced planning/problem notes
-models/                    Model install guide only; weights are not committed
+meeting-agent-pi-package/
+  PI package：extensions、skills、prompts、runtime schemas、local tools。
+
+hermes-learning-sidecar/
+  只读学习侧车：读取 sanitized trajectory，生成复盘与改进 proposal。
+
+assigment agent wiki/
+  当前主 wiki：PRD、架构、权限、测试、问题记录、项目复盘。
+
+wiki/
+  额外同步的计划与问题文档。
+
+src/
+  workspace validation、shared schemas、sanitized trajectory 示例。
+
+models/
+  只包含模型安装说明；不包含模型权重。
+
+qa-runs/
+  只保留非生产说明 README 和 marker；不包含原始 QA 产物。
 ```
 
-## Public Repository Notes
+## 没有上传的内容
 
-This repository is sanitized for source distribution:
+以下内容被 `.gitignore` 排除，不应提交到 GitHub：
 
-- Local runtime outputs, QA runs, dependency caches, virtual environments, and
-  machine-local app state are intentionally not committed.
-- Local model weights are intentionally not committed. See
-  [`models/README.md`](models/README.md) for the ASR model source URLs and
-  installation steps.
-- `.env.example` is a blank template. Runtime credentials must be supplied only
-  in a local `.env.local` file that is ignored by git.
+- `.env.local`、本机加密配置、真实账号或模型配置。
+- `models/` 下的本地模型权重。
+- `runtime-runs/` 下的真实运行产物、附件、转写、发布结果。
+- `qa-runs/` 下的原始 QA JSON、音频、转写、模型响应。
+- `.venv*`、`.uv-cache`、`.hf-cache`、`.hf-home`、`node_modules`。
+- Obsidian 本地状态、macOS `.DS_Store` 等机器状态文件。
 
-## PI package install
+## 快速开始
 
-From this workspace, install the package locally in PI:
+### 1. 安装 PI package
+
+从仓库根目录运行：
 
 ```bash
 pi install -l ./meeting-agent-pi-package
 ```
 
-Or test without installing:
+也可以不安装，直接用本地 package 测试：
 
 ```bash
 pi -e ./meeting-agent-pi-package
 ```
 
-## Runtime Configuration
+### 2. 准备本地配置
 
-Use `.env.local` as the only manual runtime configuration entrypoint. Copy the
-template and fill the real LLM keys locally:
+复制模板：
 
 ```bash
 cp .env.example .env.local
 ```
 
-Default DeepSeek runtime/document run:
+在 `.env.local` 中填入你自己的模型配置。不要提交 `.env.local`。
+
+默认模型规划：
+
+- 主控与文档生成：DeepSeek。
+- 复核与 fallback：Xiaomi MiMo。
+- 音频转写：本地 Qwen3-ASR 服务。
+
+### 3. 运行 workspace 校验
 
 ```bash
-set -a
-source .env.local
-set +a
-
-pi --provider "$PI_PROVIDER" --model "$PI_MODEL"
+python3 src/validate_workspace.py
 ```
 
-Meeting privacy defaults:
+这个检查会验证关键文档、schema、prompt、runtime contract 和安全边界是否一致。
+
+## 本地 ASR 模型安装
+
+仓库不包含 ASR 模型权重。默认本地模型目录是：
 
 ```text
-MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow
-MEETING_RAW_MEDIA_EXTERNAL_UPLOAD_DEFAULT=deny
+models/Qwen3-ASR-1.7B-MLX-4bit
 ```
 
-Transcript/evidence text is the default semantic input for DeepSeek and Xiaomi.
-Raw audio/video/base64 media remains local-only unless a future task explicitly
-adds an external ASR path.
+模型来源：
 
-Runtime engineering is local-artifact first:
+- 推荐 Apple Silicon / MLX 4-bit 模型：<https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-4bit>
+- 原始 Qwen 发布：<https://huggingface.co/Qwen/Qwen3-ASR-1.7B>
 
-- Office Agent decision layers are limited to Planner, Model Router, Prompt
-  Registry, Document Worker, QA Gate, and Policy Gate. Capability Registry is a
-  catalog/readiness source. `task_router.mjs` only chooses task intent and
-  `executionProfile`; adapters, handlers, publishers, File Context, ASR,
-  Observability, Hermes, `task_execution_runner`, and `runtime_tool_cli` only
-  transform, execute, record, or review.
-- `planner-runtime` records a Planner Envelope for non-trivial runs. The
-  envelope captures `goal`, `taskType`, `successCriteria`, `capabilitiesNeeded`,
-  `toolPlan`, `parallelizableWorkers`, `policyRisks`, `requiredArtifacts`, and
-  `stopConditions`; it is an auditable plan for the current goal, not a fixed
-  workflow.
-- `policy-gate` checks action intent boundaries such as
-  `publish_customer_visible`, `notify_people`, `mutate_calendar`,
-  `assign_task`, `external_web`, `install_dependency`, `persist_memory`, and raw
-  media external upload. It returns `pass`, `needs_confirmation`, or `blocked`
-  without prescribing business steps.
-- `runtime_metrics_*` writes `runtime-runs/{run_id}/run.metrics.json`.
-- `capability_registry_*` keeps the Feishu Agent bridge, Feishu bot, Rokid,
-  WebAccess/MCP, Agent Team, and third-party subagent packages lazy until a task
-  needs them.
-- `model_route_plan` may automatically fall back from DeepSeek to a configured
-  candidate, but `model_route_record` must write `model-route.json`; silent
-  fallback is not allowed. The default route for ordinary short drafting is
-  `deepseek/deepseek-v4-flash`; `meeting_minutes`, deep PRD/architecture/ops
-  work, and explicit deep-thinking requests route to
-  `deepseek/deepseek-v4-pro`.
-- `context_offload_*` stores long transcript/evidence payloads under
-  `runtime-runs/{run_id}/offload/` so the main context is pointer-only for raw
-  transcript/full evidence: artifact path, hash, size, bounded preview,
-  topicMap, evidence map, QA gate, and open questions.
-- `agent_team_*` exposes dynamic worker components through Node
-  `worker_threads`; it uses a dynamic worker pool and does not preload fixed
-  subagent roles.
-- `document_prompt_*` uses `document-prompt-registry.json` as the single
-  `docType -> promptFile` mapping. It renders `prompts/*.md` with evidence and
-  router conclusions before any document worker runs.
-- `document_workers_run` executes one rendered prompt per parallel document
-  worker through `model_provider_*`; each document worker then runs section
-  batches from registry `requiredSections`, merges them, repairs missing
-  sections once, records document-shard routes in `model-route.json`, and
-  returns per-document Markdown plus QA input.
-- `model_provider_*` supports DeepSeek, Xiaomi, and mock smoke runs. DeepSeek
-  defaults to `https://api.deepseek.com`; Xiaomi requires `XIAOMI_BASE_URL` and
-  must not use a hardcoded endpoint. Non-mock `model_generate_text` calls must
-  include the selected `modelRoute` from `model_route_plan`.
-- `office-runtime` records document lifecycle metadata, pointer-only retrieval
-  indexes, office object references, and memory proposals. It blocks
-  destructive document actions, requires explicit targets for overwrites, and
-  never persists memory automatically.
-- Existing document revision is a lazy document lifecycle capability. Feishu
-  doc/docx/wiki links plus "批注/评论/修改内容/重新优化" generate
-  `review-context.json`. The runner now reads independent Feishu comment
-  threads through `lark-cli drive file.comments list` / `batch_query` and
-  `file.comment.replys list` before falling back to exported-body review
-  signals; missing `docs:document.comment:read` or equivalent Drive/Docs scopes
-  is recorded explicitly as permission-blocked context. Comments are grouped
-  under `sourceDocuments[].comments[]` with `matchStatus` and `matchReason`, so
-  multi-document revision cannot apply one source's comment to another source.
-  The document still uses its base prompt from
-  `document-prompt-registry.json` with `document-revision-overlay.md` appended,
-  so revision support does not create a second document workflow.
-- `im_file_context_helpers.mjs` is the shared file-context helper used by
-  Feishu and WeChat adapter paths. `wechat_event_adapter.mjs` is fixture-only in
-  this iteration: it maps local WeChat-shaped input into `im-event-v1` and can
-  call the same handler/runner in mock dry-run mode.
-- `task_router.mjs` is the shared profile router. It emits
-  `taskIntent.executionProfile`, `reasoningDepth`, `requiredStages`, and
-  `skipStages` for `fast_answer`, `file_summary`, `audio_minutes`,
-  `document_generation`, `document_revision`, `multi_source_synthesis`,
-  `publish_only`, and `unsupported` while preserving the existing
-  `taskType/responseMode/requestedDocuments/requiresLocalAsr/sourcePreparation`
-  contract.
-- `runtime_tool_cli.mjs` reads `runtime/tool-load-manifest.json` and supports
-  `--profile`, so short profiles load only Model Router / Model Provider while
-  document profiles load Planner, Prompt Registry, Document Worker, QA, Policy,
-  Office, and media extensions as needed.
+更完整的安装步骤见 [models/README.md](models/README.md)。
 
-Capability Registry entries are planner-selectable capability descriptions, not
-a module checklist. Each entry must describe its `description`, `toolIntents`,
-`policy`, `observability`, `installState`, and `securityReview` so the Planner
-can justify capability selection and the Policy Gate can check risky actions.
-The package audit/install mechanism keeps third-party capabilities in candidate
-state until a security review is recorded; dependency installation requires
-`install_dependency` Policy Gate approval and writes a `packageAudits` metrics
-entry.
-
-Runtime metrics must expose planner, policy, worker, capability, and package
-decisions through `plannerDecisions`, `policyDecisions`, `workerDecisions`,
-`capabilitySelections`, and `packageAudits`.
-
-## Local Docker Runtime
-
-本地 Docker 不能减少本机总计算消耗；它的价值是把长任务放进受限常驻执行面，通过进程隔离、资源上限、队列深度和并发控制避免 Feishu 主入口被拖垮。当前采用 **Host 原生控制面 + Local Docker 受限执行面**：
-
-- Host 保留 Feishu live、`lark-cli`、macOS keychain、附件下载/发布/回复、本机 MLX ASR、文档修订评论预取。
-- Docker 常驻轻服务包含 `runtime-queue`、`pi-document-worker` 和 `hermes-worker`。
-- `fast_answer/file_summary 不进 Docker`，仍走 host 轻路径。
-- `document_generation/multi_source_synthesis 默认进 Docker worker`，但只有设置 `FEISHU_AGENT_DOCUMENT_WORKER_MODE=docker|local-docker|queue` 后才启用；未启用时保持 host runner。
-- `audio_minutes` 的 normalize + local ASR 留在 Host；后续 transcript/evidence 可作为 bounded artifact 进入文档阶段，但 `raw audio 不进容器`。
-- `document_revision` v1 留在 Host，因为 Feishu comment/review-context 预取仍依赖 `lark-cli` 和本机凭证。
-- Docker worker 不调用 `lark-cli`，不 publish，不 reply，只产出 `agent-output.json` 和 runtime artifacts；Host 拉回结果后继续 QA/Policy 边界内的 Feishu 发布/回复。
-
-默认资源档位为 `4 CPU / 8GB / 长文档并发 2`，Hermes worker 为 1 CPU / 1GB，Redis queue 为 256MB。启动常驻轻服务：
+常用安装命令：
 
 ```bash
-docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker hermes-worker
+python3 -m venv .venv-qwen3-asr
+.venv-qwen3-asr/bin/python -m ensurepip --upgrade
+.venv-qwen3-asr/bin/python -m pip install -U pip
+.venv-qwen3-asr/bin/python -m pip install mlx-qwen3-asr huggingface_hub
+
+.venv-qwen3-asr/bin/huggingface-cli download \
+  mlx-community/Qwen3-ASR-1.7B-4bit \
+  --local-dir models/Qwen3-ASR-1.7B-MLX-4bit
 ```
 
-启用长文档入队：
-
-```bash
-FEISHU_AGENT_DOCUMENT_WORKER_MODE=docker \
-node meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs \
-  --host 127.0.0.1 \
-  --port 8788 \
-  --execute
-```
-
-Feishu bidirectional Agent work is CLI-first. `lark-cli` remains the active
-OpenAPI/Docs/Drive/IM operation path, and the preferred inbound path is
-`lark-cli event consume <EventKey> --as bot` feeding the local
-`feishu_agent_task_handler`. The handler creates run artifacts, resolves
-attachments, invokes the PI planner/document runtime path, and publishes only after
-QA Gate and Policy Gate allow it.
-
-Profile-driven tasks use `task_execution_runner` as a thin observable executor
-after source resolution. It is not a decision layer: `fast_answer` and
-`file_summary` call Model Router / Model Provider directly and reply without
-document workers, QA, Policy, Wiki publish, or ASR. Document profiles prepare
-current attachments, explicit Feishu file URLs, parent/root resources, and
-modality-filtered cache hits into a consolidated `evidence-pack`; audio sources
-are normalized to local `16k mono s16 WAV` and transcribed before evidence
-merging. The runner then calls Planner/Model Router/Prompt Registry/Document
-Worker/QA Gate/Policy Gate tools through `runtime_tool_cli`, writes stage
-artifacts, and emits progress replies. It also writes `document-title-plan.json`
-and syncs each final Markdown H1 plus Feishu `.md` name to the project/direction
-inferred from the user prompt and source map, so PRD/architecture/checklist and
-meeting-minutes documents do not fall back to generic docType names.
-Feishu audio minutes regression requires `task_execution_runner_started`,
-`audio_downloaded`, `audio_normalized`, `local_asr_completed`,
-`model_route_planned`, `meeting_minutes_generated`, `qa_gate_completed`,
-`policy_gate_completed`, and a final publish/reply state to be inspectable in
-local artifacts.
-
-Feishu Wiki is now the default delivery target when `FEISHU_AGENT_PUBLISH_TARGET`
-is `auto` or `wiki`. The publisher writes `wiki-publish-plan.json`, creates
-Markdown documents, ensures dynamic project/run/category Wiki nodes, moves docs
-with `wiki +move`, and records `wiki-publish.json`; Wiki permission failures
-fall back to Drive with `wiki_publish_blocked_drive_fallback`. Hermes uses a
-separate thinking Wiki target (`HERMES_WIKI_SPACE_ID` or
-`HERMES_WIKI_ROOT_NODE_TOKEN`) and writes `hermes-wiki-candidate.json` plus
-`hermes-wiki-publish.json`; it never publishes into the user deliverables Wiki.
-
-Feishu file tasks now pass through a `file-context` layer before planning. The
-handler supports PDF/Word/Excel/Markdown/TXT/CSV-style text files and explicit
-Feishu file URLs/tokens. Current attachments and explicit URLs outrank parent/root
-resources and recent cache; cache fallback is filtered by expected modality so
-old audio cannot override a document-writing request. Multiple audio/files/URLs
-are consolidated by default, with source attribution for conflicts. User-uploaded
-text files may be sent to the LLM with the user's prompt; audio/video raw media
-still stays local. Unsupported file types or unsupported requested actions reply
-with `目前暂不支持该功能`.
-
-Local dry-run setup:
-
-```bash
-node meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs \
-  --host 127.0.0.1 \
-  --port 8788 \
-  --publish-mode dry-run \
-  --reply-mode dry-run
-
-FEISHU_EVENT_KEY=<event_key> \
-node meeting-agent-pi-package/tools/feishu_event_runner.mjs \
-  --event-key "$FEISHU_EVENT_KEY" \
-  --handler-url http://127.0.0.1:8788/feishu/events
-```
-
-Each run writes `event.json`, `task.json`, `state.json`, `agent-task.md`,
-`file-context.json`, `agent-output.json`, `publish.json`, `reply.json`,
-`run.metrics.json`, `run-manifest.json`, and `sanitized-trajectory.json` under
-`runtime-runs/feishu-agent/runs/{runId}/`. `state.json` is the task state
-machine, `run.metrics.json` is runtime observability, and
-`sanitized-trajectory.json` is the Hermes learning input. Fixture/mock runs do
-not need live Feishu auth; live smoke requires `lark-cli auth status --verify`
-and the bot's event, reply, resource download, Drive, and Markdown permissions.
-The cross-channel contract is captured by `im-event-v1`, `im-attachment-v1`,
-`im-reply-v1`, `publish-target-v1`, and `office-task-state-v1`; Feishu is the
-first adapter. WeChat is adapter-skeleton only in this round: document schema
-mapping and capability boundaries, but no live receive, attachment download,
-file send, group publish, or cloud-doc workflow commitment.
-
-The SDK long-connection gateway is optional and can forward to the same handler.
-For that setup, enable bot capability, subscribe to `im.message.receive_v1`,
-publish the app, then run:
-
-```bash
-npm install @larksuiteoapi/node-sdk@^1.24.0
-
-FEISHU_APP_ID=cli_xxx \
-FEISHU_APP_SECRET=... \
-FEISHU_BOT_HANDLER_URL=http://127.0.0.1:8788/feishu/events \
-node meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs
-```
-
-When `FEISHU_BOT_HANDLER_URL` is set to a loopback URL, the gateway defaults to
-HTTP handler mode. For real PI runs that may exceed a short bot reply window,
-run the handler with `FEISHU_AGENT_ASYNC=1`; the gateway will reply with a
-user-facing accepted message without exposing the local `runId`, and avoid
-duplicate replies when the handler has already sent a live Feishu reply.
-
-If the bot identity lacks Drive/Markdown scopes, set
-`FEISHU_AGENT_PUBLISH_AS=user` for the handler so document creation uses the
-verified CLI user identity while message replies still use the bot identity.
-Set `PI_CLI_BIN` to a verified PI CLI when the default `pi` wrapper does not
-support the configured provider; the handler passes `--provider` and `--model`
-explicitly to avoid silent provider drift.
-
-MCP is optional for exposing Feishu APIs as AI tools. It is not required for the
-bot to receive and reply to Feishu chat messages or to publish Feishu documents.
-
-Feishu output that enters model context defaults to redaction. Use
-`redactionPolicy: "auth-status-summary"` for `lark-cli auth status` and
-`redactionPolicy: "secret-scan"` for other CLI output that may contain identity,
-tenant, token, cookie, session, or app metadata. Raw auth status output must not
-be returned to the model.
-
-Xiaomi MiMo reviewer/fallback run:
-
-```bash
-set -a
-source .env.local
-set +a
-
-pi --provider "$PI_REVIEW_PROVIDER" --model "$PI_REVIEW_MODEL"
-```
-
-`.pi/settings.json` only loads `meeting-agent-pi-package`; do not put provider,
-model, endpoint, or API key values there. If PI does not recognize the Xiaomi or
-DeepSeek provider, update PI instead of adding a custom `~/.pi/agent/models.json`
-fallback:
-
-```bash
-npm install -g @earendil-works/pi-coding-agent@latest
-```
-
-## Local ASR
-
-Audio-to-text is local-only and runs through a local HTTP service. Product
-inputs may be WAV/MP3/M4A/AAC/FLAC/OGG; the local runtime first writes
-`audio-normalize.json` and normalized `16k mono s16 WAV` files, then PI calls
-`meeting_transcribe_local_asr` with those local normalized paths. Raw audio is
-never uploaded to DeepSeek or Xiaomi.
-
-Start the service once per work session:
+启动本地 ASR HTTP 服务：
 
 ```bash
 .venv-qwen3-asr/bin/python meeting-agent-pi-package/tools/local_asr_http_service.py \
@@ -345,30 +144,135 @@ Start the service once per work session:
   --preload
 ```
 
-The current default is Qwen3-ASR 1.7B via MLX 4-bit weights on Apple Silicon:
+检查服务状态：
 
-```text
-models/Qwen3-ASR-1.7B-MLX-4bit
+```bash
+python3 meeting-agent-pi-package/tools/local_asr_service_ctl.py status
 ```
 
-The validated QA-RAW run produced 114 transcript segments from 56.62 minutes of
-audio with 0 failed chunks, at about 3.15x realtime. Raw audio is not uploaded by
-the ASR step. Downstream semantic drafting uses DeepSeek as the primary
-drafting/document model and Xiaomi MiMo as reviewer/fallback; both receive
-text evidence only. Transcript/evidence text is the default allowed semantic
-input; raw audio/video remains the only hard media boundary.
-There is no PI script fallback for ASR; if the local ASR service is unavailable,
-the tool blocks with `local_asr_service_unavailable`.
+音频边界：
 
-Legacy evidence under `qa-runs/` is non-production. Do not rehydrate raw
-transcript, raw Feishu output, or model response JSON into the main context; use
-the README/marker warnings and regenerate production-style artifacts with local
-ASR, context offload, model-route recording, and QA gates.
+- 产品输入可接受 WAV、MP3、M4A、AAC、FLAC、OGG。
+- runtime 会先本地归一化为 `16k mono s16 WAV`。
+- 原始音频不发送给 DeepSeek、Xiaomi、Hermes 或 Docker worker。
+- ASR 服务不可用时任务会阻塞并提示启动本地服务，不会自动走外部 ASR。
 
-## Sidecar usage
+## Feishu 运行方式
 
-The sidecar consumes a sanitized trajectory artifact and writes proposals to an
-output directory. It does not read Feishu or Rokid credentials.
+Feishu 集成只使用官方 `lark-cli`。项目不保存飞书凭证，不维护自定义 Feishu adapter，也不把 CLI 登录态写入仓库。
+
+典型本地 dry-run：
+
+```bash
+node meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs \
+  --host 127.0.0.1 \
+  --port 8788 \
+  --publish-mode dry-run \
+  --reply-mode dry-run
+```
+
+真实事件入口使用 `lark-cli event consume` 把事件转发给本地 handler。真实运行前需要：
+
+- `lark-cli auth status --verify` 通过。
+- 飞书应用已开启机器人能力。
+- 已订阅 `im.message.receive_v1`。
+- 具备消息回复、附件下载、Drive/Markdown/Wiki 所需权限。
+- 真实应用凭据只通过本机环境变量或官方 CLI 登录态提供，不写入仓库。
+
+如果需要 SDK 长连接入口，可以使用：
+
+```bash
+node meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs
+```
+
+SDK gateway 只是可选入口；收消息、处理任务和发布文档仍复用同一个 handler/runtime。
+
+## Local Docker Runtime
+
+Docker 在这个项目里不是远端算力服务，而是本地受限执行面。它用于隔离长文档生成和 Hermes proposal worker，避免拖垮 Feishu 主入口。
+
+启动本地轻服务：
+
+```bash
+docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker hermes-worker
+```
+
+边界：
+
+- Host 负责 Feishu、`lark-cli`、macOS keychain、附件下载、发布、回复、本地 MLX ASR。
+- Docker worker 只处理 bounded document job。
+- Docker worker 不接收原始音频、飞书登录态、本地凭据。
+- Docker worker 不发布、不回复，只写 runtime artifacts。
+
+启用长文档入队时，设置 `FEISHU_AGENT_DOCUMENT_WORKER_MODE` 为 `docker`、`local-docker` 或 `queue`。
+
+## 核心架构
+
+当前实现不是固定会议流水线，而是 profile-based office agent runtime。
+
+```text
+User / Files / Feishu / Rokid Export / future IM adapter
+  -> Channel/File adapters
+  -> Shared Task Router
+  -> Execution Profile
+  -> Thin Execution Runner
+  -> Planner / Model Router / Prompt Registry
+  -> Document Worker / QA Gate / Policy Gate
+  -> Publish / Reply
+  -> Sanitized Trajectory
+  -> Hermes proposal
+```
+
+只有六类组件拥有运行期业务决策权：
+
+- Planner：任务拆分、能力组合、工具意图、worker 计划。
+- Model Router：模型 route、provider 候选、fallback。
+- Prompt Registry：docType 到正式 prompt 的选择和渲染。
+- Document Worker：章节批次、合并、repair、文档级 QA input。
+- QA Gate：内容是否可交付。
+- Policy Gate：动作边界是否允许。
+
+其他组件只做转换、执行、记录或复盘：adapter、handler、publisher、File Context、ASR、Observability、Hermes、`task_execution_runner`、`runtime_tool_cli` 都不是业务决策层。
+
+## Execution Profiles
+
+`task_router.mjs` 会把用户请求归入不同 profile：
+
+| Profile | 用途 |
+| --- | --- |
+| `fast_answer` | 普通短问答，不进入文档 worker。 |
+| `file_summary` | 文件摘要，只读 bounded preview 或 extracted slices。 |
+| `audio_minutes` | 音频会议纪要，先本地 ASR，再生成纪要。 |
+| `document_generation` | PRD、架构、运营、客户确认表等正式文档。 |
+| `document_revision` | 根据正文和评论上下文修订已有文档。 |
+| `multi_source_synthesis` | 多文件、多音频、多链接合成。 |
+| `unsupported` | 图片、视频或未接入能力，返回明确 unsupported。 |
+
+长任务会写入 `state.json`、`run.metrics.json`、`run-manifest.json`、`agent-output.json`、`publish.json`、`reply.json` 和 `sanitized-trajectory.json`，方便复盘和排错。
+
+## 数据与隐私边界
+
+默认策略：
+
+- 原始音频、视频、base64 media 不外发。
+- ASR 后的 transcript/evidence 文本可用于 DeepSeek/Xiaomi 语义生成和复核。
+- 长 transcript/full evidence 不直接塞进主 prompt，先进入 Source Context / offload。
+- retrieval 和 memory 只保存 pointer、hash、bounded preview、summary、sourceRun，不保存完整原文。
+- Hermes 只读取 sanitized trajectory，不持有飞书、Rokid 或模型服务凭据。
+
+本地数据治理方案见 [assigment agent wiki/14-local-data-storage-cache-backend.md](assigment%20agent%20wiki/14-local-data-storage-cache-backend.md)。
+
+## Hermes Sidecar
+
+Hermes 是只读学习侧车。它读取脱敏 trajectory，输出：
+
+- retrospective
+- memory proposals
+- prompt/skill patch proposals
+- eval cases
+- Hermes wiki candidate
+
+运行示例：
 
 ```bash
 python3 hermes-learning-sidecar/sidecar.py \
@@ -376,14 +280,46 @@ python3 hermes-learning-sidecar/sidecar.py \
   --out /tmp/meeting-agent-sidecar-output
 ```
 
-## Security stance
+或者读取一个真实 run 的脱敏产物：
 
-- No Hermes runtime receives Feishu/Rokid tokens.
-- Feishu operations use the official `lark-cli` directly through `feishu_cli`;
-  do not commit CLI credentials, tokens, cookies, or app secrets.
-- Optional confirmation checkpoints can be used when requested, but there is no
-  custom Feishu approval store or default dry-run layer.
-- Long-term memory stores stable preferences, project facts, and process
-  lessons only. Raw meeting content is not long-term memory.
-- Known compromised dependency versions, including `mistralai==2.4.6`, are
-  explicitly blocked in the dependency policy.
+```bash
+python3 hermes-learning-sidecar/sidecar.py \
+  --run-dir runtime-runs/feishu-agent/runs/<runId> \
+  --out /tmp/meeting-agent-sidecar-output
+```
+
+Hermes 不直接修改生产 prompt、skill 或 runtime 配置。
+
+## 文档入口
+
+建议先读：
+
+- [项目总计划](assigment%20agent%20wiki/00-plan.md)
+- [PRD](assigment%20agent%20wiki/01-prd.md)
+- [架构文档](assigment%20agent%20wiki/02-agent-architecture.md)
+- [当前项目架构与代码同步状态](assigment%20agent%20wiki/11-current-project-architecture.md)
+- [项目复盘索引](assigment%20agent%20wiki/retrospective/README.md)
+
+开发问题记录在：
+
+- [issues](assigment%20agent%20wiki/issues/README.md)
+- [开发问题与修复专项复盘](assigment%20agent%20wiki/retrospective/04-development-issue-resolution-retrospective.md)
+
+## 安全原则
+
+- 不提交真实 `.env.local`。
+- 不提交 Feishu App Secret、CLI session、cookie、模型 API key。
+- 不提交本地模型权重、运行产物、原始音视频、完整转写或模型响应。
+- 不把原始会议内容写入长期记忆。
+- 不让 Hermes 持有高权限凭据或直接改生产系统。
+- 依赖策略显式阻断已知高风险版本，例如 `mistralai==2.4.6`。
+
+## 当前状态
+
+这个仓库适合作为项目源码、架构文档和复盘资料的协作基线。真实运行仍需要在本机补齐：
+
+- `.env.local` 模型配置。
+- 本地 ASR 模型和服务。
+- 官方 `lark-cli` 登录态。
+- 飞书应用事件、附件、Drive、Markdown、Wiki 权限。
+- 可选 Docker/Redis 本地 worker。
