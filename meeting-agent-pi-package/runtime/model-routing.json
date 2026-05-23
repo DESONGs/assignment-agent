@@ -1,0 +1,81 @@
+{
+  "version": "runtime-model-routing-v1",
+  "defaultPolicy": {
+    "automaticFallback": true,
+    "silentFallbackAllowed": false,
+    "recordArtifact": "model-route.json",
+    "blockedWhen": [
+      "no_candidate_model_available",
+      "privacy_boundary_unsatisfied",
+      "user_requires_exact_model",
+      "manual_or_blocked_candidate_selected"
+    ]
+  },
+  "routes": [
+    {
+      "taskType": "fast_draft",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-flash", "strength": "fast" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "draft" },
+        { "provider": "manual", "model": "blocked-with-actionable-error", "strength": "blocked" }
+      ]
+    },
+    {
+      "taskType": "deep_draft",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-pro", "strength": "deep" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "deep-fallback" },
+        { "provider": "manual", "model": "blocked-with-actionable-error", "strength": "blocked" }
+      ]
+    },
+    {
+      "taskType": "meeting_minutes",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-pro", "strength": "deep" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "deep-fallback" },
+        { "provider": "manual", "model": "blocked-with-actionable-error", "strength": "blocked" }
+      ]
+    },
+    {
+      "taskType": "document_shard_fast",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-flash", "strength": "fast" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "draft" }
+      ]
+    },
+    {
+      "taskType": "document_shard_deep",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-pro", "strength": "deep" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "deep-fallback" }
+      ]
+    },
+    {
+      "taskType": "main_draft",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-flash", "strength": "fast" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "strong-review" },
+        { "provider": "manual", "model": "blocked-with-actionable-error", "strength": "blocked" }
+      ]
+    },
+    {
+      "taskType": "qa_gate",
+      "primary": { "provider": "rules", "model": "deterministic-gate", "strength": "deterministic" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "review" }
+      ]
+    },
+    {
+      "taskType": "feishu_readiness",
+      "primary": { "provider": "rules", "model": "deterministic-readiness", "strength": "deterministic" },
+      "fallbacks": []
+    },
+    {
+      "taskType": "document_shard",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-flash", "strength": "fast" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "draft" }
+      ]
+    }
+  ]
+}

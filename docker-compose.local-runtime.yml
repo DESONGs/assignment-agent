@@ -1,0 +1,60 @@
+services:
+  runtime-queue:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${LOCAL_DOCKER_REDIS_PORT:-6379}:6379"
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
+
+  pi-document-worker:
+    build:
+      context: .
+      dockerfile: docker/local-runtime/Dockerfile.document-worker
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      - runtime-queue
+    restart: unless-stopped
+    cpus: "4.0"
+    mem_limit: 8g
+    environment:
+      LOCAL_DOCKER_WORKSPACE_ROOT: /workspace
+      FEISHU_AGENT_DOCUMENT_WORKER_MODE: host
+      FEISHU_AGENT_DOCKER_QUEUE_HOST: runtime-queue
+      FEISHU_AGENT_DOCKER_QUEUE_PORT: "6379"
+      FEISHU_AGENT_DOCKER_QUEUE_NAME: pi:document-worker:jobs
+      FEISHU_AGENT_DOCUMENT_WORKER_CONCURRENCY: "2"
+      FEISHU_AGENT_LONG_DOCUMENT_JOB_TIMEOUT_MS: ${FEISHU_AGENT_LONG_DOCUMENT_JOB_TIMEOUT_MS:-7200000}
+      FEISHU_AGENT_DOCUMENT_WORKER_TIMEOUT_MS: ${FEISHU_AGENT_DOCUMENT_WORKER_TIMEOUT_MS:-1800000}
+      FEISHU_AGENT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS: ${FEISHU_AGENT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS:-30000}
+      FEISHU_AGENT_DOCUMENT_QUALITY_MODE: ${FEISHU_AGENT_DOCUMENT_QUALITY_MODE:-stable}
+      FEISHU_AGENT_DOCUMENT_WORKER_MAX_ATTEMPTS_PER_UNIT: ${FEISHU_AGENT_DOCUMENT_WORKER_MAX_ATTEMPTS_PER_UNIT:-3}
+      FEISHU_AGENT_DOCUMENT_WORKER_MAX_RETRY_UNITS: ${FEISHU_AGENT_DOCUMENT_WORKER_MAX_RETRY_UNITS:-12}
+      FEISHU_AGENT_DOCKER_RESULT_TTL_SECONDS: "3600"
+      FEISHU_AGENT_PIPELINE_MOCK_MODEL: ${FEISHU_AGENT_PIPELINE_MOCK_MODEL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      XIAOMI_TOKEN_PLAN_SGP_API_KEY: ${XIAOMI_TOKEN_PLAN_SGP_API_KEY:-}
+      XIAOMI_BASE_URL: ${XIAOMI_BASE_URL:-}
+      PI_PROVIDER: ${PI_PROVIDER:-}
+      PI_MODEL: ${PI_MODEL:-}
+
+  hermes-worker:
+    image: python:3.12-slim
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      - runtime-queue
+    restart: unless-stopped
+    cpus: "1.0"
+    mem_limit: 1g
+    environment:
+      LOCAL_DOCKER_WORKSPACE_ROOT: /workspace
+      HERMES_QUEUE_HOST: runtime-queue
+      HERMES_QUEUE_PORT: "6379"
+      HERMES_QUEUE_NAME: pi:hermes-worker:jobs
+      HERMES_WIKI_AUTO_PUBLISH: "0"
+    command: ["python3", "hermes-learning-sidecar/hermes_queue_worker.py"]

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/policy-gate.schema.json",
+  "title": "Agentic Office Policy Gate Decision",
+  "type": "object",
+  "required": ["status", "actionIntent", "reasons", "requiredUserConfirmation"],
+  "properties": {
+    "schemaVersion": { "const": "policy-gate-v1" },
+    "status": { "enum": ["pass", "needs_confirmation", "blocked"] },
+    "actionIntent": {
+      "enum": [
+        "read",
+        "draft",
+        "write_private",
+        "publish_customer_visible",
+        "notify_people",
+        "mutate_calendar",
+        "assign_task",
+        "external_web",
+        "install_dependency",
+        "persist_memory",
+        "delete"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "requiredUserConfirmation": { "type": "boolean" },
+    "safeAlternative": { "type": ["string", "null"] },
+    "capabilityId": { "type": "string" },
+    "audience": { "type": "string" },
+    "payloadClass": { "type": "string" },
+    "riskLevel": { "enum": ["low", "medium", "high"] },
+    "sourceRecordRequired": { "type": "boolean" },
+    "evaluatedAt": { "type": "string" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "rawSecretsReturned": { "const": false },
+    "rawTranscriptIncluded": { "const": false },
+    "feishuInbound": { "type": "boolean" },
+    "explicitUserRequest": { "type": "boolean" },
+    "userRequestedAction": { "type": "boolean" },
+    "destructiveAction": { "type": "boolean" },
+    "modifyExistingDocument": { "type": "boolean" },
+    "targetSpecified": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

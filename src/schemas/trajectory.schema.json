@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.meeting-agent/schemas/trajectory.schema.json",
+  "title": "Sanitized Meeting Agent Trajectory",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "createdAt",
+    "privacy",
+    "task",
+    "inputs",
+    "outputs",
+    "decisions",
+    "qualitySignals"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "0.1.0"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "privacy": {
+      "type": "object",
+      "required": [
+        "rawMeetingContentIncluded",
+        "tokensIncluded",
+        "redactionLevel"
+      ],
+      "properties": {
+        "rawMeetingContentIncluded": {
+          "type": "boolean",
+          "const": false
+        },
+        "tokensIncluded": {
+          "type": "boolean",
+          "const": false
+        },
+        "redactionLevel": {
+          "type": "string",
+          "enum": [
+            "metadata-only",
+            "summary-only",
+            "safe-excerpts"
+          ]
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": [
+        "title",
+        "requestedOutputs"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "requestedOutputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "source",
+          "privacy"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "privacy": {
+            "type": "string"
+          },
+          "hashSha256": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "status"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "qualityNotes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "decision",
+          "reason",
+          "evidence"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "qualitySignals": {
+      "type": "object",
+      "properties": {
+        "evidenceCoverage": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ]
+        },
+        "privacyFindings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missingInputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "runSummary": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

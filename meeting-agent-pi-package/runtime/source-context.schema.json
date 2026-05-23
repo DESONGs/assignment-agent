@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/source-context.schema.json",
+  "title": "Runtime Source Context Plane",
+  "type": "object",
+  "required": ["schemaVersion", "contextPlane", "runId", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "retrievalPlanPath", "workUnits", "gate", "documentIdentity", "outputContract", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "source-context-v1/context-manifest" },
+    "contextPlane": { "const": "runtime-context-plane-v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "operation": { "enum": ["create_document", "document_revision", "meeting_minutes", "multi_source_synthesis"] },
+    "requestedDocuments": { "type": "array", "items": { "type": "string" } },
+    "sourceRecordsPath": { "type": "string", "minLength": 1 },
+    "sourceSegmentsPath": { "type": "string", "minLength": 1 },
+    "sourceStructurePath": { "type": "string", "minLength": 1 },
+    "retrievalPlanPath": { "type": "string", "minLength": 1 },
+    "gatePath": { "type": "string" },
+    "sourceCount": { "type": "integer", "minimum": 0 },
+    "segmentCount": { "type": "integer", "minimum": 0 },
+    "sourceStructureSummary": {
+      "type": "object",
+      "required": ["blockCount", "tableBlockCount", "rawHtmlTableCount", "markdownTableCount"],
+      "properties": {
+        "blockCount": { "type": "integer", "minimum": 0 },
+        "headingCount": { "type": "integer", "minimum": 0 },
+        "tableBlockCount": { "type": "integer", "minimum": 0 },
+        "rawHtmlTableCount": { "type": "integer", "minimum": 0 },
+        "markdownTableCount": { "type": "integer", "minimum": 0 },
+        "commentAnchorCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "documentIdentity": {
+      "type": "object",
+      "required": ["normalizedTitleBase", "confidence", "basis", "titleByDocType"],
+      "properties": {
+        "projectName": { "type": ["string", "null"] },
+        "subject": { "type": ["string", "null"] },
+        "sourceTitle": { "type": ["string", "null"] },
+        "normalizedTitleBase": { "type": ["string", "null"] },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "basis": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "titleByDocType": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "outputContract": {
+      "type": "object",
+      "required": ["schemaVersion", "outputContractVersion", "titlePolicy", "markdownPolicy", "publishBlockingRules"],
+      "properties": {
+        "schemaVersion": { "const": "document-output-contract-v1" },
+        "outputContractVersion": { "const": "document-output-contract-v1" },
+        "titlePolicy": { "type": "object" },
+        "markdownPolicy": { "type": "object" },
+        "publishBlockingRules": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "workUnitCount": { "type": "integer", "minimum": 0 },
+    "contextPackCount": { "type": "integer", "minimum": 0 },
+    "budgetPolicy": {
+      "type": "object",
+      "required": ["sectionPromptHardCapChars", "evidenceHardCapChars", "deterministicRetrieval", "vectorStoreUsed"],
+      "properties": {
+        "sectionPromptHardCapChars": { "type": "integer", "maximum": 24000 },
+        "evidenceHardCapChars": { "type": "integer", "maximum": 12000 },
+        "segmentTargetChars": { "type": "integer" },
+        "segmentMaxChars": { "type": "integer" },
+        "deterministicRetrieval": { "const": true },
+        "vectorStoreUsed": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "workUnits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["workUnitId", "docType", "sections", "contextPackRef", "contextPackId", "contextPackHash", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "evidenceBudgetChars", "retrievalReasons", "outputContractVersion", "documentIdentityConfidence"],
+        "properties": {
+          "workUnitId": { "type": "string", "minLength": 1 },
+          "docType": { "type": "string", "minLength": 1 },
+          "sections": { "type": "array", "items": { "type": "string" } },
+          "contextPackRef": { "type": "string", "minLength": 1 },
+          "contextPackId": { "type": "string", "minLength": 1 },
+          "contextPackHash": { "type": "string", "minLength": 1 },
+          "sourceSegmentIds": { "type": "array", "items": { "type": "string" } },
+          "sourceBlockIds": { "type": "array", "items": { "type": "string" } },
+          "tableBlockCount": { "type": "integer", "minimum": 0 },
+          "promptBudgetChars": { "type": "integer", "maximum": 24000 },
+          "evidenceBudgetChars": { "type": "integer", "maximum": 12000 },
+          "retrievalReasons": { "type": "array", "items": { "type": "string" } },
+          "outputContractVersion": { "const": "document-output-contract-v1" },
+          "documentIdentityConfidence": { "enum": ["high", "medium", "low"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "gate": {
+      "type": "object",
+      "required": ["schemaVersion", "status", "reason", "missingOrStaleInputs", "rawSecretsReturned"],
+      "properties": {
+        "schemaVersion": { "const": "context-gate-result-v1" },
+        "status": { "enum": ["pass", "needs_fix", "blocked"] },
+        "reason": { "type": "string" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "missingOrStaleInputs": { "type": "array", "items": { "type": "string" } },
+        "rawSecretsReturned": { "const": false },
+        "rawMediaExternalUpload": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false },
+    "fullRawContentIncluded": { "const": false }
+  },
+  "additionalProperties": true
+}

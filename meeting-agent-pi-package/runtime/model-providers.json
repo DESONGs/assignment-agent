@@ -1,0 +1,48 @@
+{
+  "version": "runtime-model-providers-v1",
+  "providers": [
+    {
+      "provider": "deepseek",
+      "protocol": "openai-chat-completions",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "baseUrlEnv": "DEEPSEEK_BASE_URL",
+      "defaultBaseUrl": "https://api.deepseek.com",
+      "chatCompletionsPath": "/chat/completions",
+      "requiredEnv": ["DEEPSEEK_API_KEY"],
+      "allowedModels": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
+      "supportsFileInput": false,
+      "supportsTextFallback": true,
+      "requestBodyReturned": false,
+      "rawSecretsReturned": false
+    },
+    {
+      "provider": "xiaomi",
+      "protocol": "openai-chat-completions",
+      "apiKeyEnv": "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+      "baseUrlEnv": "XIAOMI_BASE_URL",
+      "defaultBaseUrl": null,
+      "chatCompletionsPath": "/chat/completions",
+      "requiredEnv": ["XIAOMI_TOKEN_PLAN_SGP_API_KEY", "XIAOMI_BASE_URL"],
+      "allowedModels": ["mimo-v2.5-pro"],
+      "supportsFileInput": false,
+      "supportsTextFallback": true,
+      "requestBodyReturned": false,
+      "rawSecretsReturned": false,
+      "notes": "Xiaomi endpoint is not hardcoded; XIAOMI_BASE_URL is required."
+    },
+    {
+      "provider": "mock",
+      "protocol": "mock",
+      "apiKeyEnv": null,
+      "baseUrlEnv": null,
+      "defaultBaseUrl": null,
+      "chatCompletionsPath": null,
+      "requiredEnv": [],
+      "allowedModels": ["mock-document-worker"],
+      "supportsFileInput": false,
+      "supportsTextFallback": true,
+      "requestBodyReturned": false,
+      "rawSecretsReturned": false
+    }
+  ]
+}

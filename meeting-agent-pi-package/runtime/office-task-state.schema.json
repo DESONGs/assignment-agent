@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/office-task-state.schema.json",
+  "title": "Office Task State Machine",
+  "type": "object",
+  "required": ["schemaVersion", "taskId", "channel", "status", "steps", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "office-task-state-v1" },
+    "taskId": { "type": "string" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "status": {
+      "enum": ["received", "accepted", "planning", "waiting_input", "processing", "qa_review", "publishing", "completed", "needs_fix", "unsupported", "failed", "cancelled", "blocked"]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "at"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "enum": ["pending", "running", "completed", "needs_fix", "blocked", "failed", "skipped"] },
+          "at": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "rawMediaExternalUpload": { "const": false },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,122 @@
+{
+  "$schema": "execution-profiles.schema.json",
+  "version": "execution-profiles-v1",
+  "profiles": {
+    "fast_answer": {
+      "runnerEligible": true,
+      "pipeline": "fast_answer",
+      "routeTaskType": "fast_draft",
+      "reasoningDepth": "fast",
+      "requiredStages": ["model_route", "model_generate_text", "reply"],
+      "skipStages": ["planner_envelope", "document_workers", "qa_gate", "policy_gate", "publish", "local_asr"],
+      "publishDocuments": false,
+      "qaGate": false,
+      "policyGate": false,
+      "documentWorkers": false,
+      "localAsr": "never",
+      "rawMediaExternalUpload": false
+    },
+    "file_summary": {
+      "runnerEligible": true,
+      "pipeline": "file_summary",
+      "routeTaskType": "fast_draft",
+      "reasoningDepth": "fast",
+      "requiredStages": ["file_context", "model_route", "model_generate_text", "reply"],
+      "skipStages": ["planner_envelope", "document_workers", "qa_gate", "policy_gate", "publish", "local_asr"],
+      "publishDocuments": false,
+      "qaGate": false,
+      "policyGate": false,
+      "documentWorkers": false,
+      "localAsr": "never",
+      "rawMediaExternalUpload": false,
+      "contextPolicy": {
+        "maxSources": 6,
+        "previewCharsPerSource": 4000,
+        "extractedSliceChars": 5000,
+        "maxExtractedSlicesPerSource": 2,
+        "maxPromptChars": 30000
+      }
+    },
+    "audio_minutes": {
+      "runnerEligible": true,
+      "pipeline": "full_document",
+      "routeTaskType": "meeting_minutes",
+      "reasoningDepth": "deep",
+      "requiredStages": ["audio_normalize", "local_asr", "evidence_pack", "prompt_registry", "document_workers", "meeting_minutes", "qa_gate", "policy_gate", "publish"],
+      "skipStages": ["direct_answer"],
+      "publishDocuments": true,
+      "qaGate": true,
+      "policyGate": true,
+      "documentWorkers": true,
+      "localAsr": "when_required",
+      "rawMediaExternalUpload": false
+    },
+    "document_generation": {
+      "runnerEligible": true,
+      "pipeline": "full_document",
+      "routeTaskType": "document_shard",
+      "reasoningDepth": "deep",
+      "requiredStages": ["evidence_pack", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"],
+      "skipStages": ["local_asr_unless_required", "direct_answer"],
+      "publishDocuments": true,
+      "qaGate": true,
+      "policyGate": true,
+      "documentWorkers": true,
+      "localAsr": "when_required",
+      "rawMediaExternalUpload": false
+    },
+    "document_revision": {
+      "runnerEligible": true,
+      "pipeline": "full_document",
+      "routeTaskType": "document_shard",
+      "reasoningDepth": "deep",
+      "operation": "document_revision",
+      "requiredStages": ["file_context", "review_context", "evidence_pack", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"],
+      "skipStages": ["local_asr_unless_required", "direct_answer"],
+      "publishDocuments": true,
+      "qaGate": true,
+      "policyGate": true,
+      "documentWorkers": true,
+      "localAsr": "when_required",
+      "rawMediaExternalUpload": false
+    },
+    "multi_source_synthesis": {
+      "runnerEligible": true,
+      "pipeline": "full_document",
+      "routeTaskType": "document_shard",
+      "reasoningDepth": "deep",
+      "requiredStages": ["source_map", "evidence_pack", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"],
+      "skipStages": ["local_asr_unless_required", "direct_answer"],
+      "publishDocuments": true,
+      "qaGate": true,
+      "policyGate": true,
+      "documentWorkers": true,
+      "localAsr": "when_required",
+      "rawMediaExternalUpload": false
+    },
+    "publish_only": {
+      "runnerEligible": false,
+      "pipeline": "immediate",
+      "requiredStages": ["policy_gate", "publish"],
+      "skipStages": ["model_route", "model_generate_text", "document_workers", "qa_gate", "local_asr"],
+      "publishDocuments": true,
+      "qaGate": false,
+      "policyGate": false,
+      "documentWorkers": false,
+      "localAsr": "never",
+      "rawMediaExternalUpload": false
+    },
+    "unsupported": {
+      "runnerEligible": false,
+      "pipeline": "immediate",
+      "requiredStages": ["immediate_response", "reply"],
+      "skipStages": ["model_route", "model_generate_text", "document_workers", "qa_gate", "policy_gate", "publish", "local_asr"],
+      "publishDocuments": false,
+      "qaGate": false,
+      "policyGate": false,
+      "documentWorkers": false,
+      "localAsr": "never",
+      "rawMediaExternalUpload": false
+    }
+  }
+}

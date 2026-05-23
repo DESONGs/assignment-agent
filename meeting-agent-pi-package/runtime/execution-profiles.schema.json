@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/execution-profiles.schema.json",
+  "title": "Execution Profiles",
+  "type": "object",
+  "required": ["version", "profiles"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": "execution-profiles-v1" },
+    "profiles": {
+      "type": "object",
+      "required": [
+        "fast_answer",
+        "file_summary",
+        "audio_minutes",
+        "document_generation",
+        "document_revision",
+        "multi_source_synthesis",
+        "publish_only",
+        "unsupported"
+      ],
+      "properties": {
+        "fast_answer": { "$ref": "#/$defs/profile" },
+        "file_summary": { "$ref": "#/$defs/profile" },
+        "audio_minutes": { "$ref": "#/$defs/profile" },
+        "document_generation": { "$ref": "#/$defs/profile" },
+        "document_revision": { "$ref": "#/$defs/profile" },
+        "multi_source_synthesis": { "$ref": "#/$defs/profile" },
+        "publish_only": { "$ref": "#/$defs/profile" },
+        "unsupported": { "$ref": "#/$defs/profile" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "required": ["runnerEligible", "pipeline", "publishDocuments", "qaGate", "policyGate", "documentWorkers", "localAsr", "rawMediaExternalUpload"],
+      "properties": {
+        "runnerEligible": { "type": "boolean" },
+        "pipeline": { "enum": ["fast_answer", "file_summary", "full_document", "immediate"] },
+        "routeTaskType": { "type": "string" },
+        "reasoningDepth": { "enum": ["fast", "deep"] },
+        "operation": { "const": "document_revision" },
+        "requiredStages": { "type": "array", "items": { "type": "string" } },
+        "skipStages": { "type": "array", "items": { "type": "string" } },
+        "publishDocuments": { "type": "boolean" },
+        "qaGate": { "type": "boolean" },
+        "policyGate": { "type": "boolean" },
+        "documentWorkers": { "type": "boolean" },
+        "localAsr": { "enum": ["never", "when_required"] },
+        "rawMediaExternalUpload": { "const": false },
+        "contextPolicy": {
+          "type": "object",
+          "properties": {
+            "maxSources": { "type": "integer", "minimum": 1 },
+            "previewCharsPerSource": { "type": "integer", "minimum": 0 },
+            "extractedSliceChars": { "type": "integer", "minimum": 0 },
+            "maxExtractedSlicesPerSource": { "type": "integer", "minimum": 0 },
+            "maxPromptChars": { "type": "integer", "minimum": 1000 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

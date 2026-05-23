@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/model-providers.schema.json",
+  "title": "Meeting Agent Model Providers",
+  "type": "object",
+  "required": ["version", "providers"],
+  "properties": {
+    "version": { "type": "string" },
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider", "protocol", "apiKeyEnv", "baseUrlEnv", "defaultBaseUrl", "chatCompletionsPath", "requiredEnv", "requestBodyReturned"],
+        "properties": {
+          "provider": { "type": "string" },
+          "protocol": { "enum": ["openai-chat-completions", "mock"] },
+          "apiKeyEnv": { "type": ["string", "null"] },
+          "baseUrlEnv": { "type": ["string", "null"] },
+          "defaultBaseUrl": { "type": ["string", "null"] },
+          "chatCompletionsPath": { "type": ["string", "null"] },
+          "requiredEnv": { "type": "array", "items": { "type": "string" } },
+          "allowedModels": { "type": "array", "items": { "type": "string" } },
+          "supportsFileInput": { "type": "boolean" },
+          "supportsTextFallback": { "type": "boolean" },
+          "requestBodyReturned": { "const": false },
+          "rawSecretsReturned": { "const": false }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

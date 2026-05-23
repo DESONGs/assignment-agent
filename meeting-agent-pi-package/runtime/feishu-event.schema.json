@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/feishu-event.schema.json",
+  "title": "Feishu Agent Normalized Event",
+  "type": "object",
+  "required": ["schemaVersion", "eventId", "eventType", "receivedAt", "message", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "feishu-event-v1" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "eventType": { "type": "string" },
+    "source": { "enum": ["lark-cli-event-consume", "sdk-gateway", "sdk-long-connection", "fixture", "stdin", "handler-direct"] },
+    "receivedAt": { "type": "string" },
+    "message": {
+      "type": "object",
+      "required": ["messageId", "chatId", "msgType"],
+      "properties": {
+        "messageId": { "type": "string" },
+        "chatId": { "type": "string" },
+        "chatType": { "type": ["string", "null"] },
+        "msgType": { "type": "string" },
+        "rootId": { "type": ["string", "null"] },
+        "parentId": { "type": ["string", "null"] },
+        "threadId": { "type": ["string", "null"] },
+        "createTime": { "type": ["string", "number", "null"] },
+        "text": { "type": "string" },
+        "contentPreview": { "type": "string" },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["resourceType", "fileKey"],
+            "properties": {
+              "resourceType": { "enum": ["file", "image", "audio", "video", "unknown"] },
+              "fileKey": { "type": "string" },
+              "name": { "type": "string" },
+              "localPath": { "type": "string" },
+              "mimeType": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "sender": {
+      "type": "object",
+      "properties": {
+        "senderType": { "type": ["string", "null"] },
+        "senderId": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "rawEventStored": { "type": "boolean" },
+    "rawEventPath": { "type": ["string", "null"] },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}

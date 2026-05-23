@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/feishu-task.schema.json",
+  "title": "Feishu Agent Task",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "status", "sourceEvent", "requestedAt", "executionMode", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "feishu-task-v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["accepted", "running", "completed", "needs_fix", "blocked", "failed"] },
+    "sourceEvent": { "$ref": "feishu-event.schema.json" },
+    "requestedAt": { "type": "string" },
+    "executionMode": { "enum": ["mock", "execute"] },
+    "publishMode": { "enum": ["dry-run", "live"] },
+    "replyMode": { "enum": ["dry-run", "live", "silent"] },
+    "taskIntent": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "const": "task-intent-v1" },
+        "taskType": { "type": "string" },
+        "requestedDocuments": { "type": "array", "items": { "type": "string" } },
+        "hasAttachments": { "type": "boolean" },
+        "hasFileContexts": { "type": "boolean" },
+        "requiresLocalAsr": { "type": "boolean" },
+        "sourcePreparation": {
+          "type": "object",
+          "properties": {
+            "sourceSetMode": { "enum": ["consolidated"] },
+            "inputModalities": { "type": "array", "items": { "type": "string" } },
+            "sourceReferences": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+            "requiresLocalAsr": { "type": "boolean" },
+            "requestedDocuments": { "type": "array", "items": { "type": "string" } },
+            "conflictPolicy": { "const": "source_attribution" }
+          },
+          "additionalProperties": true
+        },
+        "responseMode": { "type": "string" },
+        "executionProfile": {
+          "enum": [
+            "unsupported",
+            "fast_answer",
+            "file_summary",
+            "audio_minutes",
+            "document_generation",
+            "document_revision",
+            "multi_source_synthesis",
+            "publish_only"
+          ]
+        },
+        "reasoningDepth": { "enum": ["fast", "deep"] },
+        "requiredStages": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "skipStages": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "operation": { "type": "string" },
+        "missingInput": { "type": "string" },
+        "unsupportedReason": { "type": "string" },
+        "immediateResponse": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "resourceType": { "type": "string" },
+          "fileKey": { "type": "string" },
+          "name": { "type": "string" },
+          "localPath": { "type": "string" },
+          "downloadStatus": { "enum": ["skipped", "downloaded", "blocked", "failed", "local"] },
+          "sha256": { "type": ["string", "null"] },
+          "sizeBytes": { "type": ["number", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "fileContexts": { "$ref": "file-context.schema.json" },
+    "fileContextPath": { "type": ["string", "null"] },
+    "agentTaskPath": { "type": ["string", "null"] },
+    "agentOutputPath": { "type": ["string", "null"] },
+    "qaGatePath": { "type": ["string", "null"] },
+    "policyGatePath": { "type": ["string", "null"] },
+    "publishPath": { "type": ["string", "null"] },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "additionalProperties": true
+}

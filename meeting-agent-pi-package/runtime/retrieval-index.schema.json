@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/retrieval-index.schema.json",
+  "title": "Retrieval Index",
+  "type": "object",
+  "required": ["schemaVersion", "version", "indexId", "channel", "context", "sourceRun", "pointerOnly", "entries", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "retrieval-index-v1" },
+    "version": { "type": "string", "minLength": 1 },
+    "indexId": { "type": "string", "minLength": 1 },
+    "generatedAt": { "type": "string" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "context": { "$ref": "office-context.schema.json#/properties/context" },
+    "sourceRun": { "$ref": "office-context.schema.json#/properties/sourceRun" },
+    "pointerOnly": { "const": true },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["entryId", "objectType", "channel", "context", "sourceRun", "version", "summary", "pointers", "pointerOnly"],
+        "properties": {
+          "entryId": { "type": "string", "minLength": 1 },
+          "objectType": {
+            "enum": ["document", "file", "meeting", "transcript_summary", "task", "calendar_event", "contact", "project", "customer", "preference", "run"]
+          },
+          "channel": { "enum": ["feishu", "wechat", "local"] },
+          "context": { "$ref": "office-context.schema.json#/properties/context" },
+          "sourceRun": { "$ref": "office-context.schema.json#/properties/sourceRun" },
+          "version": { "type": "string", "minLength": 1 },
+          "summary": { "type": "string" },
+          "boundedPreview": { "type": ["string", "null"] },
+          "pointers": {
+            "type": "object",
+            "required": ["artifactPointer"],
+            "properties": {
+              "artifactPointer": { "type": "string", "minLength": 1 },
+              "summaryPointer": { "type": ["string", "null"] },
+              "metadataPointer": { "type": ["string", "null"] },
+              "embeddingPointer": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          },
+          "pointerOnly": { "const": true }
+        },
+        "additionalProperties": true
+      }
+    },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "additionalProperties": true
+}

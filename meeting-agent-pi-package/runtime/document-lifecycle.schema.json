@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/document-lifecycle.schema.json",
+  "title": "Document Lifecycle",
+  "type": "object",
+  "required": ["schemaVersion", "version", "documentId", "channel", "context", "sourceRun", "currentState", "lifecycleEvents", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "document-lifecycle-v1" },
+    "version": { "type": "string", "minLength": 1 },
+    "documentId": { "type": "string", "minLength": 1 },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "context": { "$ref": "office-context.schema.json#/properties/context" },
+    "sourceRun": { "$ref": "office-context.schema.json#/properties/sourceRun" },
+    "currentState": {
+      "enum": ["draft", "review", "published", "revision_requested", "blocked", "archived"]
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "targetType": { "enum": ["explicit_file_token", "generated_artifact", "local_artifact", "none"] },
+        "fileToken": { "type": ["string", "null"] },
+        "artifactPointer": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "lifecycleEvents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["eventId", "action", "sourceRun", "version", "artifactPointer"],
+        "properties": {
+          "eventId": { "type": "string", "minLength": 1 },
+          "action": {
+            "enum": ["created", "revised", "section_rewritten", "diff_generated", "comment_added", "template_applied", "merged", "published", "blocked"]
+          },
+          "sourceRun": { "$ref": "office-context.schema.json#/properties/sourceRun" },
+          "version": { "type": "string", "minLength": 1 },
+          "artifactPointer": { "type": "string", "minLength": 1 },
+          "diffPointer": { "type": ["string", "null"] },
+          "summaryPointer": { "type": ["string", "null"] },
+          "requiresConfirmation": { "type": "boolean" },
+          "confirmationStatus": { "enum": ["not_required", "pending", "confirmed", "denied"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "destructiveActionsAllowed": { "const": false },
+    "rawSecretsReturned": { "const": false },
+    "rawMediaExternalUpload": { "const": false }
+  },
+  "additionalProperties": true
+}

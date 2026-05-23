@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/im-event.schema.json",
+  "title": "Unified IM Event",
+  "type": "object",
+  "required": ["schemaVersion", "channel", "actor", "conversation", "messageText", "attachments", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "im-event-v1" },
+    "channel": { "enum": ["feishu", "wechat", "local"] },
+    "actor": { "type": "object", "additionalProperties": true },
+    "conversation": { "type": "object", "additionalProperties": true },
+    "messageText": { "type": "string" },
+    "attachments": { "type": "array", "items": { "$ref": "im-attachment.schema.json" } },
+    "parentMessage": { "type": ["object", "null"], "additionalProperties": true },
+    "rootMessage": { "type": ["object", "null"], "additionalProperties": true },
+    "replyTarget": { "type": ["object", "null"], "additionalProperties": true },
+    "permissions": { "type": "object", "additionalProperties": true },
+    "timestamp": { "type": "string" },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/package-audit.schema.json",
+  "title": "Third-party Package Audit",
+  "type": "object",
+  "required": [
+    "packageName",
+    "version",
+    "source",
+    "readmeSummary",
+    "dependencies",
+    "envReads",
+    "networkAccess",
+    "fileWrites",
+    "promptInjectionRisk",
+    "credentialHandling",
+    "disableOrUninstallPath",
+    "decision"
+  ],
+  "properties": {
+    "packageName": { "type": "string" },
+    "version": { "type": "string" },
+    "source": { "type": "string" },
+    "readmeSummary": { "type": "string" },
+    "dependencies": { "type": "array", "items": { "type": "string" } },
+    "envReads": { "type": "array", "items": { "type": "string" } },
+    "networkAccess": { "type": "array", "items": { "type": "string" } },
+    "fileWrites": { "type": "array", "items": { "type": "string" } },
+    "promptInjectionRisk": { "type": "string" },
+    "credentialHandling": { "type": "string" },
+    "disableOrUninstallPath": { "type": "string" },
+    "decision": { "enum": ["candidate", "blocked", "passed_smoke_lazy_enable"] },
+    "defaultLoad": { "const": false },
+    "rawSecretsReturned": { "const": false },
+    "rawTranscriptIncluded": { "const": false }
+  },
+  "additionalProperties": true
+}

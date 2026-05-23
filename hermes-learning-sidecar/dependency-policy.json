@@ -1,0 +1,16 @@
+{
+  "policyVersion": "0.1.0",
+  "blockedPythonPackages": [
+    {
+      "name": "mistralai",
+      "version": "2.4.6",
+      "reason": "Known compromised PyPI release; do not install or execute."
+    }
+  ],
+  "rules": [
+    "Pin all runtime dependencies in the sidecar environment.",
+    "Run the sidecar without Feishu or Rokid credentials in the environment.",
+    "Treat sidecar output as proposal only; never auto-apply to production skills.",
+    "Prefer offline/local analysis of sanitized trajectory artifacts."
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/file-context.schema.json",
+  "title": "Feishu File Context Batch",
+  "type": "object",
+  "required": ["schemaVersion", "contexts", "rawSecretsReturned"],
+  "properties": {
+    "schemaVersion": { "const": "file-context-batch-v1" },
+    "generatedAt": { "type": "string" },
+    "contextPolicy": {
+      "type": "object",
+      "properties": {
+        "userUploadedTextFilesMayBeSentToLlm": { "const": true },
+        "rawAudioVideoExternalUploadAllowed": { "const": false },
+        "progressiveDisclosureRequired": { "const": true },
+        "progressiveDisclosureOwner": { "const": "source-context-runtime" },
+        "progressiveDisclosureStatus": { "const": "requires_source_context_runtime" },
+        "fullLargeFileInlineInMetricsOrLogs": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "contexts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["schemaVersion", "fileName", "fileType", "contextMode", "disclosurePlan", "status", "rawSecretsReturned"],
+        "properties": {
+          "schemaVersion": { "const": "file-context-v1" },
+          "fileId": { "type": ["string", "null"] },
+          "fileName": { "type": "string" },
+          "mimeType": { "type": ["string", "null"] },
+          "fileType": { "type": "string" },
+          "extension": { "type": "string" },
+          "sourcePath": { "type": ["string", "null"] },
+          "sourceMessageId": { "type": ["string", "null"] },
+          "taskPrompt": { "type": "string" },
+          "externalLlmAllowed": { "type": "boolean" },
+          "nativeFileInputSupported": { "type": "boolean" },
+          "contextMode": { "type": "string" },
+          "disclosurePlan": { "type": "object", "additionalProperties": true },
+          "progressiveDisclosureStatus": { "const": "requires_source_context_runtime" },
+          "extraction": { "type": ["object", "null"], "additionalProperties": true },
+          "extractedTextPath": { "type": ["string", "null"] },
+          "contextPreview": { "type": "string" },
+          "status": { "enum": ["ready", "pending", "unsupported"] },
+          "unsupportedReason": { "type": ["string", "null"] },
+          "rawSecretsReturned": { "const": false }
+        },
+        "additionalProperties": true
+      }
+    },
+    "rawSecretsReturned": { "const": false }
+  },
+  "additionalProperties": true
+}
