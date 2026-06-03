@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -80,7 +81,30 @@ def health(url: str, timeout: float, bearer_token: str | None) -> dict:
     except urllib.error.HTTPError as exc:
         return {"ok": False, "status": "down", "httpStatus": exc.code, "error": str(exc), "url": url}
     except Exception as exc:
+        if tcp_reachable(url, min(timeout, 1.0)):
+            return {
+                "ok": True,
+                "status": "busy",
+                "httpStatus": 0,
+                "error": str(exc),
+                "reason": "health_timeout_while_tcp_reachable",
+                "busy": True,
+                "url": url,
+            }
         return {"ok": False, "status": "down", "httpStatus": 0, "error": str(exc), "url": url}
+
+
+def tcp_reachable(url: str, timeout: float) -> bool:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def status(args: argparse.Namespace) -> dict:
@@ -104,7 +128,9 @@ def start(args: argparse.Namespace) -> dict:
     current = status(args)
     if current["health"]["ok"]:
         return {**current, "status": "ok", "reason": "already_running"}
-    python_bin = Path(args.python).expanduser().resolve()
+    # Keep the venv executable path instead of resolving its symlink target.
+    # CPython uses argv[0] near pyvenv.cfg to activate the venv's site-packages.
+    python_bin = Path(args.python).expanduser()
     service = Path(args.service).expanduser().resolve()
     model_dir = Path(args.model_dir).expanduser().resolve()
     if not python_bin.exists():

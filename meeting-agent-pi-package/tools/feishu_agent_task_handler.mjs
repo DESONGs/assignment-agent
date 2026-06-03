@@ -13,7 +13,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { appendFileSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -41,6 +41,11 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8788;
 const ATTACHMENT_CACHE_VERSION = "feishu-attachment-cache-v1";
 const ATTACHMENT_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+const DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES = ["bot", "user"];
+const DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS = 2;
+const DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 900000;
+const AUDIO_MIN_READY_BYTES = 4096;
+const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]);
 const FEISHU_FILE_URL_PATTERN = /https?:\/\/(?:[\w.-]+\.)?(?:feishu|larksuite)\.cn\/(file|doc|docx|sheets?|wiki|base|mindnotes|slides)\/([A-Za-z0-9_-]{8,})(?:[/?#][^\s<>"']*)?/gi;
 const FEISHU_TOKEN_PATTERN = /(?:file[_\s-]?token|obj[_\s-]?token)\s*[:=：]\s*([A-Za-z0-9_-]{8,})/gi;
 const FEISHU_BRIDGE_CLI_MARKERS = [
@@ -138,6 +143,67 @@ function classifyFeishuFileReadFailure(stderr) {
     requiredScopes: [],
     userMessage: "当前文件无法读取，请重新上传或确认权限。",
   };
+}
+
+function classifyFeishuImResourceDownloadFailure(result) {
+  const text = `${result?.stderr ?? ""}\n${result?.stdout ?? ""}\n${result?.error ?? ""}`;
+  if (result?.exitCode === 127 || /command not found|ENOENT|lark-cli not found/i.test(text)) {
+    return {
+      failureClass: "lark_cli_unavailable",
+      retryable: false,
+      userMessage: "本机 lark-cli 不可用，无法下载飞书音频附件。",
+    };
+  }
+  if (result?.timedOut || /context deadline exceeded|deadline exceeded|timeout|timed out|i\/o timeout|ECONNRESET|ETIMEDOUT/i.test(text)) {
+    return {
+      failureClass: "feishu_resource_download_timeout",
+      retryable: true,
+      userMessage: "飞书附件下载超时，已尝试重试和本机用户身份兜底但仍未拿到本地文件。",
+    };
+  }
+  if (/access denied|permission|forbidden|HTTP 403|no permission|not authorized/i.test(text)) {
+    return {
+      failureClass: "feishu_resource_permission_denied",
+      retryable: true,
+      userMessage: "当前身份没有该音频附件读取权限，已尝试机器人和本机用户身份。",
+    };
+  }
+  if (/not found|resource.*missing|file.*missing|HTTP 404|invalid file[_-]?key/i.test(text)) {
+    return {
+      failureClass: "feishu_resource_not_found",
+      retryable: false,
+      userMessage: "飞书没有返回可下载的音频附件资源，可能文件已失效或 fileKey 不可用。",
+    };
+  }
+  return {
+    failureClass: "attachment_download_failed",
+    retryable: true,
+    userMessage: "音频附件下载失败，已尝试复用本地缓存和重试下载但仍未拿到本地文件。",
+  };
+}
+
+function parseAttachmentDownloadIdentities(value) {
+  const raw = String(value ?? "").trim();
+  const values = raw
+    ? raw.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean)
+    : DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES;
+  const allowed = new Set(["bot", "user"]);
+  const output = [];
+  for (const identity of values) {
+    if (!allowed.has(identity) || output.includes(identity)) continue;
+    output.push(identity);
+  }
+  return output.length > 0 ? output : DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES;
+}
+
+function attachmentDownloadMaxAttempts(options = {}) {
+  const value = Number(options.attachmentDownloadMaxAttempts ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS ?? DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS);
+  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS;
+}
+
+function attachmentDownloadTimeoutMs(options = {}) {
+  const value = Number(options.attachmentDownloadTimeoutMs ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS ?? DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? Math.max(30000, Math.floor(value)) : DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS;
 }
 
 function sanitize(value, key = "") {
@@ -435,6 +501,11 @@ function eventTimestampMs(event) {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+function attachmentCacheTimestampMs(event) {
+  const received = Date.parse(event.receivedAt ?? "");
+  return Number.isFinite(received) ? received : eventTimestampMs(event);
+}
+
 function threadKey(event) {
   return String(event.message?.threadId ?? event.message?.rootId ?? event.message?.parentId ?? event.threadId ?? event.rootId ?? event.parentId ?? "");
 }
@@ -620,7 +691,7 @@ function rememberAttachments(root, event) {
     chatId: event.message?.chatId ?? "",
     senderId: stableSenderId(event.sender),
     threadKey: threadKey(event),
-    timestampMs: eventTimestampMs(event),
+    timestampMs: attachmentCacheTimestampMs(event),
     receivedAt: event.receivedAt ?? nowIso(),
     attachments: attachments.map((item) => attachmentWithSource(event, item)),
   };
@@ -633,12 +704,37 @@ function rememberDownloadedAttachments(root, event, attachments) {
   const reusable = (attachments ?? [])
     .filter((item) => item?.localPath && existsSync(resolve(item.localPath)))
     .filter((item) => !["failed", "blocked", "skipped"].includes(item.downloadStatus));
-  if (reusable.length === 0) return { status: "skipped", reason: "no_reusable_downloaded_attachments" };
+  if (reusable.length === 0) {
+    const failed = (attachments ?? []).filter((item) => ["failed", "blocked"].includes(item?.downloadStatus));
+    if (failed.length === 0) return { status: "skipped", reason: "no_reusable_downloaded_attachments" };
+    const failedForCache = failed.map((item) => {
+      const { localPath, sourcePath, ...rest } = item;
+      return {
+        ...rest,
+        attemptedLocalPath: localPath ?? sourcePath ?? null,
+        sourceReady: false,
+        lastFailureClass: item.failureClass ?? item.reason ?? "attachment_download_failed",
+        lastDownloadAttempts: item.downloadAttempts ?? [],
+      };
+    });
+    const cached = rememberAttachments(root, {
+      ...event,
+      message: {
+        ...event.message,
+        attachments: failedForCache,
+      },
+    });
+    return {
+      ...cached,
+      reason: "cached_failed_attachment_metadata",
+      sourceReady: false,
+    };
+  }
   return rememberAttachments(root, {
     ...event,
     message: {
       ...event.message,
-      attachments: reusable,
+      attachments: reusable.map((item) => ({ ...item, sourceReady: true })),
     },
   });
 }
@@ -656,7 +752,7 @@ function resolveCachedAttachments(root, event) {
   }
   const expectedKinds = expectedCacheKindsForText(text);
   const cache = loadAttachmentCache(root);
-  const currentTs = eventTimestampMs(event);
+  const currentTs = attachmentCacheTimestampMs(event);
   const senderId = stableSenderId(event.sender);
   const currentThread = threadKey(event);
   const chatId = event.message?.chatId ?? "";
@@ -830,6 +926,58 @@ function existingNonEmptyFile(path) {
   }
 }
 
+function audioSignatureStatus(path) {
+  const resolved = resolve(path);
+  const stat = existingNonEmptyFile(resolved);
+  if (!stat) return { ok: false, reason: "audio_file_missing" };
+  const ext = fileExtension({ localPath: resolved });
+  if (!AUDIO_EXTENSIONS.has(ext)) return { ok: true, reason: "non_audio_extension", sizeBytes: stat.size, extension: ext };
+  if (stat.size < AUDIO_MIN_READY_BYTES) {
+    return { ok: false, reason: "audio_file_too_small", sizeBytes: stat.size, minBytes: AUDIO_MIN_READY_BYTES, extension: ext };
+  }
+  let head = Buffer.alloc(0);
+  try {
+    head = readFileSync(resolved).subarray(0, 64);
+  } catch (error) {
+    return { ok: false, reason: "audio_header_read_failed", error: redactString(error instanceof Error ? error.message : String(error)), extension: ext };
+  }
+  let ok = false;
+  if (ext === ".wav") ok = head.length >= 12 && head.subarray(0, 4).equals(Buffer.from("RIFF")) && head.subarray(8, 12).equals(Buffer.from("WAVE"));
+  else if (ext === ".mp3") ok = head.subarray(0, 3).equals(Buffer.from("ID3")) || (head.length >= 2 && head[0] === 0xFF && (head[1] & 0xE0) === 0xE0);
+  else if (ext === ".m4a") ok = head.subarray(0, 16).includes(Buffer.from("ftyp"));
+  else if (ext === ".flac") ok = head.subarray(0, 4).equals(Buffer.from("fLaC"));
+  else if (ext === ".ogg") ok = head.subarray(0, 4).equals(Buffer.from("OggS"));
+  else if (ext === ".aac") ok = head.length >= 2 && head[0] === 0xFF && (head[1] & 0xF0) === 0xF0;
+  return { ok, reason: ok ? null : "invalid_audio_header", sizeBytes: stat.size, extension: ext };
+}
+
+function reusableLocalSourceReady(path, kind) {
+  const stat = existingNonEmptyFile(path);
+  if (!stat) return { ok: false, reason: "local_source_file_missing" };
+  if (kind !== "audio") return { ok: true, stat };
+  const validation = audioSignatureStatus(path);
+  return validation.ok ? { ok: true, stat, audioValidation: validation } : { ok: false, reason: validation.reason, audioValidation: validation };
+}
+
+function discardInvalidCurrentRunAttachment(path, kind, attachmentsDir) {
+  const resolved = resolve(path);
+  if (!isInside(attachmentsDir, resolved)) return null;
+  const stat = existingNonEmptyFile(resolved);
+  if (!stat) return null;
+  const ready = reusableLocalSourceReady(resolved, kind);
+  if (ready.ok) return null;
+  try {
+    unlinkSync(resolved);
+    return { status: "removed_invalid_current_run_attachment", path: resolved, reason: ready.reason, audioValidation: ready.audioValidation ?? null };
+  } catch (error) {
+    return { status: "remove_invalid_current_run_attachment_failed", path: resolved, reason: ready.reason, error: redactString(error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+function isFixtureLikeRunId(runId) {
+  return /fixture|mock|dry[_-]?run|fake[_-]?lark/i.test(String(runId ?? ""));
+}
+
 function attachmentTargetPath(paths, attachment, index, fallbackName) {
   const rawName = attachment.name || attachment.fileName || (attachment.localPath ? basename(attachment.localPath) : "") || fallbackName || attachment.fileKey || `attachment_${index}`;
   return resolve(workspaceDir, relative(workspaceDir, join(paths.attachmentsDir, safeSegment(rawName))));
@@ -857,8 +1005,10 @@ function linkOrCopyLocalAttachment(sourcePath, targetPath) {
 }
 
 async function buildLocalReuseAttachment(attachment, fields) {
-  const stat = existingNonEmptyFile(fields.localPath);
-  if (!stat) return null;
+  const sourceReady = reusableLocalSourceReady(fields.localPath, fields.resourceType);
+  if (!sourceReady.ok) {
+    return null;
+  }
   return {
     ...attachment,
     resourceType: fields.resourceType,
@@ -868,11 +1018,323 @@ async function buildLocalReuseAttachment(attachment, fields) {
     downloadStatus: fields.downloadStatus,
     reason: fields.reason,
     linkMode: fields.linkMode ?? null,
+    reuseSource: fields.reuseSource ?? undefined,
+    downloadAs: fields.downloadAs ?? undefined,
+    failureClass: fields.failureClass ?? undefined,
+    retryable: fields.retryable ?? undefined,
+    downloadAttempts: fields.downloadAttempts ?? undefined,
     exitCode: fields.exitCode ?? undefined,
     stderrTail: fields.stderrTail ?? undefined,
+    audioValidation: sourceReady.audioValidation ?? undefined,
     sha256: await sha256File(fields.localPath),
-    sizeBytes: stat.size,
+    sizeBytes: sourceReady.stat.size,
     rawMediaExternalUpload: false,
+  };
+}
+
+function resolveWorkspaceCandidatePath(value) {
+  if (!value) return null;
+  const resolved = isAbsolute(String(value)) ? resolve(String(value)) : resolve(workspaceDir, String(value));
+  if (!isInside(workspaceDir, resolved)) return null;
+  return existingNonEmptyFile(resolved) ? resolved : null;
+}
+
+function sourceMessageIdForAttachment(attachment, eventMessageId) {
+  return attachment.messageId ?? attachment.sourceMessageId ?? attachment.cacheSourceMessageId ?? eventMessageId ?? "";
+}
+
+function storeKindForAttachment(kind) {
+  return ["audio", "video", "image"].includes(kind) ? "raw_media" : "raw_document_file";
+}
+
+async function findRuntimeStoreAttachmentCandidate(attachment, kind, name, sourceMessageId, options = {}) {
+  if (!runtimeStoreCliPath || !existsSync(runtimeStoreCliPath)) return null;
+  const fileKey = attachment.fileKey ?? attachment.file_key ?? "";
+  const args = [
+    runtimeStoreCliPath,
+    "find-source",
+    "--kind",
+    storeKindForAttachment(kind),
+    "--limit",
+    "10",
+  ];
+  if (fileKey) args.push("--file-key", String(fileKey));
+  if (sourceMessageId) args.push("--source-message-id", String(sourceMessageId));
+  if (name) args.push("--name", String(name));
+  if (attachment.sha256) args.push("--sha256", String(attachment.sha256));
+  const cli = await runCommand("python3", args, { timeoutMs: options.runtimeStoreTimeoutMs ?? 120000 });
+  if (cli.exitCode !== 0) {
+    return {
+      status: "blocked",
+      reason: "runtime_store_find_source_failed",
+      exitCode: cli.exitCode,
+      stderrTail: redactString(cli.stderr).slice(-1000),
+    };
+  }
+  const result = parseJsonOutput(cli.stdout);
+  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  for (const candidate of candidates) {
+    if (isFixtureLikeRunId(candidate.runId)) continue;
+    const candidatePath = resolveWorkspaceCandidatePath(candidate.availablePath ?? candidate.objectPath ?? candidate.path);
+    if (!candidatePath) continue;
+    if (!reusableLocalSourceReady(candidatePath, kind).ok) continue;
+    return {
+      status: "found",
+      reason: "runtime_store_ready_source",
+      localPath: candidatePath,
+      source: {
+        type: "runtime_store",
+        artifactId: candidate.artifactId,
+        runId: candidate.runId,
+        objectPath: candidate.objectPath ?? null,
+        path: candidate.path ?? null,
+        sha256: candidate.sha256 ?? null,
+        sizeBytes: candidate.sizeBytes ?? null,
+      },
+    };
+  }
+  return { status: "missing", reason: "runtime_store_source_not_found" };
+}
+
+function attachmentNamesMatch(attachment, indexedAttachment, expectedName) {
+  const expected = safeSegment(expectedName ?? attachment.name ?? attachment.fileName ?? "");
+  const values = [
+    indexedAttachment.name,
+    indexedAttachment.fileName,
+    indexedAttachment.localPath ? basename(indexedAttachment.localPath) : "",
+    indexedAttachment.sourcePath ? basename(indexedAttachment.sourcePath) : "",
+  ].filter(Boolean).map((value) => safeSegment(value));
+  return !expected || values.includes(expected);
+}
+
+function attachmentSourceMatches(attachment, indexedAttachment, expectedName) {
+  const fileKey = attachment.fileKey ?? attachment.file_key ?? "";
+  const sourceMessageId = attachment.sourceMessageId ?? attachment.messageId ?? attachment.cacheSourceMessageId ?? "";
+  const indexedFileKey = indexedAttachment.fileKey ?? indexedAttachment.file_key ?? "";
+  const indexedSourceMessageId = indexedAttachment.sourceMessageId ?? indexedAttachment.messageId ?? indexedAttachment.cacheSourceMessageId ?? "";
+  const fileKeyMatches = fileKey && indexedFileKey && String(fileKey) === String(indexedFileKey);
+  const messageMatches = sourceMessageId && indexedSourceMessageId && String(sourceMessageId) === String(indexedSourceMessageId);
+  return fileKeyMatches || messageMatches || (attachmentNamesMatch(attachment, indexedAttachment, expectedName) && (fileKey || sourceMessageId));
+}
+
+function findHistoricalRunAttachmentCandidate(attachment, paths, kind, expectedName, options = {}) {
+  const runsRoot = dirname(paths.runDir);
+  if (!isInside(workspaceDir, runsRoot) || !existsSync(runsRoot)) return { status: "missing", reason: "historical_runs_root_missing" };
+  const limit = Number(options.historicalAttachmentScanLimit ?? process.env.FEISHU_AGENT_ATTACHMENT_HISTORY_SCAN_LIMIT ?? 500);
+  const runDirs = readdirSync(runsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const path = join(runsRoot, entry.name);
+      let mtimeMs = 0;
+      try {
+        mtimeMs = statSync(path).mtimeMs;
+      } catch {
+        mtimeMs = 0;
+      }
+      return { path, mtimeMs };
+    })
+    .filter((entry) => resolve(entry.path) !== resolve(paths.runDir))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, Math.max(1, limit));
+  for (const runDir of runDirs) {
+    if (isFixtureLikeRunId(basename(runDir.path))) continue;
+    const taskPath = join(runDir.path, "task.json");
+    if (!existsSync(taskPath)) continue;
+    let task = null;
+    try {
+      task = JSON.parse(readFileSync(taskPath, "utf8"));
+    } catch {
+      continue;
+    }
+    const candidates = Array.isArray(task?.attachments) ? task.attachments : [];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      if (attachmentKind(candidate) !== kind) continue;
+      if (["failed", "blocked", "skipped"].includes(candidate.downloadStatus)) continue;
+      if (!attachmentSourceMatches(attachment, candidate, expectedName)) continue;
+      const candidatePath = resolveWorkspaceCandidatePath(candidate.localPath ?? candidate.sourcePath);
+      if (!candidatePath) continue;
+      if (!reusableLocalSourceReady(candidatePath, kind).ok) continue;
+      return {
+        status: "found",
+        reason: "historical_run_ready_source",
+        localPath: candidatePath,
+        source: {
+          type: "historical_run",
+          runId: task.runId ?? basename(runDir.path),
+          downloadStatus: candidate.downloadStatus ?? null,
+          sha256: candidate.sha256 ?? null,
+          sizeBytes: candidate.sizeBytes ?? null,
+        },
+      };
+    }
+  }
+  return { status: "missing", reason: "historical_run_source_not_found" };
+}
+
+async function materializeReusableAttachment(attachment, fields) {
+  const targetPath = fields.targetPath;
+  const linkMode = linkOrCopyLocalAttachment(fields.sourcePath, targetPath);
+  return await buildLocalReuseAttachment(attachment, {
+    resourceType: fields.resourceType,
+    fileKey: fields.fileKey,
+    name: safeSegment(basename(targetPath) || fields.name),
+    localPath: targetPath,
+    downloadStatus: fields.downloadStatus,
+    reason: fields.reason,
+    linkMode,
+    reuseSource: fields.reuseSource,
+    downloadAs: fields.downloadAs,
+    failureClass: fields.failureClass,
+    retryable: fields.retryable,
+    downloadAttempts: fields.downloadAttempts,
+    exitCode: fields.exitCode,
+    stderrTail: fields.stderrTail,
+  });
+}
+
+async function findAndMaterializeReusableAttachment(attachment, paths, options) {
+  const { kind, name, fileKey, sourceMessageId, index, targetPath, afterCliFailure } = options;
+  const storeCandidate = await findRuntimeStoreAttachmentCandidate(attachment, kind, name, sourceMessageId, options);
+  if (storeCandidate?.status === "found") {
+    return await materializeReusableAttachment(attachment, {
+      resourceType: kind,
+      fileKey,
+      name,
+      targetPath,
+      sourcePath: storeCandidate.localPath,
+      downloadStatus: "local_reuse_store_artifact",
+      reason: afterCliFailure ? "runtime_store_reuse_after_cli_failed" : "runtime_store_ready_source_reused_before_download",
+      reuseSource: storeCandidate.source,
+      downloadAs: options.downloadAs,
+      failureClass: options.failureClass,
+      retryable: options.retryable,
+      downloadAttempts: options.downloadAttempts,
+      exitCode: options.exitCode,
+      stderrTail: options.stderrTail,
+    });
+  }
+  const historicalCandidate = findHistoricalRunAttachmentCandidate(attachment, paths, kind, name, options);
+  if (historicalCandidate?.status === "found") {
+    return await materializeReusableAttachment(attachment, {
+      resourceType: kind,
+      fileKey,
+      name,
+      targetPath,
+      sourcePath: historicalCandidate.localPath,
+      downloadStatus: "local_reuse_historical_run_artifact",
+      reason: afterCliFailure ? "historical_run_reuse_after_cli_failed" : "historical_run_ready_source_reused_before_download",
+      reuseSource: historicalCandidate.source,
+      downloadAs: options.downloadAs,
+      failureClass: options.failureClass,
+      retryable: options.retryable,
+      downloadAttempts: options.downloadAttempts,
+      exitCode: options.exitCode,
+      stderrTail: options.stderrTail,
+    });
+  }
+  return {
+    status: "missing",
+    reason: "long_term_attachment_reuse_miss",
+    index,
+    storeReason: storeCandidate?.reason ?? null,
+    historicalReason: historicalCandidate?.reason ?? null,
+  };
+}
+
+async function downloadImResourceWithRetry({ sourceMessageId, fileKey, kind, outputRelative, localPath, options }) {
+  const identities = parseAttachmentDownloadIdentities(options.attachmentDownloadAs);
+  const maxAttempts = attachmentDownloadMaxAttempts(options);
+  const timeoutMs = attachmentDownloadTimeoutMs(options);
+  const attempts = [];
+  let lastFailure = {
+    failureClass: "attachment_download_failed",
+    retryable: true,
+    userMessage: "音频附件下载失败，已尝试复用本地缓存和重试下载但仍未拿到本地文件。",
+  };
+  for (const identity of identities) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const command = ["im", "+messages-resources-download", "--as", identity, "--message-id", sourceMessageId, "--file-key", fileKey, "--type", kind === "image" ? "image" : "file", "--output", outputRelative];
+      const cli = await runCommand("lark-cli", command, { timeoutMs });
+      const stat = existingNonEmptyFile(localPath);
+      const ready = stat ? reusableLocalSourceReady(localPath, kind) : null;
+      if (cli.exitCode === 0 && stat && ready?.ok) {
+        const failureAttemptCount = attempts.length;
+        attempts.push({
+          identity,
+          attempt,
+          exitCode: cli.exitCode,
+          signal: cli.signal ?? null,
+          timedOut: Boolean(cli.timedOut),
+          failureClass: null,
+          retryable: false,
+          status: "success",
+          stderrTail: redactString(cli.stderr).slice(-1200),
+        });
+        return {
+          ok: true,
+          identity,
+          attempts,
+          cli,
+          command,
+          status: identity === identities[0] && failureAttemptCount === 0
+            ? "downloaded"
+            : identity === identities[0]
+              ? "downloaded_after_retry"
+              : "downloaded_identity_fallback",
+          reason: identity === identities[0] && failureAttemptCount === 0
+            ? null
+            : identity === identities[0]
+              ? "download_retry_after_previous_failure"
+              : "download_identity_fallback_after_previous_failure",
+          stat,
+        };
+      }
+      lastFailure = cli.exitCode === 0 && stat && ready && !ready.ok
+        ? {
+            failureClass: ready.reason ?? "downloaded_audio_validation_failed",
+            retryable: true,
+            userMessage: "音频附件已下载但本地文件校验失败，正在重新尝试获取。",
+          }
+        : classifyFeishuImResourceDownloadFailure(cli);
+      attempts.push({
+        identity,
+        attempt,
+        exitCode: cli.exitCode,
+        signal: cli.signal ?? null,
+        timedOut: Boolean(cli.timedOut),
+        failureClass: lastFailure.failureClass,
+        retryable: lastFailure.retryable,
+        status: "failed",
+        audioValidation: ready?.audioValidation ?? null,
+        stderrTail: redactString(cli.stderr).slice(-1200),
+      });
+      if (stat && ready?.ok) {
+        return {
+          ok: false,
+          identity,
+          attempts,
+          cli,
+          command,
+          existingTargetReady: true,
+          failure: lastFailure,
+          stat,
+        };
+      }
+      if (!lastFailure.retryable) break;
+    }
+  }
+  return {
+    ok: false,
+    identity: attempts.at(-1)?.identity ?? identities[0] ?? "bot",
+    attempts,
+    failure: lastFailure,
+    cli: {
+      exitCode: attempts.at(-1)?.exitCode ?? 1,
+      stderr: attempts.at(-1)?.stderrTail ?? "",
+      timedOut: attempts.at(-1)?.timedOut ?? false,
+      signal: attempts.at(-1)?.signal ?? null,
+    },
   };
 }
 
@@ -886,7 +1348,7 @@ async function downloadAttachments(event, paths, options) {
     const name = safeSegment(attachment.name || attachment.fileKey || `attachment_${index}`);
     const fileKey = attachment.fileKey ?? attachment.file_key ?? "";
     const sourceMessageId = attachment.messageId ?? attachment.sourceMessageId ?? attachment.cacheSourceMessageId ?? messageId;
-    if (attachment.localPath) {
+    if (attachment.localPath && attachment.sourceReady !== false && !["failed", "blocked"].includes(attachment.downloadStatus)) {
       const sourceLocalPath = resolve(attachment.localPath);
       const sourceStat = existingNonEmptyFile(sourceLocalPath);
       if (!sourceStat) {
@@ -909,7 +1371,7 @@ async function downloadAttachments(event, paths, options) {
       const currentTarget = existingNonEmptyFile(targetPath);
       const localPath = alreadyInCurrentRun ? sourceLocalPath : targetPath;
       const linkMode = alreadyInCurrentRun ? "same_path" : currentTarget ? "existing_target" : linkOrCopyLocalAttachment(sourceLocalPath, targetPath);
-      results.push(await buildLocalReuseAttachment(attachment, {
+      const cachedReuse = await buildLocalReuseAttachment(attachment, {
         resourceType: kind,
         fileKey,
         name: safeSegment(basename(localPath) || name),
@@ -917,8 +1379,11 @@ async function downloadAttachments(event, paths, options) {
         downloadStatus: alreadyInCurrentRun ? "local" : "local_reuse_cached_attachment",
         reason: alreadyInCurrentRun ? "fixture_or_local_attachment" : "recent_attachment_cache_local_path_reused",
         linkMode,
-      }));
-      continue;
+      });
+      if (cachedReuse) {
+        results.push(cachedReuse);
+        continue;
+      }
     }
     if (attachment.explicitFileReference && attachment.fileToken) {
       const token = String(attachment.fileToken);
@@ -1001,7 +1466,24 @@ async function downloadAttachments(event, paths, options) {
       results.push(currentReuse);
       continue;
     }
+    const discardedInvalidTarget = discardInvalidCurrentRunAttachment(localPath, kind, paths.attachmentsDir);
+    const longTermReuse = await findAndMaterializeReusableAttachment(attachment, paths, {
+      ...options,
+      kind,
+      name,
+      fileKey,
+      sourceMessageId,
+      index,
+      targetPath: localPath,
+      afterCliFailure: false,
+      discardedInvalidTarget,
+    });
+    if (longTermReuse?.localPath) {
+      results.push(longTermReuse);
+      continue;
+    }
     if (options.dryRun) {
+      const plannedIdentities = parseAttachmentDownloadIdentities(options.attachmentDownloadAs);
       results.push({
         ...attachment,
         resourceType: kind,
@@ -1010,7 +1492,8 @@ async function downloadAttachments(event, paths, options) {
         localPath,
         downloadStatus: "skipped",
         reason: "dry_run_download_not_executed",
-        plannedCommand: ["lark-cli", "im", "+messages-resources-download", "--as", "bot", "--message-id", sourceMessageId, "--file-key", fileKey, "--type", kind === "image" ? "image" : "file", "--output", outputRelative],
+        plannedCommand: ["lark-cli", "im", "+messages-resources-download", "--as", plannedIdentities[0], "--message-id", sourceMessageId, "--file-key", fileKey, "--type", kind === "image" ? "image" : "file", "--output", outputRelative],
+        plannedDownloadIdentities: plannedIdentities,
         rawMediaExternalUpload: false,
       });
       continue;
@@ -1019,10 +1502,8 @@ async function downloadAttachments(event, paths, options) {
       results.push({ ...attachment, resourceType: kind, downloadStatus: "blocked", reason: "message_id_or_file_key_missing", rawMediaExternalUpload: false });
       continue;
     }
-    const command = ["im", "+messages-resources-download", "--as", "bot", "--message-id", sourceMessageId, "--file-key", fileKey, "--type", kind === "image" ? "image" : "file", "--output", outputRelative];
-    const cli = await runCommand("lark-cli", command, { timeoutMs: options.cliTimeoutMs });
-    const ok = cli.exitCode === 0 && existsSync(localPath);
-    if (!ok) {
+    const downloaded = await downloadImResourceWithRetry({ sourceMessageId, fileKey, kind, outputRelative, localPath, options });
+    if (!downloaded.ok) {
       const fallbackReuse = await buildLocalReuseAttachment(attachment, {
         resourceType: kind,
         fileKey,
@@ -1031,25 +1512,76 @@ async function downloadAttachments(event, paths, options) {
         downloadStatus: "local_reuse_after_cli_failed",
         reason: "cli_failed_existing_target_reused",
         linkMode: "same_path",
-        exitCode: cli.exitCode,
-        stderrTail: redactString(cli.stderr).slice(-2000),
+        downloadAs: downloaded.identity,
+        failureClass: downloaded.failure?.failureClass,
+        retryable: downloaded.failure?.retryable,
+        downloadAttempts: downloaded.attempts,
+        exitCode: downloaded.cli.exitCode,
+        stderrTail: redactString(downloaded.cli.stderr).slice(-2000),
+      });
+      if (fallbackReuse) {
+        results.push(fallbackReuse);
+        continue;
+      }
+      const postFailureReuse = await findAndMaterializeReusableAttachment(attachment, paths, {
+        ...options,
+        kind,
+        name,
+        fileKey,
+        sourceMessageId,
+        index,
+        targetPath: localPath,
+        afterCliFailure: true,
+        downloadAs: downloaded.identity,
+        failureClass: downloaded.failure?.failureClass,
+        retryable: downloaded.failure?.retryable,
+        downloadAttempts: downloaded.attempts,
+        exitCode: downloaded.cli.exitCode,
+        stderrTail: redactString(downloaded.cli.stderr).slice(-2000),
+      });
+      if (postFailureReuse?.localPath) {
+        results.push(postFailureReuse);
+        continue;
+      }
+    }
+    if (downloaded.existingTargetReady) {
+      const fallbackReuse = await buildLocalReuseAttachment(attachment, {
+        resourceType: kind,
+        fileKey,
+        name,
+        localPath,
+        downloadStatus: "local_reuse_after_cli_failed",
+        reason: "cli_failed_existing_target_reused",
+        linkMode: "same_path",
+        downloadAs: downloaded.identity,
+        failureClass: downloaded.failure?.failureClass,
+        retryable: downloaded.failure?.retryable,
+        downloadAttempts: downloaded.attempts,
+        exitCode: downloaded.cli.exitCode,
+        stderrTail: redactString(downloaded.cli.stderr).slice(-2000),
       });
       if (fallbackReuse) {
         results.push(fallbackReuse);
         continue;
       }
     }
-    const stat = ok ? statSync(localPath) : null;
+    const stat = downloaded.ok ? downloaded.stat : null;
     results.push({
       ...attachment,
       resourceType: kind,
       fileKey,
       name,
       localPath,
-      downloadStatus: ok ? "downloaded" : "failed",
-      exitCode: cli.exitCode,
-      stderrTail: redactString(cli.stderr).slice(-2000),
-      sha256: ok ? await sha256File(localPath) : null,
+      downloadStatus: downloaded.ok ? downloaded.status : "failed",
+      reason: downloaded.ok ? downloaded.reason : downloaded.failure?.failureClass ?? "attachment_download_failed",
+      downloadAs: downloaded.identity,
+      failureClass: downloaded.ok ? null : downloaded.failure?.failureClass ?? "attachment_download_failed",
+      retryable: downloaded.ok ? undefined : downloaded.failure?.retryable ?? true,
+      userMessage: downloaded.ok ? undefined : downloaded.failure?.userMessage,
+      downloadAttempts: downloaded.attempts,
+      exitCode: downloaded.cli.exitCode,
+      stderrTail: redactString(downloaded.cli.stderr).slice(-2000),
+      sha256: downloaded.ok ? await sha256File(localPath) : null,
       sizeBytes: stat?.size ?? null,
       rawMediaExternalUpload: false,
     });
@@ -1181,6 +1713,104 @@ function createImmediateAgentOutput(task) {
     },
     policyGate: { status: "pass", actionIntent: "draft", reasons: ["immediate_handler_response_no_publish"] },
     artifacts: [],
+    rawSecretsReturned: false,
+    rawMediaExternalUpload: false,
+  };
+}
+
+function firstAttachmentDownloadFailure(attachments = []) {
+  return (attachments ?? []).find((item) => item.downloadStatus === "failed" || item.downloadStatus === "blocked") ?? null;
+}
+
+function sourceAcquisitionFailureSummary(reason, attachments = []) {
+  if (reason === "attachment_download_failed") {
+    const failed = firstAttachmentDownloadFailure(attachments);
+    const classified = failed?.failureClass
+      ? { userMessage: failed.userMessage ?? classifyFeishuImResourceDownloadFailure({ stderr: failed.stderrTail, exitCode: failed.exitCode }).userMessage }
+      : failed?.stderrTail
+        ? classifyFeishuImResourceDownloadFailure({ stderr: failed.stderrTail, exitCode: failed.exitCode })
+        : { userMessage: "Feishu 下载超时或网络异常" };
+    const detail = String(classified.userMessage ?? "Feishu 下载超时或网络异常").replace(/[。.\s]+$/u, "");
+    return `音频附件下载失败，暂时无法转写。已尝试复用本地缓存但未命中。失败原因：${detail}。`;
+  }
+  if (reason === "local_source_file_missing") {
+    return "音频本地文件不可读，暂时无法转写。请重新上传音频或稍后重试。";
+  }
+  return "音频 source acquisition 未通过，暂时无法转写。";
+}
+
+function sourceAcquisitionGate(task, attachments, fileContexts) {
+  if (task.taskIntent?.executionProfile !== "audio_minutes" && task.taskIntent?.requiresLocalAsr !== true) {
+    return { status: "pass", reason: "not_audio_minutes" };
+  }
+  const audioAttachments = (attachments ?? []).filter((item) => attachmentKind(item) === "audio");
+  if (audioAttachments.length === 0) return { status: "blocked", reason: "local_source_file_missing", audioAttachmentCount: 0 };
+  const sourceChecks = audioAttachments.map((item) => {
+    const localPath = item.localPath ? resolve(item.localPath) : null;
+    const ready = localPath ? reusableLocalSourceReady(localPath, "audio") : { ok: false, reason: "local_source_file_missing" };
+    return { attachment: item, localPath, ready };
+  });
+  const readable = sourceChecks.filter((item) => item.ready.ok);
+  if (readable.length > 0) return { status: "pass", reason: "audio_sources_ready", audioAttachmentCount: audioAttachments.length, readableAudioCount: readable.length };
+  const failed = audioAttachments.some((item) => item.downloadStatus === "failed" || item.downloadStatus === "blocked");
+  const firstFailure = firstAttachmentDownloadFailure(audioAttachments);
+  const contextStatuses = Array.isArray(fileContexts?.contexts) ? fileContexts.contexts.map((item) => item.status) : [];
+  const firstInvalidSource = sourceChecks.find((item) => item.localPath && !item.ready.ok);
+  return {
+    status: "blocked",
+    reason: failed ? "attachment_download_failed" : "local_source_file_missing",
+    failureClass: firstFailure?.failureClass ?? firstInvalidSource?.ready?.reason ?? (failed ? "attachment_download_failed" : "local_source_file_missing"),
+    retryable: firstFailure?.retryable ?? true,
+    downloadAs: firstFailure?.downloadAs ?? null,
+    downloadAttempts: firstFailure?.downloadAttempts ?? [],
+    failedAttachmentName: firstFailure?.name ?? null,
+    failedFileKey: firstFailure?.fileKey ?? firstFailure?.file_key ?? null,
+    failedSourceMessageId: firstFailure?.sourceMessageId ?? firstFailure?.messageId ?? firstFailure?.cacheSourceMessageId ?? null,
+    audioAttachmentCount: audioAttachments.length,
+    readableAudioCount: 0,
+    attachmentStatuses: audioAttachments.map((item) => item.downloadStatus ?? "unknown"),
+    fileContextStatuses: contextStatuses,
+    audioValidation: firstInvalidSource?.ready?.audioValidation ?? null,
+    rawMediaExternalUpload: false,
+  };
+}
+
+function createSourceAcquisitionBlockedOutput(task, gate, attachments) {
+  const summary = sourceAcquisitionFailureSummary(gate.reason, attachments);
+  const failureClass = gate.failureClass ?? gate.reason;
+  return {
+    status: "blocked",
+    summary,
+    finalFailureReport: {
+      terminalReason: failureClass,
+      sourceAcquisitionReason: gate.reason,
+      failureClass,
+      downloadAs: gate.downloadAs ?? null,
+      downloadAttempts: gate.downloadAttempts ?? [],
+      nextAction: gate.reason === "attachment_download_failed"
+        ? "等待 Feishu 下载恢复后重试，或重新上传音频；如果 bot 下载失败，可由本机 user 登录态兜底。"
+        : "重新上传音频或确认本地 source 文件仍存在。",
+      retryable: gate.retryable ?? true,
+    },
+    documents: [],
+    qaGate: {
+      status: "blocked",
+      publishAllowed: false,
+      issues: [...new Set([gate.reason, failureClass].filter(Boolean))],
+    },
+    policyGate: {
+      status: "pass",
+      actionIntent: "draft",
+      reasons: ["source_acquisition_blocked_before_model_or_publish"],
+    },
+    artifacts: [],
+    details: {
+      ...gate,
+      sourceAcquisitionGate: true,
+      taskType: task.taskIntent?.taskType ?? null,
+      executionProfile: task.taskIntent?.executionProfile ?? null,
+      rawMediaExternalUpload: false,
+    },
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
   };
@@ -1361,6 +1991,9 @@ function extractFeishuFileToken(text) {
 
 function userFacingSummary(task, agentOutput, publish) {
   if (task.taskIntent?.immediateResponse) return task.taskIntent.immediateResponse;
+  if (agentOutput?.details?.sourceAcquisitionGate === true && typeof agentOutput?.summary === "string") {
+    return agentOutput.summary.trim();
+  }
   const finalFailureReport = agentOutput?.details?.finalFailureReport ?? agentOutput?.finalFailureReport ?? null;
   if (finalFailureReport && ["blocked", "failed", "needs_fix"].includes(String(agentOutput?.status ?? ""))) {
     const reason = userFacingFailureReason(finalFailureReport);
@@ -1778,6 +2411,13 @@ function buildHandlerResponseText(task, agentOutput, publish, stateStatus) {
   ) {
     return (summary || "目前音频格式暂不支持自动转码。").slice(0, 3500);
   }
+  if (
+    stateStatus === "blocked"
+    && agentOutput?.details?.sourceAcquisitionGate === true
+    && summary
+  ) {
+    return summary.slice(0, 3500);
+  }
   if (documents.length === 0 && summary && ["direct_answer", "unsupported", "needs_file", "ack_file_cached"].includes(task.taskIntent?.responseMode)) {
     return summary.slice(0, 3500);
   }
@@ -2130,6 +2770,15 @@ async function indexRuntimeStoreRun(paths, options, state, metrics) {
     writeState(paths, state);
     return result;
   }
+  if (!/^(1|true|yes|on)$/i.test(String(process.env.FEISHU_AGENT_INDEX_FIXTURES ?? "")) && (isFixtureLikeRunId(basename(paths.runDir)) || options.dryRun || options.mockAgent)) {
+    const result = { ...baseResult, reason: "runtime_store_fixture_mock_dry_run_index_skipped" };
+    writeJson(paths.runtimeStoreIndexPath, result);
+    addStep(state, "runtime_store_index_run", "skipped", { artifact: paths.runtimeStoreIndexPath, reason: result.reason });
+    appendMetric(metrics, "tool", { name: "runtime_store_index_run", status: "skipped", reason: result.reason });
+    writeRunMetrics(paths, metrics);
+    writeState(paths, state);
+    return result;
+  }
   if (!existsSync(runtimeStoreCliPath)) {
     const result = { ...baseResult, status: "failed", reason: "runtime_store_cli_missing" };
     writeJson(paths.runtimeStoreIndexPath, result);
@@ -2264,7 +2913,7 @@ export async function handleEvent(input, options) {
 
   const fileContexts = await buildFileContexts(event, attachments, paths);
   writeJson(paths.fileContextPath, fileContexts);
-  addStep(state, "file_context_built", fileContexts.contexts.some((item) => item.status === "unsupported") ? "needs_fix" : "completed", { artifact: paths.fileContextPath });
+  addStep(state, "file_context_built", fileContexts.contexts.some((item) => item.status === "unsupported" || item.status === "blocked") ? "needs_fix" : "completed", { artifact: paths.fileContextPath });
   appendMetric(metrics, "tool", {
     name: "file_context_built",
     count: fileContexts.contexts.length,
@@ -2380,10 +3029,22 @@ export async function handleEvent(input, options) {
   };
 
   let agent;
-  if (options.executionMode === "execute" && shouldUseTaskExecutionRunner(task)) {
+  const sourceGate = sourceAcquisitionGate(task, attachments, fileContexts);
+  if (sourceGate.status === "blocked") {
+    const output = createSourceAcquisitionBlockedOutput(task, sourceGate, attachments);
+    writeJson(paths.agentOutputPath, output);
+    await runnerOptions.onStep("source_acquisition_gate", "blocked", {
+      ...sourceGate,
+      artifact: paths.agentOutputPath,
+    });
+    agent = { status: "blocked", output, mode: "source-acquisition-gate", rawSecretsReturned: false };
+  } else {
+    await runnerOptions.onStep("source_acquisition_gate", "completed", sourceGate);
+  }
+  if (!agent && options.executionMode === "execute" && shouldUseTaskExecutionRunner(task)) {
     agent = await runViaLocalDockerDocumentWorker(task, paths, runnerOptions);
     if (!agent) agent = await runTaskExecutionPipeline(task, paths, runnerOptions);
-  } else {
+  } else if (!agent) {
     agent = await runPiAgent(task, paths, options);
   }
   if (!["task-execution-runner", "local-docker-document-worker"].includes(agent.mode)) {
@@ -2478,6 +3139,9 @@ function optionsFromArgs(args) {
     wikiSpaceId: args["wiki-space-id"] ?? process.env.FEISHU_WIKI_SPACE_ID,
     wikiRootNodeToken: args["wiki-root-node-token"] ?? process.env.FEISHU_WIKI_ROOT_NODE_TOKEN,
     cliTimeoutMs: Number(args["cli-timeout-ms"] ?? process.env.FEISHU_AGENT_CLI_TIMEOUT_MS ?? 120000),
+    attachmentDownloadAs: args["attachment-download-as"] ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_AS ?? DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES.join(","),
+    attachmentDownloadMaxAttempts: Number(args["attachment-download-max-attempts"] ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS ?? DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS),
+    attachmentDownloadTimeoutMs: Number(args["attachment-download-timeout-ms"] ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS ?? DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS),
     piTimeoutMs: Number(args["pi-timeout-ms"] ?? process.env.FEISHU_AGENT_PI_TIMEOUT_MS ?? 900000),
     ...(modelTimeoutMs ? { modelTimeoutMs } : {}),
     captureModelStream: !/^(0|false|no|off)$/i.test(String(args["capture-model-stream"] ?? process.env.FEISHU_AGENT_CAPTURE_MODEL_STREAM ?? "1")),

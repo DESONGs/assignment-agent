@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,7 @@ const packageDir = dirname(toolDir);
 const workspaceDir = dirname(packageDir);
 const FILE_CONTEXT_SCHEMA_VERSION = "file-context-v1";
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"]);
+const AUDIO_MIN_READY_BYTES = 4096;
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".avi", ".webm"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".heic"]);
 const SUPPORTED_TEXT_FILE_EXTENSIONS = new Set([
@@ -41,6 +42,39 @@ function nowIso() {
 
 function envFlag(name) {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
+}
+
+function existingNonEmptyFile(path) {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size > 0 ? stat : null;
+  } catch {
+    return null;
+  }
+}
+
+function audioSignatureStatus(path) {
+  const stat = existingNonEmptyFile(path);
+  if (!stat) return { ok: false, reason: "audio_file_missing" };
+  const ext = extname(String(path ?? "")).toLowerCase();
+  if (!AUDIO_EXTENSIONS.has(ext)) return { ok: true, reason: "non_audio_extension", sizeBytes: stat.size, extension: ext };
+  if (stat.size < AUDIO_MIN_READY_BYTES) {
+    return { ok: false, reason: "audio_file_too_small", sizeBytes: stat.size, minBytes: AUDIO_MIN_READY_BYTES, extension: ext };
+  }
+  let head = Buffer.alloc(0);
+  try {
+    head = readFileSync(path).subarray(0, 64);
+  } catch (error) {
+    return { ok: false, reason: "audio_header_read_failed", error: redactString(error instanceof Error ? error.message : String(error)), extension: ext };
+  }
+  let ok = false;
+  if (ext === ".wav") ok = head.length >= 12 && head.subarray(0, 4).equals(Buffer.from("RIFF")) && head.subarray(8, 12).equals(Buffer.from("WAVE"));
+  else if (ext === ".mp3") ok = head.subarray(0, 3).equals(Buffer.from("ID3")) || (head.length >= 2 && head[0] === 0xFF && (head[1] & 0xE0) === 0xE0);
+  else if (ext === ".m4a") ok = head.subarray(0, 16).includes(Buffer.from("ftyp"));
+  else if (ext === ".flac") ok = head.subarray(0, 4).equals(Buffer.from("fLaC"));
+  else if (ext === ".ogg") ok = head.subarray(0, 4).equals(Buffer.from("OggS"));
+  else if (ext === ".aac") ok = head.length >= 2 && head[0] === 0xFF && (head[1] & 0xF0) === 0xF0;
+  return { ok, reason: ok ? null : "invalid_audio_header", sizeBytes: stat.size, extension: ext };
 }
 
 function redactString(value) {
@@ -334,6 +368,31 @@ export async function buildFileContexts(event, attachments, paths, options = {})
     if (kind === "audio") {
       context.contextMode = "local_asr_only";
       context.externalLlmAllowed = false;
+    }
+    if (attachment.downloadStatus === "skipped") {
+      context.status = "pending";
+      context.unsupportedReason = "dry_run_download_not_executed";
+      contexts.push(context);
+      continue;
+    }
+    if (!context.sourcePath || !existingNonEmptyFile(context.sourcePath)) {
+      context.status = "blocked";
+      context.unsupportedReason = ["failed", "blocked"].includes(attachment.downloadStatus)
+        ? "attachment_download_failed"
+        : "local_source_file_missing";
+      context.localSourceReady = false;
+      contexts.push(context);
+      continue;
+    }
+    context.localSourceReady = true;
+    if (kind === "audio") {
+      const audioValidation = audioSignatureStatus(context.sourcePath);
+      context.audioValidation = audioValidation;
+      if (!audioValidation.ok) {
+        context.status = "blocked";
+        context.unsupportedReason = audioValidation.reason ?? "invalid_audio_source";
+        context.localSourceReady = false;
+      }
       contexts.push(context);
       continue;
     }
@@ -343,13 +402,6 @@ export async function buildFileContexts(event, attachments, paths, options = {})
       contexts.push(context);
       continue;
     }
-    if (attachment.downloadStatus === "skipped") {
-      context.status = "pending";
-      context.unsupportedReason = "dry_run_download_not_executed";
-      contexts.push(context);
-      continue;
-    }
-
     const extraction = await extractAttachmentText(attachment);
     context.extraction = {
       status: extraction.status,

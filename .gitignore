@@ -5,6 +5,8 @@
 __pycache__/
 *.pyc
 node_modules/
+.build/
+**/.build/
 
 # Local runtime state and dependency/model caches.
 .pi/

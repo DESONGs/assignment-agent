@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { connect as netConnect } from "node:net";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -535,6 +536,30 @@ function getJson(url, path, timeoutMs, bearerToken) {
   });
 }
 
+function tcpReachable(url, timeoutMs = 1000) {
+  return new Promise((resolveReachable) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      resolveReachable(false);
+      return;
+    }
+    const socket = netConnect({
+      host: parsed.hostname,
+      port: Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)),
+    });
+    const finish = (reachable) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolveReachable(reachable);
+    };
+    socket.setTimeout(timeoutMs, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
 function localAsrServiceCommand(serviceUrl, options = {}) {
   const url = serviceUrl ? new URL(serviceUrl) : new URL("http://127.0.0.1:8765");
   const port = url.port || (url.protocol === "https:" ? "443" : "80");
@@ -562,11 +587,18 @@ async function preflightLocalAsrService(serviceUrl, options = {}) {
   const timeoutMs = Number(options.localAsrHealthTimeoutMs ?? process.env.FEISHU_AGENT_LOCAL_ASR_HEALTH_TIMEOUT_MS ?? 5000);
   const bearerToken = process.env.LOCAL_ASR_BEARER_TOKEN?.trim() || null;
   const health = await getJson(serviceUrl, "/health", timeoutMs, bearerToken);
+  const timedOut = /timed out|timeout/i.test(String(health.error ?? ""));
+  const tcpReachableAfterTimeout = !health.ok && timedOut
+    ? await tcpReachable(serviceUrl, Math.min(timeoutMs, 1000))
+    : false;
   return {
     ...health,
     timeoutMs,
     modelLoaded: Boolean(health.body?.modelLoaded),
     lastStatus: health.body?.lastStatus ?? null,
+    serviceBusy: Boolean(health.body?.busy) || tcpReachableAfterTimeout,
+    healthStatus: tcpReachableAfterTimeout ? "health_timeout_while_tcp_reachable" : health.body?.status ?? null,
+    tcpReachable: tcpReachableAfterTimeout,
   };
 }
 
@@ -719,7 +751,7 @@ async function ensureLocalAsr(task, paths, options, hooks) {
     return blocked;
   }
   const health = await preflightLocalAsrService(serviceUrl, options);
-  if (!health.ok || health.body?.status !== "ok") {
+  if ((!health.ok || health.body?.status !== "ok") && !health.tcpReachable) {
     const blocked = localAsrServiceNotRunning(serviceUrl, {
       healthStatus: "down",
       httpStatus: health.statusCode,
@@ -738,6 +770,10 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   await hooks.onStep?.("local_asr_preflight", "completed", {
     serviceUrl,
     modelLoaded: health.modelLoaded,
+    healthStatus: health.healthStatus ?? health.body?.status ?? null,
+    serviceBusy: health.serviceBusy,
+    healthError: health.error ?? null,
+    tcpReachable: health.tcpReachable,
     lastStatus: health.lastStatus,
     rawMediaExternalUpload: false,
   });

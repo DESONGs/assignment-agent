@@ -78,6 +78,36 @@ Runtime engineering is local-artifact first:
   `toolPlan`, `parallelizableWorkers`, `policyRisks`, `requiredArtifacts`, and
   `stopConditions`; it is an auditable plan for the current goal, not a fixed
   workflow.
+
+## Production Runtime
+
+Use the local runtime supervisor as the production entrypoint for Feishu live
+handling. It manages `feishu-handler` and `feishu-gateway`, checks local ASR,
+and writes machine-readable health under `runtime-runs/_services/supervisor/`.
+Bare `screen` sessions are fallback only.
+
+```bash
+python3 meeting-agent-pi-package/tools/local_runtime_ctl.py start
+python3 meeting-agent-pi-package/tools/local_runtime_ctl.py status
+python3 meeting-agent-pi-package/tools/local_runtime_ctl.py doctor
+```
+
+The default supervisor environment matches the live startup scripts:
+`FEISHU_AGENT_EXEC_MODE=execute`, `FEISHU_AGENT_ASYNC=1`,
+`FEISHU_AGENT_PUBLISH_MODE=live`, `FEISHU_AGENT_REPLY_MODE=live`, and
+`FEISHU_AGENT_PUBLISH_AS=user`. ASR stays Host-owned; the supervisor reports and
+can recover it, but raw audio is still never sent to Docker or external ASR.
+
+Run the unified local CI before production changes:
+
+```bash
+python3 meeting-agent-pi-package/tools/local_ci_check.py
+```
+
+The CI report is written to `runtime-runs/_services/ci/latest.json`. It covers
+workspace validation, Python compile, Node/TypeScript syntax checks, JSON parse,
+Docker compose config with the Docker Desktop CLI fallback, and Swift tests when
+`AgentWorkbench/` exists.
 - `policy-gate` checks action intent boundaries such as
   `publish_customer_visible`, `notify_people`, `mutate_calendar`,
   `assign_task`, `external_web`, `install_dependency`, `persist_memory`, and raw
@@ -321,7 +351,13 @@ inputs may be WAV/MP3/M4A/AAC/FLAC/OGG; the local runtime first writes
 `meeting_transcribe_local_asr` with those local normalized paths. Raw audio is
 never uploaded to DeepSeek or Xiaomi.
 
-Start the service once per work session:
+The production path starts and monitors ASR through `local_runtime_ctl.py`.
+For direct ASR debugging, use the lifecycle helper or the raw service command:
+
+```bash
+python3 meeting-agent-pi-package/tools/local_asr_service_ctl.py status
+python3 meeting-agent-pi-package/tools/local_asr_service_ctl.py start
+```
 
 ```bash
 .venv-qwen3-asr/bin/python meeting-agent-pi-package/tools/local_asr_http_service.py \

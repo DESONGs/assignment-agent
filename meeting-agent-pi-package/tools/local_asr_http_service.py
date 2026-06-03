@@ -3,16 +3,22 @@ import argparse
 import hmac
 import json
 import os
+import queue
 import sys
 import threading
 import time
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 from mlx_qwen3_asr import Session
 from local_asr_core import run_transcription
+
+
+class LocalAsrHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
 
 
 def split_root_values(values: list[str] | None) -> list[str]:
@@ -56,11 +62,33 @@ class LocalAsrState:
         self.session: Session | None = None
         self.model_lock = threading.Lock()
         self.run_lock = threading.Lock()
+        self.worker_jobs: queue.Queue = queue.Queue()
+        self.worker_ready = threading.Event()
+        self.worker_thread = threading.Thread(target=self._worker_loop, name="local-asr-mlx-worker", daemon=True)
+        self.worker_thread.start()
+        self.worker_ready.wait(timeout=5)
         self.started_at = time.time()
         self.last_summary: dict | None = None
         self.last_error: str | None = None
         if preload:
-            self.get_session(self.default_model_dir)
+            self.run_on_worker(lambda: self.get_session(self.default_model_dir))
+
+    def _worker_loop(self) -> None:
+        self.worker_ready.set()
+        while True:
+            fn, result_queue = self.worker_jobs.get()
+            try:
+                result_queue.put((True, fn()))
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+    def run_on_worker(self, fn):
+        result_queue: queue.Queue = queue.Queue(maxsize=1)
+        self.worker_jobs.put((fn, result_queue))
+        ok, value = result_queue.get()
+        if ok:
+            return value
+        raise value
 
     def get_session(self, model_dir: Path) -> Session:
         model_dir = model_dir.expanduser().resolve()
@@ -124,22 +152,13 @@ class LocalAsrState:
             limit_chunks = int(limit_chunks)
 
         with self.run_lock:
-            session = self.get_session(model_dir)
-            summary = run_transcription(
-                paths=[str(p) for p in resolved_paths],
-                meeting_id=meeting_id,
-                meeting_title=payload.get("meetingTitle") or meeting_id,
-                output_dir=resolved_output_dir,
+            summary = self.run_on_worker(lambda: self._transcribe_on_worker(
+                payload=payload,
+                resolved_paths=resolved_paths,
+                resolved_output_dir=resolved_output_dir,
                 model_dir=model_dir,
-                chunk_seconds=float(payload.get("chunkSeconds") or 30.0),
-                language=payload.get("language") or "Chinese",
-                context=payload.get("context") or "会议录音，中文为主，可能夹杂英文术语、人名、产品名。",
-                max_new_tokens=int(payload.get("maxNewTokens") or 512),
-                source=payload.get("source") or "local",
-                privacy=payload.get("privacy") or "private",
                 limit_chunks=limit_chunks,
-                session=session,
-            )
+            ))
             self.last_summary = summary
             self.last_error = None
             return {
@@ -149,6 +168,31 @@ class LocalAsrState:
                 "externalAudioUpload": False,
                 "summary": summary,
             }
+
+    def _transcribe_on_worker(
+        self,
+        payload: dict,
+        resolved_paths: list[Path],
+        resolved_output_dir: Path,
+        model_dir: Path,
+        limit_chunks: int | None,
+    ) -> dict:
+        session = self.get_session(model_dir)
+        return run_transcription(
+            paths=[str(p) for p in resolved_paths],
+            meeting_id=payload["meetingId"],
+            meeting_title=payload.get("meetingTitle") or payload["meetingId"],
+            output_dir=resolved_output_dir,
+            model_dir=model_dir,
+            chunk_seconds=float(payload.get("chunkSeconds") or 30.0),
+            language=payload.get("language") or "Chinese",
+            context=payload.get("context") or "会议录音，中文为主，可能夹杂英文术语、人名、产品名。",
+            max_new_tokens=int(payload.get("maxNewTokens") or 512),
+            source=payload.get("source") or "local",
+            privacy=payload.get("privacy") or "private",
+            limit_chunks=limit_chunks,
+            session=session,
+        )
 
 
 def read_json_body(handler: BaseHTTPRequestHandler) -> dict:
@@ -275,7 +319,7 @@ def main() -> int:
         input_roots=input_roots,
         output_roots=output_roots,
     )
-    server = HTTPServer((args.host, args.port), build_handler(state))
+    server = LocalAsrHTTPServer((args.host, args.port), build_handler(state))
     print(
         json.dumps(
             {

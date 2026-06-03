@@ -97,6 +97,16 @@ RAW_MEDIA_EXTENSIONS = {
     ".webp",
     ".heic",
 }
+AUDIO_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".flac",
+    ".ogg",
+}
+AUDIO_MIN_READY_BYTES = 4096
+FIXTURE_RUN_MARKERS = ("fixture", "mock", "dry_run", "dry-run", "fake_lark", "fake-lark")
 RAW_DOCUMENT_EXTENSIONS = {
     ".pdf",
     ".doc",
@@ -177,11 +187,11 @@ class StoreError(RuntimeError):
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def unix_timestamp_iso(value: float | int) -> str:
-    return dt.datetime.fromtimestamp(value, dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return dt.datetime.fromtimestamp(value, dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_iso(value: str | None) -> dt.datetime | None:
@@ -196,7 +206,7 @@ def parse_iso(value: str | None) -> dt.datetime | None:
 def add_seconds(timestamp: str | None, seconds: int | None) -> str | None:
     if not seconds:
         return None
-    base = parse_iso(timestamp) or dt.datetime.now(dt.UTC)
+    base = parse_iso(timestamp) or dt.datetime.now(dt.timezone.utc)
     return (base + dt.timedelta(seconds=seconds)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
@@ -335,6 +345,64 @@ def safe_extension(path: Path) -> str:
         return ""
     allowed = set("abcdefghijklmnopqrstuvwxyz0123456789.")
     return suffix if all(char in allowed for char in suffix) else ""
+
+
+def is_fixture_run_id(run_id: str | None) -> bool:
+    lowered = str(run_id or "").lower()
+    return any(marker in lowered for marker in FIXTURE_RUN_MARKERS)
+
+
+def is_audio_path(path: Path | None) -> bool:
+    return bool(path and path.suffix.lower() in AUDIO_EXTENSIONS)
+
+
+def audio_signature_status(path: Path) -> dict[str, Any]:
+    """Validate that a local audio artifact is plausible before reuse.
+
+    Marker: raw-audio-signature-validation invalid_audio_header fixture_artifact_excluded.
+    """
+    if not path.exists() or not path.is_file():
+        return {"ok": False, "reason": "audio_file_missing"}
+    size = path.stat().st_size
+    suffix = path.suffix.lower()
+    if size < AUDIO_MIN_READY_BYTES:
+        return {"ok": False, "reason": "audio_file_too_small", "sizeBytes": size, "minBytes": AUDIO_MIN_READY_BYTES}
+    try:
+        head = path.read_bytes()[:64]
+    except Exception as exc:
+        return {"ok": False, "reason": "audio_header_read_failed", "error": str(exc)}
+    ok = False
+    reason = "invalid_audio_header"
+    if suffix == ".wav":
+        ok = len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WAVE"
+    elif suffix == ".mp3":
+        ok = head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0)
+    elif suffix == ".m4a":
+        ok = b"ftyp" in head[:16]
+    elif suffix == ".flac":
+        ok = head.startswith(b"fLaC")
+    elif suffix == ".ogg":
+        ok = head.startswith(b"OggS")
+    elif suffix == ".aac":
+        ok = len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF0) == 0xF0
+    else:
+        ok = True
+        reason = "non_audio_extension"
+    return {"ok": ok, "reason": None if ok else reason, "sizeBytes": size, "extension": suffix}
+
+
+def audio_artifact_ready(row: sqlite3.Row) -> tuple[bool, dict[str, Any] | None]:
+    if row["kind"] != "raw_media":
+        return True, None
+    candidates = [path_from_db(row["path"]), path_from_db(row["object_path"])]
+    audio_paths = [path for path in candidates if path and is_audio_path(path)]
+    if not audio_paths:
+        return True, None
+    for path in audio_paths:
+        status = audio_signature_status(path)
+        if status["ok"]:
+            return True, status
+    return False, audio_signature_status(audio_paths[0])
 
 
 def object_path_for(runtime_root: Path, digest: str, path: Path) -> Path:
@@ -503,6 +571,7 @@ CREATE TABLE IF NOT EXISTS source_refs (
   file_name TEXT,
   mime_type TEXT,
   source_sha256 TEXT,
+  file_key TEXT,
   artifact_id TEXT,
   resolved_from TEXT,
   explicit_reference INTEGER NOT NULL DEFAULT 0,
@@ -627,6 +696,10 @@ CREATE TABLE IF NOT EXISTS retention_actions (
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    source_ref_columns = {row["name"] for row in conn.execute("PRAGMA table_info(source_refs)").fetchall()}
+    if "file_key" not in source_ref_columns:
+        conn.execute("ALTER TABLE source_refs ADD COLUMN file_key TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_source_refs_file_key ON source_refs(file_key)")
     policies = []
     for kind, ttl in TTL_SECONDS_BY_KIND.items():
         policies.append(
@@ -833,17 +906,19 @@ def index_sources(conn: sqlite3.Connection, run_id: str, channel: str, task: dic
         chat_id = item.get("chatId") or message.get("chatId")
         thread_id = item.get("threadId") or message.get("threadId") or message.get("rootId") or message.get("parentId")
         source_kind = str(item.get("resourceType") or item.get("type") or "file")
+        file_key = item.get("fileKey") or item.get("file_key") or item.get("fileToken") or item.get("fileId")
         conn.execute(
             """
             INSERT INTO source_refs(
               source_id, run_id, source_kind, channel, message_id_hash, chat_id_hash,
-              thread_id_hash, file_name, mime_type, source_sha256, artifact_id,
+              thread_id_hash, file_name, mime_type, source_sha256, file_key, artifact_id,
               resolved_from, explicit_reference, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id) DO UPDATE SET
               artifact_id=excluded.artifact_id,
               source_sha256=excluded.source_sha256,
+              file_key=excluded.file_key,
               resolved_from=excluded.resolved_from
             """,
             (
@@ -857,6 +932,7 @@ def index_sources(conn: sqlite3.Connection, run_id: str, channel: str, task: dic
                 item.get("name") or item.get("fileName"),
                 item.get("mimeType") or item.get("mime_type"),
                 source_sha,
+                str(file_key) if file_key else None,
                 artifact_id,
                 "cache" if item.get("resolvedFromCache") else "download" if item.get("downloadStatus") else "unknown",
                 1 if item.get("explicitFileReference") else 0,
@@ -1259,7 +1335,7 @@ def scan_asr_cache(conn: sqlite3.Connection, runtime_root: Path) -> dict[str, An
 
 
 def retention_report_path(runtime_root: Path) -> Path:
-    today = dt.datetime.now(dt.UTC).strftime("%Y%m%d")
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
     path = runtime_root / "_store" / "retention" / f"retention-report-{today}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -1488,6 +1564,137 @@ def find_records(conn: sqlite3.Connection, args: argparse.Namespace) -> dict[str
     raise StoreError("find requires --run-id or --sha256")
 
 
+def source_kind_candidates(kind: str | None) -> list[str]:
+    if not kind:
+        return []
+    normalized = str(kind).strip().lower()
+    if normalized == "raw_media":
+        return ["audio", "video", "image", "raw_media", "file"]
+    if normalized == "audio":
+        return ["audio", "raw_media", "file"]
+    return [normalized]
+
+
+def artifact_paths_for_candidate(row: sqlite3.Row) -> list[str]:
+    paths: list[str] = []
+    for key in ("path", "object_path"):
+        value = row[key]
+        if not value:
+            continue
+        try:
+            path = workspace_path(value, must_exist=True)
+        except StoreError:
+            continue
+        if path.is_file() and path.stat().st_size > 0:
+            paths.append(store_relative(path))
+    return paths
+
+
+def find_source_records(conn: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    """Find ready source artifacts without exposing SQLite internals.
+
+    Marker: find-source source_refs ready raw_media local_reuse_store_artifact.
+    """
+    source_kinds = source_kind_candidates(args.kind)
+    name_pattern = f"%{args.name}%" if args.name else None
+    message_hashes = [hash_text(value)[:32] for value in (args.source_message_id, args.message_id) if value]
+    params: list[Any] = []
+    filters = [
+        "a.deleted_at IS NULL",
+        "a.status = 'ready'",
+        "a.kind = ?",
+    ]
+    params.append(args.kind)
+    if source_kinds:
+        filters.append(f"sr.source_kind IN ({','.join('?' for _ in source_kinds)})")
+        params.extend(source_kinds)
+    if message_hashes:
+        filters.append(f"sr.message_id_hash IN ({','.join('?' for _ in message_hashes)})")
+        params.extend(message_hashes)
+    if name_pattern:
+        filters.append("(sr.file_name LIKE ? OR a.path LIKE ? OR a.object_path LIKE ?)")
+        params.extend([name_pattern, name_pattern, name_pattern])
+    if args.file_key:
+        filters.append("sr.file_key = ?")
+        params.append(args.file_key)
+    if args.sha256:
+        filters.append("(a.sha256 = ? OR sr.source_sha256 = ?)")
+        params.extend([args.sha256, args.sha256])
+    if not args.include_fixtures:
+        filters.append("LOWER(a.run_id) NOT LIKE '%fixture%'")
+        filters.append("LOWER(a.run_id) NOT LIKE '%mock%'")
+        filters.append("LOWER(a.run_id) NOT LIKE '%dry_run%'")
+        filters.append("LOWER(a.run_id) NOT LIKE '%dry-run%'")
+        filters.append("LOWER(a.run_id) NOT LIKE '%fake_lark%'")
+        filters.append("LOWER(a.run_id) NOT LIKE '%fake-lark%'")
+
+    rows = conn.execute(
+        f"""
+        SELECT
+          a.artifact_id, a.run_id, a.kind, a.path, a.object_path, a.sha256,
+          a.size_bytes, a.status, a.created_at, a.last_accessed_at,
+          sr.source_kind, sr.file_name, sr.file_key, sr.mime_type, sr.resolved_from,
+          sr.explicit_reference
+        FROM source_refs sr
+        JOIN artifacts a ON a.artifact_id = sr.artifact_id
+        WHERE {' AND '.join(filters)}
+        ORDER BY COALESCE(a.last_accessed_at, a.created_at) DESC, a.size_bytes DESC
+        LIMIT ?
+        """,
+        (*params, int(args.limit)),
+    ).fetchall()
+
+    candidates = []
+    seen_paths: set[str] = set()
+    for row in rows:
+        ready, validation = audio_artifact_ready(row)
+        if not ready:
+            continue
+        available_paths = artifact_paths_for_candidate(row)
+        if not available_paths:
+            continue
+        primary = available_paths[0]
+        if primary in seen_paths:
+            continue
+        seen_paths.add(primary)
+        candidates.append(
+            {
+                "artifactId": row["artifact_id"],
+                "runId": row["run_id"],
+                "kind": row["kind"],
+                "sourceKind": row["source_kind"],
+                "fileName": row["file_name"],
+                "fileKeyMatched": bool(args.file_key and row["file_key"] == args.file_key),
+                "path": row["path"],
+                "objectPath": row["object_path"],
+                "availablePath": primary,
+                "availablePaths": available_paths,
+                "sha256": row["sha256"],
+                "sizeBytes": row["size_bytes"],
+                "status": row["status"],
+                "resolvedFrom": row["resolved_from"],
+                "audioValidation": validation,
+                "rawSecretsReturned": False,
+            },
+        )
+    return {
+        "schemaVersion": STORE_SCHEMA_VERSION,
+        "status": "found" if candidates else "not_found",
+        "query": {
+            "fileKeyPresent": bool(args.file_key),
+            "sourceMessageIdPresent": bool(args.source_message_id),
+            "messageIdPresent": bool(args.message_id),
+            "name": args.name,
+            "kind": args.kind,
+            "sha256Present": bool(args.sha256),
+            "includeFixtures": bool(args.include_fixtures),
+        },
+        "candidates": candidates,
+        "rawSecretsReturned": False,
+        "rawMediaExternalUpload": False,
+    }
+
+
 def record_retention_action(
     conn: sqlite3.Connection,
     *,
@@ -1519,6 +1726,174 @@ def safe_cleanup_path(path: Path, runtime_root: Path) -> bool:
     if path.name.startswith(".env"):
         return False
     return True
+
+
+def audit_pollution(conn: sqlite3.Connection, runtime_root: Path, args: argparse.Namespace) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT
+          a.artifact_id, a.run_id, a.kind, a.path, a.object_path, a.sha256,
+          a.size_bytes, a.status, a.deleted_at,
+          sr.source_id, sr.file_key, sr.source_kind, sr.file_name, sr.resolved_from
+        FROM artifacts a
+        LEFT JOIN source_refs sr ON sr.artifact_id = a.artifact_id
+        WHERE a.kind = 'raw_media' AND a.deleted_at IS NULL
+        ORDER BY a.size_bytes ASC, a.run_id ASC
+        LIMIT ?
+        """,
+        (int(args.limit),),
+    ).fetchall()
+    findings: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        reasons: list[str] = []
+        if int(row["size_bytes"] or 0) < int(args.min_audio_bytes):
+            reasons.append("raw_media_too_small")
+        if is_fixture_run_id(row["run_id"]):
+            reasons.append("fixture_artifact_in_production_store")
+        ready, validation = audio_artifact_ready(row)
+        if not ready:
+            reasons.append(validation["reason"] if validation else "invalid_audio_artifact")
+        if row["file_key"] and is_fixture_run_id(row["run_id"]):
+            reasons.append("real_file_key_points_to_fixture_artifact")
+        if not reasons:
+            continue
+        key = (row["artifact_id"], ",".join(sorted(set(reasons))))
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(
+            {
+                "artifactId": row["artifact_id"],
+                "runId": row["run_id"],
+                "kind": row["kind"],
+                "path": row["path"],
+                "objectPath": row["object_path"],
+                "sha256": row["sha256"],
+                "sizeBytes": row["size_bytes"],
+                "status": row["status"],
+                "fileKeyPresent": bool(row["file_key"]),
+                "fileName": row["file_name"],
+                "reasons": sorted(set(reasons)),
+                "audioValidation": validation,
+            }
+        )
+    return {
+        "schemaVersion": STORE_SCHEMA_VERSION,
+        "status": "polluted" if findings else "clean",
+        "findingCount": len(findings),
+        "findings": findings,
+        "workspaceBound": True,
+        "rawSecretsReturned": False,
+        "rawMediaExternalUpload": False,
+    }
+
+
+def quarantine_artifacts(conn: sqlite3.Connection, runtime_root: Path, args: argparse.Namespace) -> dict[str, Any]:
+    if not args.sha256 and not args.artifact_id:
+        raise StoreError("quarantine-artifact requires --sha256 or --artifact-id")
+    params: list[Any] = []
+    filters = ["deleted_at IS NULL"]
+    if args.sha256:
+        filters.append("sha256 = ?")
+        params.append(args.sha256)
+    if args.artifact_id:
+        filters.append("artifact_id = ?")
+        params.append(args.artifact_id)
+    rows = conn.execute(
+        f"SELECT * FROM artifacts WHERE {' AND '.join(filters)} ORDER BY run_id ASC",
+        params,
+    ).fetchall()
+    selected_artifact_ids = {row["artifact_id"] for row in rows}
+    reason = args.reason or "quarantined_invalid_fixture_audio"
+    generated_at = now_iso()
+    quarantine_root = runtime_root / "_store" / "quarantine" / generated_at.replace(":", "").replace("-", "")
+    actions: list[dict[str, Any]] = []
+    for row in rows:
+        artifact_id = row["artifact_id"]
+        run_id = row["run_id"]
+        bytes_value = int(row["size_bytes"] or 0)
+        moved_paths: list[dict[str, Any]] = []
+        for db_key in ("path", "object_path"):
+            value = row[db_key]
+            if not value:
+                continue
+            if db_key == "object_path":
+                shared = conn.execute(
+                    """
+                    SELECT artifact_id
+                    FROM artifacts
+                    WHERE object_path = ? AND deleted_at IS NULL AND artifact_id NOT IN ({})
+                    LIMIT 1
+                    """.format(",".join("?" for _ in selected_artifact_ids) or "''"),
+                    (value, *selected_artifact_ids),
+                ).fetchone()
+                if shared:
+                    moved_paths.append({"path": value, "status": "kept_shared_cas_object", "sharedArtifactId": shared["artifact_id"]})
+                    continue
+            try:
+                source = workspace_path(value)
+            except StoreError as exc:
+                moved_paths.append({"path": value, "status": "blocked", "reason": str(exc)})
+                continue
+            if not safe_cleanup_path(source, runtime_root):
+                moved_paths.append({"path": value, "status": "blocked", "reason": "path_not_safe_for_quarantine"})
+                continue
+            if not source.exists() and not source.is_symlink():
+                moved_paths.append({"path": store_relative(source), "status": "missing"})
+                continue
+            if args.execute:
+                quarantine_root.mkdir(parents=True, exist_ok=True)
+                destination = quarantine_root / f"{artifact_id}-{db_key}-{source.name}"
+                counter = 1
+                while destination.exists():
+                    destination = quarantine_root / f"{artifact_id}-{db_key}-{counter}-{source.name}"
+                    counter += 1
+                shutil.move(str(source), str(destination))
+                moved_paths.append({"path": store_relative(source), "status": "moved", "quarantinePath": store_relative(destination)})
+            else:
+                moved_paths.append({"path": store_relative(source), "status": "would_move"})
+        if args.execute:
+            conn.execute(
+                "UPDATE artifacts SET status = ?, deleted_at = ? WHERE artifact_id = ?",
+                (reason, generated_at, artifact_id),
+            )
+            conn.execute(
+                "UPDATE source_refs SET resolved_from = ? WHERE artifact_id = ?",
+                (reason, artifact_id),
+            )
+            record_retention_action(
+                conn,
+                artifact_id=artifact_id,
+                run_id=run_id,
+                action="quarantine",
+                reason=reason,
+                bytes_reclaimed=bytes_value,
+                status="completed",
+            )
+        actions.append(
+            {
+                "artifactId": artifact_id,
+                "runId": run_id,
+                "sha256": row["sha256"],
+                "bytes": bytes_value,
+                "status": "quarantined" if args.execute else "dry_run",
+                "paths": moved_paths,
+            }
+        )
+    if args.execute:
+        conn.commit()
+    return {
+        "schemaVersion": STORE_SCHEMA_VERSION,
+        "status": "completed" if args.execute else "dry_run",
+        "reason": reason,
+        "artifactCount": len(actions),
+        "actions": actions,
+        "workspaceBound": True,
+        "indexedOnly": True,
+        "rawSecretsReturned": False,
+        "rawMediaExternalUpload": False,
+    }
 
 
 def delete_artifact_path(conn: sqlite3.Connection, row: sqlite3.Row, runtime_root: Path, *, execute: bool, reason: str) -> dict[str, Any]:
@@ -1739,6 +2114,26 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("--run-id")
     find.add_argument("--sha256")
 
+    find_source = command_parser("find-source", "find ready source artifacts for attachment reuse")
+    find_source.add_argument("--file-key")
+    find_source.add_argument("--source-message-id")
+    find_source.add_argument("--message-id")
+    find_source.add_argument("--name")
+    find_source.add_argument("--kind", default="raw_media")
+    find_source.add_argument("--sha256")
+    find_source.add_argument("--limit", type=int, default=10)
+    find_source.add_argument("--include-fixtures", action="store_true", help="include fixture/mock/dry-run artifacts for diagnostics only")
+
+    audit = command_parser("audit-pollution", "audit production store for invalid or fixture raw media pollution")
+    audit.add_argument("--limit", type=int, default=5000)
+    audit.add_argument("--min-audio-bytes", type=int, default=AUDIO_MIN_READY_BYTES)
+
+    quarantine = command_parser("quarantine-artifact", "quarantine indexed artifacts without deleting remote Feishu files")
+    quarantine.add_argument("--sha256")
+    quarantine.add_argument("--artifact-id")
+    quarantine.add_argument("--reason", default="quarantined_invalid_fixture_audio")
+    quarantine.add_argument("--execute", action="store_true")
+
     dedupe_parser = command_parser("dedupe", "dedupe duplicate indexed artifacts through CAS")
     dedupe_group = dedupe_parser.add_mutually_exclusive_group()
     dedupe_group.add_argument("--dry-run", action="store_true")
@@ -1783,6 +2178,12 @@ def main(argv: list[str] | None = None) -> int:
             print_json(put_object(runtime_root, workspace_path(args.path, must_exist=True), replace=args.replace_with_link))
         elif args.command == "find":
             print_json(find_records(conn, args))
+        elif args.command == "find-source":
+            print_json(find_source_records(conn, args))
+        elif args.command == "audit-pollution":
+            print_json(audit_pollution(conn, runtime_root, args))
+        elif args.command == "quarantine-artifact":
+            print_json(quarantine_artifacts(conn, runtime_root, args))
         elif args.command == "dedupe":
             print_json(dedupe(conn, runtime_root, execute=bool(args.execute)))
         elif args.command == "cleanup":

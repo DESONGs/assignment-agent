@@ -843,6 +843,9 @@ def validate_extensions() -> None:
     feishu_publish_taxonomy = ROOT / "meeting-agent-pi-package" / "tools" / "feishu_publish_taxonomy.mjs"
     feishu_publish_organize = ROOT / "meeting-agent-pi-package" / "tools" / "feishu_publish_organize_cli.mjs"
     feishu_document_review_context = ROOT / "meeting-agent-pi-package" / "tools" / "feishu_document_review_context_helpers.mjs"
+    local_runtime_supervisor = ROOT / "meeting-agent-pi-package" / "tools" / "local_runtime_supervisor.py"
+    local_runtime_ctl = ROOT / "meeting-agent-pi-package" / "tools" / "local_runtime_ctl.py"
+    local_ci_check = ROOT / "meeting-agent-pi-package" / "tools" / "local_ci_check.py"
     for path in (feishu_event_runner, feishu_task_handler, feishu_bot_gateway):
         if not path.exists():
             fail(f"missing Feishu bridge tool: {path.relative_to(ROOT)}")
@@ -864,6 +867,9 @@ def validate_extensions() -> None:
         fail("missing Feishu publish organization CLI")
     if not feishu_document_review_context.exists():
         fail("missing Feishu document review context helper")
+    for path in (local_runtime_supervisor, local_runtime_ctl, local_ci_check):
+        if not path.exists():
+            fail(f"missing local production runtime tool: {path.relative_to(ROOT)}")
     runner_text = feishu_event_runner.read_text(encoding="utf-8")
     for marker in (
         "lark-cli",
@@ -945,8 +951,28 @@ def validate_extensions() -> None:
         "local_reuse_current_run",
         "local_reuse_cached_attachment",
         "local_reuse_after_cli_failed",
+        "local_reuse_store_artifact",
+        "local_reuse_historical_run_artifact",
+        "FEISHU_AGENT_ATTACHMENT_DOWNLOAD_AS",
+        "FEISHU_AGENT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS",
+        "FEISHU_AGENT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS",
+        "downloaded_identity_fallback",
+        "downloadAttempts",
+        "sourceReady",
+        "attachmentCacheTimestampMs",
+        "feishu_resource_download_timeout",
+        "feishu_resource_permission_denied",
+        "lark_cli_unavailable",
+        "feishu_resource_not_found",
+        "source_acquisition_gate",
+        "attachment_download_failed",
+        "runtime_store_find_source_failed",
         "attachment_artifact_cache_updated",
         "feishu_attachment_artifact_cache",
+        "FEISHU_AGENT_INDEX_FIXTURES",
+        "runtime_store_fixture_mock_dry_run_index_skipped",
+        "audio_file_too_small",
+        "invalid_audio_header",
     ):
         if marker not in handler_context_text:
             fail(f"feishu_agent_task_handler.mjs missing marker: {marker}")
@@ -957,7 +983,10 @@ def validate_extensions() -> None:
         "progressiveDisclosureRequired",
         "rawAudioVideoExternalUploadAllowed",
         "image_understanding_not_supported",
+        "audio_file_too_small",
+        "invalid_audio_header",
         "video_understanding_not_supported",
+        "local_source_file_missing",
     ):
         if marker not in handler_context_text:
             fail(f"shared file-context helper missing marker: {marker}")
@@ -1065,6 +1094,48 @@ def validate_extensions() -> None:
     ):
         if marker not in local_asr_service_ctl_text:
             fail(f"local_asr_service_ctl.py missing lifecycle marker: {marker}")
+    local_runtime_supervisor_text = local_runtime_supervisor.read_text(encoding="utf-8")
+    local_runtime_ctl_text = local_runtime_ctl.read_text(encoding="utf-8")
+    local_ci_check_text = local_ci_check.read_text(encoding="utf-8")
+    for marker in (
+        "local-runtime-supervisor-v1",
+        "feishu-handler",
+        "feishu-gateway",
+        "local-asr",
+        "status.json",
+        "events.ndjson",
+        "health-report.json",
+        "local_asr_service_ctl.py",
+        "gateway_ws_timeout_threshold",
+        "handler_health_failed",
+        "rawSecretsReturned",
+        "rawMediaExternalUpload",
+    ):
+        if marker not in local_runtime_supervisor_text:
+            fail(f"local_runtime_supervisor.py missing production supervisor marker: {marker}")
+    for marker in (
+        "local-runtime-ctl-v1",
+        "start|stop|restart|status|doctor",
+        "bootout",
+        "takeover",
+        "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",
+        "meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs",
+        "asr_is_host_owned_and_not_stopped_by_default",
+        "local-asr remains host-owned",
+    ):
+        if marker not in local_runtime_ctl_text:
+            fail(f"local_runtime_ctl.py missing production control marker: {marker}")
+    for marker in (
+        "local-ci-check-v1",
+        "Docker.app fallback",
+        "runtime-runs/_services/ci/latest.json",
+        "validate_workspace.py",
+        "docker-compose.local-runtime.yml",
+        "swift-test-agent-workbench",
+        "rawSecretsReturned",
+    ):
+        if marker not in local_ci_check_text:
+            fail(f"local_ci_check.py missing CI marker: {marker}")
     if re.search(r"if\s*\(\s*requiresAsr\s*\)[\s\S]{0,180}taskType:\s*\"meeting_minutes\"", handler_text):
         fail("Feishu task classification must not route every audio source to meeting_minutes")
     for marker in (
@@ -2029,6 +2100,14 @@ def validate_runtime_store_backend() -> None:
         "quota_overages",
         "KIND_MAX_BYTES",
         "put-object",
+        "find-source",
+        "include-fixtures",
+        "audit-pollution",
+        "quarantine-artifact",
+        "raw-audio-signature-validation",
+        "fixture_artifact_excluded",
+        "source_refs",
+        "file_key",
         "index-run",
         "dedupe",
         "cleanup",
