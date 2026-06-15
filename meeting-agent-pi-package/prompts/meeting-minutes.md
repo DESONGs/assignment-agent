@@ -22,10 +22,11 @@
 - 发布前 QA 必须检查 `unsupportedEntities`、`crossMeetingTerms`、`ambiguousTermExpansions` 和 `omittedMacroTopics`。前三类属于 blocking issue；`omittedMacroTopics` 若遗漏了连续多个 transcript segment 的主议题，必须修订后再发布。
 - QA 结论、Evidence Notes、模型复核说明、`externalAudioUpload` 注释和其他测试字段只写入本地 QA artifact，不得出现在飞书会议纪要正文。
 - 不确定内容标记为 `待确认`。
+- 粤语/普通话/英文混合会议：最终正文统一用简体中文业务书面语；产品名、人名、项目名、英文术语、关键粤语原话保留原词。疑似方言误识别、低置信或语义跳变片段必须进入“待确认/风险”，不得强行改写成确定事实。
 - 不编造 owner、deadline、预算或外部事实。
 - 不要输出原始长转写。
 - DeepSeek 负责主稿；小米 MiMo 复核建议只有能引用当前会议 evidence 时才合入。小米 MiMo 复核必须检查是否存在 `omittedMacroTopics`：连续多个 segment 的主议题是否被遗漏，商业模式/收费结构/超级个体/合作方式/组织模式是否被压缩成单句，行动项是否覆盖所有主议题。
-- 原始音频/视频不得发送给外部模型；ASR 后 transcript/evidence 文本是默认允许的语义输入，不需要逐次确认。
+- 原始音频只允许在 ASR provider 阶段上传到已配置的云端 ASR；后续 document worker、QA、外部 LLM、Docker 和 Hermes 只能使用 transcript/evidence 文本，不得接收 raw audio 或 base64 audio。
 - 如果会议输入中包含参考 PDF 或历史纪要，只学习其层级密度、标题组织、议题展开方式和表达风格，不把其中事实、owner、日期或决策混入当前会议。
 
 会议输入：

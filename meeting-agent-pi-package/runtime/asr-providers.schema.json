@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/asr-providers.schema.json",
+  "title": "ASR Providers",
+  "type": "object",
+  "required": ["schemaVersion", "defaultProvider", "fallbackProvider", "providers"],
+  "properties": {
+    "schemaVersion": { "const": "asr-providers-v1" },
+    "defaultProvider": { "enum": ["auto", "local_qwen3", "aliyun_dashscope_paraformer"] },
+    "fallbackProvider": { "enum": ["local_qwen3", "none"] },
+    "providers": {
+      "type": "object",
+      "required": ["local_qwen3", "aliyun_dashscope_paraformer"],
+      "properties": {
+        "local_qwen3": { "$ref": "#/$defs/provider" },
+        "aliyun_dashscope_paraformer": { "$ref": "#/$defs/provider" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "required": ["providerId", "mode", "defaultModel", "rawMediaExternalUpload", "artifactContract"],
+      "properties": {
+        "providerId": { "type": "string" },
+        "mode": { "enum": ["local", "cloud"] },
+        "defaultModel": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "languageHints": { "type": "array", "items": { "type": "string" } },
+        "rawMediaExternalUpload": { "type": "boolean" },
+        "requiredEnv": { "type": "array", "items": { "type": "string" } },
+        "optionalEnv": { "type": "array", "items": { "type": "string" } },
+        "artifactContract": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}

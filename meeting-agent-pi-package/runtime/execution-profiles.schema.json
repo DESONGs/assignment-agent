@@ -50,7 +50,8 @@
         "policyGate": { "type": "boolean" },
         "documentWorkers": { "type": "boolean" },
         "localAsr": { "enum": ["never", "when_required"] },
-        "rawMediaExternalUpload": { "const": false },
+        "asrProvider": { "enum": ["auto", "local_qwen3", "aliyun_dashscope_paraformer"] },
+        "rawMediaExternalUpload": { "type": "boolean" },
         "contextPolicy": {
           "type": "object",
           "properties": {

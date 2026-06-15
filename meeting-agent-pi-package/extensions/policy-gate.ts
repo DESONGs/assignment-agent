@@ -18,6 +18,7 @@ const ACTION_INTENT = Type.Union([
   Type.Literal("mutate_calendar"),
   Type.Literal("assign_task"),
   Type.Literal("external_web"),
+  Type.Literal("audio_transcription"),
   Type.Literal("install_dependency"),
   Type.Literal("persist_memory"),
   Type.Literal("delete"),
@@ -32,6 +33,7 @@ type ActionIntent =
   | "mutate_calendar"
   | "assign_task"
   | "external_web"
+  | "audio_transcription"
   | "install_dependency"
   | "persist_memory"
   | "delete";
@@ -100,6 +102,13 @@ function isFeishuExplicitWriteAllowed(params: any, actionIntent: ActionIntent) {
   return true;
 }
 
+function isCloudAsrRawMediaUploadAllowed(params: any, actionIntent: ActionIntent) {
+  return actionIntent === "audio_transcription" &&
+    params.capabilityId === "cloud-asr" &&
+    params.provider === "aliyun_dashscope_paraformer" &&
+    params.asrStage === true;
+}
+
 function buildDecision(params: any) {
   const actionIntent = params.actionIntent as ActionIntent;
   const reasons: string[] = [];
@@ -127,7 +136,9 @@ function buildDecision(params: any) {
     safeAlternative = "Redact secrets/tokens/cookies/App Secret first, then retry with references only.";
   }
 
-  if (params.rawMediaExternalUpload || params.rawTranscriptIncluded) {
+  if (params.rawMediaExternalUpload && isCloudAsrRawMediaUploadAllowed(params, actionIntent)) {
+    reasons.push("raw_media_external_upload_allowed_for_cloud_asr");
+  } else if (params.rawMediaExternalUpload || params.rawTranscriptIncluded) {
     status = "blocked";
     reasons.push(params.rawMediaExternalUpload ? "raw_media_external_upload_blocked" : "raw_transcript_external_or_metrics_payload_blocked");
     safeAlternative = "Use local ASR/context-offload and pass only bounded evidence pointers to later steps.";
@@ -206,6 +217,7 @@ export default function (pi: ExtensionAPI) {
       capabilityId: Type.Optional(Type.String()),
       audience: Type.Optional(Type.String()),
       payloadClass: Type.Optional(Type.String()),
+      provider: Type.Optional(Type.String()),
       riskLevel: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
       artifacts: Type.Optional(Type.Array(Type.String())),
       userConfirmed: Type.Optional(Type.Boolean()),
@@ -213,6 +225,8 @@ export default function (pi: ExtensionAPI) {
       sourceRecordRequired: Type.Optional(Type.Boolean()),
       containsSecrets: Type.Optional(Type.Boolean()),
       rawMediaExternalUpload: Type.Optional(Type.Boolean()),
+      asrStage: Type.Optional(Type.Boolean()),
+      rawMediaExternalUploadDefault: Type.Optional(Type.String()),
       rawTranscriptIncluded: Type.Optional(Type.Boolean()),
       meetingFactsContext: Type.Optional(Type.Boolean()),
       feishuInbound: Type.Optional(Type.Boolean()),

@@ -1,0 +1,52 @@
+{
+  "$schema": "asr-providers.schema.json",
+  "schemaVersion": "asr-providers-v1",
+  "defaultProvider": "auto",
+  "fallbackProvider": "local_qwen3",
+  "providers": {
+    "local_qwen3": {
+      "providerId": "local_qwen3",
+      "mode": "local",
+      "defaultModel": "mlx-community/Qwen3-ASR-1.7B-4bit",
+      "rawMediaExternalUpload": false,
+      "optionalEnv": [
+        "LOCAL_ASR_SERVICE_URL",
+        "LOCAL_ASR_BEARER_TOKEN",
+        "LOCAL_ASR_MODEL_DIR"
+      ],
+      "artifactContract": [
+        "summary.json",
+        "transcripts/transcript.full.json",
+        "evidence/evidence-index.json",
+        "evidence/sources.json"
+      ]
+    },
+    "aliyun_dashscope_paraformer": {
+      "providerId": "aliyun_dashscope_paraformer",
+      "mode": "cloud",
+      "defaultModel": "paraformer-realtime-v2",
+      "endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+      "languageHints": ["yue", "zh", "en"],
+      "rawMediaExternalUpload": true,
+      "requiredEnv": [
+        "ALIYUN_DASHSCOPE_API_KEY"
+      ],
+      "optionalEnv": [
+        "DASHSCOPE_API_KEY",
+        "ALIYUN_DASHSCOPE_WORKSPACE_ID",
+        "ALIYUN_ASR_MODEL",
+        "ALIYUN_ASR_ENDPOINT",
+        "ALIYUN_ASR_LANGUAGE_HINTS",
+        "ALIYUN_ASR_VOCABULARY_ID"
+      ],
+      "artifactContract": [
+        "summary.json",
+        "transcripts/transcript.full.json",
+        "evidence/evidence-index.json",
+        "evidence/sources.json",
+        "asr/cloud-asr-run.json",
+        "asr/cloud-asr-events.ndjson"
+      ]
+    }
+  }
+}

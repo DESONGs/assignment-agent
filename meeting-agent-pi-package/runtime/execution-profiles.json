@@ -42,14 +42,15 @@
       "pipeline": "full_document",
       "routeTaskType": "meeting_minutes",
       "reasoningDepth": "deep",
-      "requiredStages": ["audio_normalize", "local_asr", "evidence_pack", "prompt_registry", "document_workers", "meeting_minutes", "qa_gate", "policy_gate", "publish"],
+      "requiredStages": ["asr_provider_resolved", "audio_normalize", "asr_transcribe", "evidence_pack", "prompt_registry", "document_workers", "meeting_minutes", "qa_gate", "policy_gate", "publish"],
       "skipStages": ["direct_answer"],
       "publishDocuments": true,
       "qaGate": true,
       "policyGate": true,
       "documentWorkers": true,
       "localAsr": "when_required",
-      "rawMediaExternalUpload": false
+      "asrProvider": "auto",
+      "rawMediaExternalUpload": true
     },
     "document_generation": {
       "runnerEligible": true,

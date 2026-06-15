@@ -268,6 +268,24 @@ def asr_recover(timeout: float) -> dict[str, Any]:
         completed = subprocess.run(command, cwd=str(ROOT), text=True, capture_output=True, timeout=max(timeout + 5, 10))
     except Exception as exc:
         return {"status": "blocked", "reason": "local_asr_recover_failed", "error": redact_string(str(exc))}
+
+
+def selected_asr_provider(runtime_env: dict[str, str]) -> dict[str, Any]:
+    requested = (runtime_env.get("MEETING_ASR_PROVIDER") or "auto").strip().lower()
+    key_configured = bool((runtime_env.get("ALIYUN_DASHSCOPE_API_KEY") or runtime_env.get("DASHSCOPE_API_KEY") or "").strip())
+    if requested in ("", "auto"):
+        provider = "aliyun_dashscope_paraformer" if key_configured else "local_qwen3"
+    elif requested in ("cloud", "aliyun", "dashscope", "paraformer", "aliyun_dashscope_paraformer"):
+        provider = "aliyun_dashscope_paraformer"
+    else:
+        provider = "local_qwen3"
+    return {
+        "requested": requested or "auto",
+        "provider": provider,
+        "cloudApiKeyConfigured": key_configured,
+        "localAsrRequired": provider == "local_qwen3",
+        "rawSecretsReturned": False,
+    }
     try:
         parsed = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -420,19 +438,22 @@ def status_document(
     started_at: str,
     runtime_env: dict[str, str],
 ) -> dict[str, Any]:
+    asr_provider = selected_asr_provider(runtime_env)
+    local_asr_required = asr_provider["localAsrRequired"]
     service_states = {
         "feishu-handler": service_snapshot(services["feishu-handler"], health.get("feishu-handler")),
         "feishu-gateway": service_snapshot(services["feishu-gateway"], health.get("feishu-gateway")),
+        "asr-provider": asr_provider,
         "local-asr": health.get("local-asr", {"ok": False, "status": "unknown"}),
     }
     ok = all(
         [
             service_states["feishu-handler"]["health"].get("ok") is True,
             service_states["feishu-gateway"]["health"].get("ok") is True,
-            service_states["local-asr"].get("ok") is True,
+            (service_states["local-asr"].get("ok") is True or not local_asr_required),
         ],
     )
-    blocked = service_states["local-asr"].get("ok") is not True or service_states["local-asr"].get("status") == "blocked"
+    blocked = local_asr_required and (service_states["local-asr"].get("ok") is not True or service_states["local-asr"].get("status") == "blocked")
     return {
         "schemaVersion": "local-runtime-supervisor-v1",
         "status": "ok" if ok else "blocked" if blocked else "degraded",
@@ -447,11 +468,13 @@ def status_document(
             "publishAs": runtime_env.get("FEISHU_AGENT_PUBLISH_AS") or DEFAULT_ENV["FEISHU_AGENT_PUBLISH_AS"],
             "asyncVisibleAck": runtime_env.get("FEISHU_AGENT_ASYNC_VISIBLE_ACK") or DEFAULT_ENV["FEISHU_AGENT_ASYNC_VISIBLE_ACK"],
             "fileAckReplyMode": runtime_env.get("FEISHU_AGENT_FILE_ACK_REPLY_MODE") or DEFAULT_ENV["FEISHU_AGENT_FILE_ACK_REPLY_MODE"],
+            "asrProvider": asr_provider["provider"],
+            "asrProviderRequested": asr_provider["requested"],
         },
         "supervisor": {
             "handlerHealthUrl": HANDLER_HEALTH_URL,
             "gatewayHealthMode": "process_and_ws_timeout_log_watch",
-            "asrHealthMode": "local_asr_service_ctl_status",
+            "asrHealthMode": "provider_aware_local_asr_service_ctl_status",
             "asrRecoverEnabled": bool(args.asr_recover),
             "loadedEnvKeyNames": sorted(loaded_env_keys),
             "rawSecretValuesReturned": False,
@@ -527,8 +550,9 @@ def run(args: argparse.Namespace) -> int:
             "tcp443Open": tcp_port_open("open.feishu.cn", 443, 1.0),
         }
 
+        asr_provider = selected_asr_provider(env)
         asr = asr_status(args.asr_timeout)
-        if asr.get("ok"):
+        if asr.get("ok") or not asr_provider["localAsrRequired"]:
             asr_failure_count = 0
         else:
             asr_failure_count += 1

@@ -13,7 +13,7 @@ const ONE_SENTENCE_PATTERN = /一句话|一段话|简短|简要|快速|summary|s
 const UNSUPPORTED_REQUEST_PATTERN = /日历|calendar|创建任务|分配任务|assign|提醒|reminder|转发给|发给某人|图片分析|识图|视频理解|看图/i;
 const DOCUMENT_REVISION_REQUEST_PATTERN = /批注|评论|修改内容|修订|修正|重新优化|优化下|优化一下|根据.*(修改|批注|评论|建议)|review|comment|suggestion|revision|redline/i;
 const DOCUMENT_PIPELINE_STAGES = ["evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish", "reply"];
-const NON_DOCUMENT_STAGES = ["audio_normalize", "local_asr", "evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"];
+const NON_DOCUMENT_STAGES = ["audio_normalize", "asr_provider_resolved", "asr_transcribe", "local_asr", "cloud_asr", "evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"];
 const KNOWN_EXECUTION_PROFILES = [
   "fast_answer",
   "file_summary",
@@ -32,7 +32,7 @@ export function cleanUserPrompt(text) {
     .trim();
 }
 
-function requiresLocalAsr(attachments) {
+function requiresAsr(attachments) {
   return attachments.some((item) => attachmentKind(item) === "audio");
 }
 
@@ -160,14 +160,14 @@ function stagePlanForIntent(intent, profile) {
   }
   if (profile === "audio_minutes") {
     return {
-      requiredStages: ["audio_normalize", "local_asr", ...DOCUMENT_PIPELINE_STAGES],
+      requiredStages: ["asr_provider_resolved", "audio_normalize", "asr_transcribe", ...DOCUMENT_PIPELINE_STAGES],
       skipStages: ["direct_answer"],
     };
   }
   if (profile === "document_revision") {
     return {
       requiredStages: dedupeStages([
-        intent.requiresLocalAsr ? "local_asr" : null,
+        intent.requiresLocalAsr ? "asr_transcribe" : null,
         "file_context",
         "review_context",
         "evidence_pack",
@@ -179,12 +179,12 @@ function stagePlanForIntent(intent, profile) {
         "publish",
         "reply",
       ]),
-      skipStages: dedupeStages([intent.requiresLocalAsr ? null : "local_asr", "direct_answer"]),
+      skipStages: dedupeStages([intent.requiresLocalAsr ? null : "asr_transcribe", intent.requiresLocalAsr ? null : "local_asr", "direct_answer"]),
     };
   }
   return {
-    requiredStages: dedupeStages([intent.requiresLocalAsr ? "local_asr" : null, ...DOCUMENT_PIPELINE_STAGES]),
-    skipStages: dedupeStages([intent.requiresLocalAsr ? null : "local_asr", "direct_answer"]),
+    requiredStages: dedupeStages([intent.requiresLocalAsr ? "asr_transcribe" : null, ...DOCUMENT_PIPELINE_STAGES]),
+    skipStages: dedupeStages([intent.requiresLocalAsr ? null : "asr_transcribe", intent.requiresLocalAsr ? null : "local_asr", "direct_answer"]),
   };
 }
 
@@ -210,7 +210,7 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
   const docs = explicitDocs.length > 0 ? explicitDocs : inferredDocs;
   const hasAttachments = attachments.length > 0;
   const hasFileContexts = contexts.length > 0;
-  const requiresAsr = requiresLocalAsr(attachments);
+  const requiresAudioAsr = requiresAsr(attachments);
   const isRevisionRequest = DOCUMENT_REVISION_REQUEST_PATTERN.test(prompt) || (MODIFY_REQUEST_PATTERN.test(prompt) && hasFileContexts);
   const sourceReferences = sourceReferencesFromAttachments(attachments);
   const inputModalities = [...new Set(attachments.map((item) => attachmentKind(item)))];
@@ -218,7 +218,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
     sourceSetMode: "consolidated",
     inputModalities,
     sourceReferences,
-    requiresLocalAsr: requiresAsr,
+    requiresAsr: requiresAudioAsr,
+    requiresLocalAsr: requiresAudioAsr,
     requestedDocuments: docs,
     conflictPolicy: "source_attribution",
     attachmentResolutionReason: attachmentResolution?.reason ?? null,
@@ -234,7 +235,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requestedDocuments: [],
       hasAttachments,
       hasFileContexts,
-      requiresLocalAsr: requiresAsr,
+      requiresAsr: requiresAudioAsr,
+      requiresLocalAsr: requiresAudioAsr,
       sourcePreparation,
       responseMode: "unsupported",
       unsupportedReason: "destructive_action_not_supported",
@@ -247,7 +249,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requestedDocuments: [],
       hasAttachments,
       hasFileContexts,
-      requiresLocalAsr: requiresAsr,
+      requiresAsr: requiresAudioAsr,
+      requiresLocalAsr: requiresAudioAsr,
       sourcePreparation,
       responseMode: "unsupported",
       unsupportedReason: "unsupported_user_request",
@@ -273,7 +276,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requestedDocuments: [],
       hasAttachments,
       hasFileContexts,
-      requiresLocalAsr: requiresAsr,
+      requiresAsr: requiresAudioAsr,
+      requiresLocalAsr: requiresAudioAsr,
       sourcePreparation,
       responseMode: "unsupported",
       unsupportedReason: unsupportedContext.unsupportedReason ?? "unsupported_file_context",
@@ -299,7 +303,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requestedDocuments: [],
       hasAttachments,
       hasFileContexts,
-      requiresLocalAsr: requiresAsr,
+      requiresAsr: requiresAudioAsr,
+      requiresLocalAsr: requiresAudioAsr,
       sourcePreparation,
       responseMode: "ack_file_cached",
       immediateResponse: hasAudioAttachments(attachments) ? "已收到音频，可继续发送处理要求。" : "已收到文件，可继续发送分析要求。",
@@ -312,7 +317,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requestedDocuments: requested,
       hasAttachments,
       hasFileContexts,
-      requiresLocalAsr: requiresAsr,
+      requiresAsr: requiresAudioAsr,
+      requiresLocalAsr: requiresAudioAsr,
       sourcePreparation: {
         ...sourcePreparation,
         requestedDocuments: requested,
@@ -324,7 +330,7 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       responseMode: "document_pipeline",
     });
   }
-  if (requiresAsr || docs.length > 0) {
+  if (requiresAudioAsr || docs.length > 0) {
     const requested = docs.length > 0 ? docs : ["meeting-minutes"];
     const onlyMeetingMinutes = requested.length === 1 && requested[0] === "meeting-minutes";
     return finalizeTaskIntent({
@@ -332,7 +338,8 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requestedDocuments: requested,
       hasAttachments,
       hasFileContexts,
-      requiresLocalAsr: requiresAsr,
+      requiresAsr: requiresAudioAsr,
+      requiresLocalAsr: requiresAudioAsr,
       sourcePreparation: { ...sourcePreparation, requestedDocuments: requested },
       responseMode: "document_pipeline",
     });

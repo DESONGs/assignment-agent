@@ -17,6 +17,7 @@
         "mutate_calendar",
         "assign_task",
         "external_web",
+        "audio_transcription",
         "install_dependency",
         "persist_memory",
         "delete"

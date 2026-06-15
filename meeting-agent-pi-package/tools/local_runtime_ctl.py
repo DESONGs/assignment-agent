@@ -268,6 +268,24 @@ def docker_probe() -> dict[str, Any]:
     return {"ok": False, "reason": "docker_compose_config_failed", "candidates": candidates}
 
 
+def selected_asr_provider() -> dict[str, Any]:
+    requested = (os.environ.get("MEETING_ASR_PROVIDER") or "auto").strip().lower()
+    key_configured = bool((os.environ.get("ALIYUN_DASHSCOPE_API_KEY") or os.environ.get("DASHSCOPE_API_KEY") or "").strip())
+    if requested in ("", "auto"):
+        provider = "aliyun_dashscope_paraformer" if key_configured else "local_qwen3"
+    elif requested in ("cloud", "aliyun", "dashscope", "paraformer", "aliyun_dashscope_paraformer"):
+        provider = "aliyun_dashscope_paraformer"
+    else:
+        provider = "local_qwen3"
+    return {
+        "requested": requested or "auto",
+        "provider": provider,
+        "cloudApiKeyConfigured": key_configured,
+        "localAsrRequired": provider == "local_qwen3",
+        "rawSecretsReturned": False,
+    }
+
+
 def doctor(args: argparse.Namespace) -> dict[str, Any]:
     status = current_status()
     direct_asr = run_command([sys.executable, str(ASR_CTL), "status", "--timeout", str(args.timeout)], timeout=args.timeout + 4)
@@ -278,20 +296,23 @@ def doctor(args: argparse.Namespace) -> dict[str, Any]:
     processes = list_matching_processes()
     handler_health = http_probe(HANDLER_HEALTH_URL, args.timeout)
     docker = docker_probe()
+    asr_provider = selected_asr_provider()
+    local_asr_ok = (direct_asr.get("json") or {}).get("status") == "ok"
     result = {
         "schemaVersion": "local-runtime-doctor-v1",
         "checkedAt": now_iso(),
         "status": "ok"
-        if status.get("status") == "ok" and handler_health.get("ok") and (direct_asr.get("json") or {}).get("status") == "ok"
+        if status.get("status") == "ok" and handler_health.get("ok") and (local_asr_ok or not asr_provider["localAsrRequired"])
         else "blocked",
         "supervisor": status,
         "handlerHealth": handler_health,
+        "asrProvider": asr_provider,
         "asrStatus": direct_asr,
         "docker": docker,
         "matchingFeishuProcesses": processes,
         "notes": [
             "feishu-handler and feishu-gateway should be managed by local_runtime_supervisor, not bare screen",
-            "local-asr remains host-owned and raw audio is not sent to Docker or external ASR",
+            "ASR provider is configurable: local_qwen3 remains host-owned; aliyun_dashscope_paraformer may upload audio for ASR only",
         ],
         "rawSecretsReturned": False,
         "rawMediaExternalUpload": False,

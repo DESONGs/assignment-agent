@@ -369,6 +369,25 @@
       "guardrails": ["raw media local only", "service URL loopback only", "optional bearer token", "input/output root allowlist", "no external fallback"]
     },
     {
+      "capabilityId": "cloud-asr",
+      "status": "available",
+      "description": "Runs Aliyun DashScope Paraformer realtime ASR for meeting audio when cloud provider mode is selected.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read"],
+      "policy": ["raw media upload allowed for ASR stage", "provider allowlist required", "secrets never written to artifacts"],
+      "observability": ["toolCalls", "generatedArtifacts", "contextBudget", "cloudAsrEvents"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "DashScope API key is read from environment only; artifacts record provider/model/events without Authorization values."
+      },
+      "triggers": ["audio", "transcribe", "ASR", "cloud ASR", "DashScope", "百炼", "录音", "音频", "转写", "粤语"],
+      "optionalEnv": ["MEETING_ASR_PROVIDER", "MEETING_ASR_FALLBACK_PROVIDER", "ALIYUN_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", "ALIYUN_DASHSCOPE_WORKSPACE_ID", "ALIYUN_ASR_MODEL", "ALIYUN_ASR_ENDPOINT", "ALIYUN_ASR_LANGUAGE_HINTS", "ALIYUN_ASR_VOCABULARY_ID"],
+      "guardrails": ["audio_transcription policy gate required", "provider must be aliyun_dashscope_paraformer", "document workers receive transcript/evidence only", "no API key in logs or artifacts"]
+    },
+    {
       "capabilityId": "rokid-import",
       "status": "available",
       "description": "Imports local Rokid/Lingzhu export artifacts while keeping media local.",

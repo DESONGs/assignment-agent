@@ -22,12 +22,16 @@ const toolDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(toolDir);
 const workspaceDir = dirname(packageDir);
 const runtimeToolCli = join(toolDir, "runtime_tool_cli.mjs");
+const dashscopeAsrClient = join(toolDir, "dashscope_asr_client.mjs");
 const executionProfilesPath = join(packageDir, "runtime", "execution-profiles.json");
 const DEFAULT_RUNTIME_TOOL_TIMEOUT_MS = 600_000;
 const DEFAULT_DOCUMENT_WORKER_TIMEOUT_MS = 1_800_000;
 const DEFAULT_LONG_DOCUMENT_JOB_TIMEOUT_MS = 7_200_000;
 const DOCUMENT_WORKER_KILL_MARGIN_MS = 30_000;
 const DEFAULT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS = 30_000;
+const DEFAULT_CLOUD_ASR_TIMEOUT_MS = 1_800_000;
+const DEFAULT_CLOUD_ASR_MODEL = "paraformer-realtime-v2";
+const DEFAULT_CLOUD_ASR_LANGUAGE_HINTS = ["yue", "zh", "en"];
 
 const RUNNER_EXECUTION_PROFILES = new Set([
   "fast_answer",
@@ -618,6 +622,22 @@ function audioNormalizePath(outputDir) {
   return join(outputDir, "audio-normalize.json");
 }
 
+function cloudAsrParamsPath(outputDir) {
+  return join(outputDir, "asr", "cloud-asr-params.json");
+}
+
+function cloudAsrResultPath(outputDir) {
+  return join(outputDir, "asr", "cloud-asr-result.json");
+}
+
+function cloudAsrRunPath(outputDir) {
+  return join(outputDir, "asr", "cloud-asr-run.json");
+}
+
+function cloudAsrEventsPath(outputDir) {
+  return join(outputDir, "asr", "cloud-asr-events.ndjson");
+}
+
 function evidencePackPath(outputDir) {
   return join(outputDir, "evidence-pack.json");
 }
@@ -666,10 +686,14 @@ function sourceAudioPaths(task) {
     .filter((item) => item.path && existsSync(item.path));
 }
 
-function audioCacheKey(audios) {
+function audioCacheKey(audios, providerConfig = {}) {
   return hashText(JSON.stringify({
     normalizerVersion: AUDIO_NORMALIZE_VERSION,
     targetSpec: TARGET_AUDIO_SPEC,
+    asrProvider: providerConfig.provider ?? "local_qwen3",
+    asrModel: providerConfig.model ?? null,
+    languageHints: providerConfig.languageHints ?? null,
+    vocabularyId: providerConfig.vocabularyId ?? null,
     sources: audios.map((item) => ({
       sha256: item.sha256 ?? null,
       ext: item.ext,
@@ -683,6 +707,65 @@ function writeAudioNormalizeArtifact(paths, artifact) {
   return writeJson(audioNormalizePath(paths.artifactsDir), artifact);
 }
 
+function normalizeAsrProvider(value) {
+  const provider = String(value ?? "").trim().toLowerCase();
+  if (!provider || provider === "auto") return "auto";
+  if (["local", "local-qwen3", "local_qwen3", "qwen3", "qwen3_asr"].includes(provider)) return "local_qwen3";
+  if (["cloud", "aliyun", "dashscope", "paraformer", "aliyun_dashscope_paraformer"].includes(provider)) return "aliyun_dashscope_paraformer";
+  return provider;
+}
+
+function cloudAsrApiKeyConfigured() {
+  return Boolean(process.env.ALIYUN_DASHSCOPE_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim());
+}
+
+function parseLanguageHints(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  return String(value ?? process.env.ALIYUN_ASR_LANGUAGE_HINTS ?? DEFAULT_CLOUD_ASR_LANGUAGE_HINTS.join(","))
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function resolveAsrProvider(options = {}) {
+  const requested = normalizeAsrProvider(options.asrProvider ?? process.env.MEETING_ASR_PROVIDER ?? "auto");
+  const provider = requested === "auto"
+    ? cloudAsrApiKeyConfigured() ? "aliyun_dashscope_paraformer" : "local_qwen3"
+    : requested;
+  const fallback = normalizeAsrProvider(options.asrFallbackProvider ?? process.env.MEETING_ASR_FALLBACK_PROVIDER ?? "local_qwen3");
+  const model = options.aliyunAsrModel ?? process.env.ALIYUN_ASR_MODEL ?? DEFAULT_CLOUD_ASR_MODEL;
+  const languageHints = parseLanguageHints(options.aliyunAsrLanguageHints);
+  const vocabularyId = options.aliyunAsrVocabularyId ?? process.env.ALIYUN_ASR_VOCABULARY_ID ?? "";
+  return {
+    requested,
+    provider,
+    fallbackProvider: fallback === "auto" ? "local_qwen3" : fallback,
+    model,
+    languageHints,
+    vocabularyId,
+    endpoint: options.aliyunAsrEndpoint ?? process.env.ALIYUN_ASR_ENDPOINT ?? "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    workspaceId: options.aliyunDashscopeWorkspaceId ?? process.env.ALIYUN_DASHSCOPE_WORKSPACE_ID ?? "",
+  };
+}
+
+function userMessageForAsrFailure(asr) {
+  const reason = asr?.reason ?? asr?.failureClass ?? "asr_all_providers_failed";
+  const messages = {
+    cloud_asr_api_key_missing: "云端 ASR 未配置百炼 API Key，暂时无法转写音频。",
+    cloud_asr_auth_failed: "云端 ASR 鉴权失败，请检查百炼 API Key 或模型权限。",
+    cloud_asr_network_unreachable: "云端 ASR 网络连接失败，请稍后重试或切换本机 ASR。",
+    cloud_asr_provider_timeout: "云端 ASR 转写超时，请稍后重试或切换本机 ASR。",
+    cloud_asr_model_unavailable: "云端 ASR 模型不可用，请检查百炼模型配置。",
+    cloud_asr_audio_format_rejected: "云端 ASR 拒绝当前音频格式，自动转码后仍未完成转写。",
+    cloud_asr_partial_result: "云端 ASR 只返回了部分转写结果，暂时无法生成可靠会议纪要。",
+    local_asr_service_not_running: asr?.userMessage ?? "本机 ASR 服务未运行，暂时无法转写音频。",
+    local_asr_service_unavailable: "本机 ASR 服务不可用，暂时无法转写音频。",
+    local_asr_output_incomplete: "本机 ASR 输出不完整，暂时无法生成会议纪要。",
+    asr_all_providers_failed: "本地和云端 ASR 均未完成转写，暂时无法生成会议纪要。",
+  };
+  return messages[reason] ?? `ASR 转写失败：${reason}`;
+}
+
 async function ensureLocalAsr(task, paths, options, hooks) {
   const audios = sourceAudioPaths(task);
   if (audios.length === 0) return { status: "skipped", reason: "no_audio_sources", rawMediaExternalUpload: false };
@@ -691,7 +774,11 @@ async function ensureLocalAsr(task, paths, options, hooks) {
     extensions: [...new Set(audios.map((item) => item.ext).filter(Boolean))],
     rawMediaExternalUpload: false,
   });
-  const key = audioCacheKey(audios);
+  const key = audioCacheKey(audios, {
+    provider: "local_qwen3",
+    model: "mlx-community/Qwen3-ASR-1.7B-4bit",
+    languageHints: ["Chinese"],
+  });
   const existing = completeAsrSummary(paths.artifactsDir);
   if (existing) {
     writeAudioNormalizeArtifact(paths, {
@@ -834,6 +921,284 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   await hooks.onStep?.("local_asr_completed", "completed", { artifact: asrSummaryPath(paths.artifactsDir), cacheStatus: "asr_cache_miss_completed", cacheKey: key });
   await hooks.progressReply?.("录音已转写完成，正在生成文档。", "local_asr_completed");
   return { status: "completed", summary, cacheStatus: "asr_cache_miss_completed", cacheKey: key };
+}
+
+async function runDashScopeAsrClient(params, paths, options) {
+  writeJson(cloudAsrParamsPath(paths.artifactsDir), params);
+  const result = await runCommand(
+    process.execPath,
+    [dashscopeAsrClient, "--params-file", cloudAsrParamsPath(paths.artifactsDir), "--out", cloudAsrResultPath(paths.artifactsDir)],
+    {
+      cwd: workspaceDir,
+      timeoutMs: Number(options.cloudAsrTimeoutMs ?? process.env.ALIYUN_ASR_TIMEOUT_MS ?? DEFAULT_CLOUD_ASR_TIMEOUT_MS) + 30_000,
+    },
+  );
+  if (existsSync(cloudAsrResultPath(paths.artifactsDir))) {
+    try {
+      return loadJson(cloudAsrResultPath(paths.artifactsDir));
+    } catch {
+      // Fall through to stdout/stderr parsing.
+    }
+  }
+  try {
+    return result.stdout ? JSON.parse(result.stdout) : null;
+  } catch {
+    return {
+      status: "blocked",
+      reason: result.timedOut ? "cloud_asr_provider_timeout" : "cloud_asr_client_failed",
+      provider: "aliyun_dashscope_paraformer",
+      exitCode: result.exitCode,
+      stderrTail: redactString(result.stderr).slice(-2000),
+      rawMediaExternalUpload: true,
+      rawSecretsReturned: false,
+    };
+  }
+}
+
+async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, providerConfig, inputPaths, uploadMode) {
+  const policy = await callRuntimeTool("policy_gate_check", {
+    actionIntent: "audio_transcription",
+    capabilityId: "cloud-asr",
+    provider: "aliyun_dashscope_paraformer",
+    asrStage: true,
+    audience: "asr_provider",
+    payloadClass: "audio_transcription",
+    riskLevel: "medium",
+    rawMediaExternalUpload: true,
+    rawTranscriptIncluded: false,
+    explicitUserRequest: true,
+    userRequestedAction: true,
+    destructiveAction: false,
+  }, paths, options);
+  if (policy.status === "blocked") {
+    return {
+      status: "blocked",
+      reason: "raw_media_external_upload_not_allowed",
+      policy,
+      rawMediaExternalUpload: true,
+    };
+  }
+
+  await hooks.progressReply?.("已收到音频，正在使用云端 ASR 转写。", "cloud_asr_started");
+  await hooks.onStep?.("cloud_asr_started", "running", {
+    provider: providerConfig.provider,
+    model: providerConfig.model,
+    audioCount: inputPaths.length,
+    uploadMode,
+    rawMediaExternalUpload: true,
+  });
+  const result = await runDashScopeAsrClient({
+    paths: inputPaths,
+    meetingId: task.runId,
+    meetingTitle: `会议录音 ${new Date().toISOString().slice(0, 10)}`,
+    outputDir: paths.artifactsDir,
+    model: providerConfig.model,
+    endpoint: providerConfig.endpoint,
+    languageHints: providerConfig.languageHints,
+    vocabularyId: providerConfig.vocabularyId,
+    workspaceId: providerConfig.workspaceId,
+    sampleRate: Number(options.aliyunAsrSampleRate ?? process.env.ALIYUN_ASR_SAMPLE_RATE ?? 16000),
+    source: "feishu",
+    privacy: "internal",
+    timeoutMs: Number(options.cloudAsrTimeoutMs ?? process.env.ALIYUN_ASR_TIMEOUT_MS ?? DEFAULT_CLOUD_ASR_TIMEOUT_MS),
+  }, paths, options);
+  if (result?.status !== "completed") {
+    const reason = result?.reason ?? result?.failureClass ?? "cloud_asr_provider_error";
+    await hooks.onStep?.("cloud_asr_completed", "blocked", {
+      reason,
+      failureClass: result?.failureClass ?? reason,
+      artifact: workspaceRelative(cloudAsrRunPath(paths.artifactsDir)),
+      events: workspaceRelative(cloudAsrEventsPath(paths.artifactsDir)),
+      rawMediaExternalUpload: true,
+    });
+    return {
+      status: "blocked",
+      reason,
+      failureClass: result?.failureClass ?? reason,
+      response: result,
+      rawMediaExternalUpload: true,
+    };
+  }
+  const summary = completeAsrSummary(paths.artifactsDir);
+  if (!summary) {
+    return {
+      status: "blocked",
+      reason: "cloud_asr_output_incomplete",
+      response: result,
+      rawMediaExternalUpload: true,
+    };
+  }
+  await hooks.onStep?.("cloud_asr_completed", "completed", {
+    artifact: asrSummaryPath(paths.artifactsDir),
+    runArtifact: workspaceRelative(cloudAsrRunPath(paths.artifactsDir)),
+    events: workspaceRelative(cloudAsrEventsPath(paths.artifactsDir)),
+    uploadMode,
+    rawMediaExternalUpload: true,
+  });
+  await hooks.progressReply?.("录音已转写完成，正在生成文档。", "cloud_asr_completed");
+  return { status: "completed", summary, cacheStatus: "asr_cache_miss_completed", rawMediaExternalUpload: true };
+}
+
+async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfig) {
+  const key = audioCacheKey(audios, {
+    provider: providerConfig.provider,
+    model: providerConfig.model,
+    languageHints: providerConfig.languageHints,
+    vocabularyId: providerConfig.vocabularyId || null,
+  });
+  const existing = completeAsrSummary(paths.artifactsDir);
+  if (existing) {
+    writeAudioNormalizeArtifact(paths, {
+      schemaVersion: AUDIO_NORMALIZE_VERSION,
+      version: AUDIO_NORMALIZE_VERSION,
+      status: "completed",
+      reason: "current_run_artifact",
+      cacheKey: key,
+      targetSpec: "cloud_asr_provider_native",
+      normalizedAudios: [],
+      rawSecretsReturned: false,
+      rawMediaExternalUpload: true,
+      provider: providerConfig.provider,
+    });
+    await hooks.onStep?.("cloud_asr_started", "skipped", { cacheStatus: "current_run_artifact", rawMediaExternalUpload: true });
+    await hooks.onStep?.("cloud_asr_completed", "completed", { artifact: asrSummaryPath(paths.artifactsDir), cacheStatus: "current_run_artifact", rawMediaExternalUpload: true });
+    return { status: "completed", summary: existing, cacheStatus: "current_run_artifact", cacheKey: key, rawMediaExternalUpload: true };
+  }
+
+  const cacheDir = asrCacheDir(paths, key);
+  const cached = completeAsrSummary(cacheDir);
+  if (cached) {
+    mkdirSync(paths.artifactsDir, { recursive: true });
+    copyAsrArtifacts(cacheDir, paths.artifactsDir);
+    writeAudioNormalizeArtifact(paths, {
+      schemaVersion: AUDIO_NORMALIZE_VERSION,
+      version: AUDIO_NORMALIZE_VERSION,
+      status: "completed",
+      reason: "asr_cache_hit",
+      cacheKey: key,
+      targetSpec: "cloud_asr_provider_native",
+      normalizedAudios: [],
+      rawSecretsReturned: false,
+      rawMediaExternalUpload: true,
+      provider: providerConfig.provider,
+    });
+    await hooks.onStep?.("cloud_asr_started", "skipped", { cacheStatus: "asr_cache_hit", rawMediaExternalUpload: true });
+    await hooks.onStep?.("cloud_asr_completed", "completed", { artifact: asrSummaryPath(paths.artifactsDir), cacheStatus: "asr_cache_hit", cacheKey: key, rawMediaExternalUpload: true });
+    await hooks.progressReply?.("录音已转写完成，正在生成文档。", "cloud_asr_completed");
+    return { status: "completed", summary: cached, cacheStatus: "asr_cache_hit", cacheKey: key, rawMediaExternalUpload: true };
+  }
+
+  writeAudioNormalizeArtifact(paths, {
+    schemaVersion: AUDIO_NORMALIZE_VERSION,
+    version: AUDIO_NORMALIZE_VERSION,
+    status: "completed",
+    reason: "cloud_asr_raw_input",
+    cacheKey: key,
+    targetSpec: "cloud_asr_provider_native",
+    normalizedAudios: [],
+    rawSecretsReturned: false,
+    rawMediaExternalUpload: true,
+    provider: providerConfig.provider,
+  });
+  await hooks.onStep?.("audio_normalized", "skipped", {
+    artifact: audioNormalizePath(paths.artifactsDir),
+    reason: "cloud_asr_raw_input",
+    rawMediaExternalUpload: true,
+  });
+  const direct = await ensureCloudAsrWithPaths(task, paths, options, hooks, audios, providerConfig, audios.map((item) => item.path), "raw_attachment");
+  if (direct.status === "completed") {
+    mkdirSync(cacheDir, { recursive: true });
+    copyAsrArtifacts(paths.artifactsDir, cacheDir);
+    return { ...direct, cacheKey: key };
+  }
+  if (direct.reason !== "cloud_asr_audio_format_rejected") return direct;
+
+  const normalized = await normalizeAudioBatch(audios, join(paths.artifactsDir, "audio-normalized"), {
+    workspaceDir,
+    timeoutMs: Number(options.audioNormalizeTimeoutMs ?? process.env.FEISHU_AGENT_AUDIO_NORMALIZE_TIMEOUT_MS ?? 1_200_000),
+    transcoder: options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER,
+  });
+  writeAudioNormalizeArtifact(paths, {
+    ...normalized,
+    provider: providerConfig.provider,
+    rawMediaExternalUpload: true,
+    reason: normalized.status === "completed" ? "cloud_asr_format_retry_normalized" : normalized.reason,
+  });
+  if (normalized.status !== "completed") {
+    await hooks.onStep?.("audio_normalized", "blocked", {
+      artifact: audioNormalizePath(paths.artifactsDir),
+      reason: normalized.reason ?? "audio_normalize_failed",
+      rawMediaExternalUpload: true,
+    });
+    return { ...normalized, rawMediaExternalUpload: true };
+  }
+  const normalizedPaths = normalized.normalizedAudios.map((item) => item.normalizedPath);
+  await hooks.onStep?.("audio_normalized", "completed", {
+    artifact: audioNormalizePath(paths.artifactsDir),
+    audioCount: normalizedPaths.length,
+    targetSpec: TARGET_AUDIO_SPEC,
+    reason: "cloud_asr_format_retry_normalized",
+    rawMediaExternalUpload: true,
+  });
+  const retry = await ensureCloudAsrWithPaths(task, paths, options, hooks, audios, providerConfig, normalizedPaths, "normalized_retry");
+  if (retry.status === "completed") {
+    mkdirSync(cacheDir, { recursive: true });
+    copyAsrArtifacts(paths.artifactsDir, cacheDir);
+    return { ...retry, cacheKey: key };
+  }
+  return retry;
+}
+
+async function ensureAsrTranscription(task, paths, options, hooks) {
+  const audios = sourceAudioPaths(task);
+  if (audios.length === 0) return { status: "skipped", reason: "no_audio_sources", rawMediaExternalUpload: false };
+  const providerConfig = resolveAsrProvider(options);
+  await hooks.onStep?.("asr_provider_resolved", "completed", {
+    requestedProvider: providerConfig.requested,
+    provider: providerConfig.provider,
+    fallbackProvider: providerConfig.fallbackProvider,
+    model: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.model : null,
+    languageHints: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.languageHints : null,
+    apiKeyConfigured: providerConfig.provider === "aliyun_dashscope_paraformer" ? cloudAsrApiKeyConfigured() : null,
+    rawMediaExternalUpload: providerConfig.provider === "aliyun_dashscope_paraformer",
+  });
+
+  if (providerConfig.provider === "local_qwen3") return ensureLocalAsr(task, paths, options, hooks);
+  if (providerConfig.provider !== "aliyun_dashscope_paraformer") {
+    return {
+      status: "blocked",
+      reason: "asr_provider_unsupported",
+      provider: providerConfig.provider,
+      rawMediaExternalUpload: false,
+    };
+  }
+
+  await hooks.onStep?.("audio_downloaded", "completed", {
+    audioCount: audios.length,
+    extensions: [...new Set(audios.map((item) => item.ext).filter(Boolean))],
+    rawMediaExternalUpload: true,
+  });
+  const cloud = await ensureCloudAsr(task, paths, options, hooks, audios, providerConfig);
+  if (cloud.status === "completed") return cloud;
+
+  const fallbackAllowed = providerConfig.fallbackProvider === "local_qwen3" && !["cloud_asr_api_key_missing", "cloud_asr_auth_failed"].includes(cloud.reason);
+  if (!fallbackAllowed) return cloud;
+
+  await hooks.onStep?.("asr_provider_fallback_used", "running", {
+    from: providerConfig.provider,
+    to: "local_qwen3",
+    primaryReason: cloud.reason,
+    rawMediaExternalUpload: false,
+  });
+  const local = await ensureLocalAsr(task, paths, options, hooks);
+  if (local.status === "completed") return { ...local, fallbackFrom: providerConfig.provider };
+  return {
+    status: "blocked",
+    reason: "asr_all_providers_failed",
+    primaryFailure: cloud,
+    fallbackFailure: local,
+    rawMediaExternalUpload: true,
+  };
 }
 
 function readTextIfAvailable(path, maxChars = 30000) {
@@ -1945,12 +2310,12 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     const requestedDocuments = Array.isArray(task.taskIntent?.requestedDocuments) && task.taskIntent.requestedDocuments.length > 0
       ? task.taskIntent.requestedDocuments
       : ["meeting-minutes"];
-    const requiresLocalAsr = task.taskIntent?.requiresLocalAsr === true;
+    const requiresLocalAsr = task.taskIntent?.requiresAsr === true || task.taskIntent?.requiresLocalAsr === true;
     let asr = { status: "skipped", reason: "no_audio_sources" };
     if (requiresLocalAsr) {
-      asr = await ensureLocalAsr(task, paths, options, hooks);
+      asr = await ensureAsrTranscription(task, paths, options, hooks);
       if (asr.status !== "completed") {
-        const output = blockedOutput(asr.userMessage ?? "转写未完成，暂时无法生成文档。", asr);
+        const output = blockedOutput(asr.userMessage ?? userMessageForAsrFailure(asr), asr);
         writeJson(paths.agentOutputPath, output);
         return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
       }

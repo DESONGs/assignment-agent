@@ -235,8 +235,14 @@ function buildEnvelope(params: any) {
 
   if (taskType === "meeting_minutes" && (longOrMulti || hasAny(text, ["audio", "video", "asr", "录音", "转写", "音频", "视频"]))) {
     addCapability(capabilities, {
+      capabilityId: "cloud-asr",
+      reason: "Meeting media may use configured cloud ASR provider for dialect and mixed-language transcription.",
+      loadMode: "lazy",
+      contextCost: "medium",
+    });
+    addCapability(capabilities, {
       capabilityId: "local-asr",
-      reason: "Meeting media or long-session ingestion may require local transcription; raw media must remain local.",
+      reason: "Local transcription remains available for offline use or cloud provider fallback.",
       loadMode: "lazy",
       contextCost: "medium",
     });

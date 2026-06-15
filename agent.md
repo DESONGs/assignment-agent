@@ -44,7 +44,7 @@
 - 从 `.env.example` 复制生成 `.env.local`，只在 `.env.local` 填真实 LLM API key。
 - 默认主控/文档生成 LLM 是 DeepSeek V4：`PI_PROVIDER=deepseek`、`PI_MODEL=deepseek-v4-pro`。
 - 复核/兜底 LLM 是小米 MiMo Token Plan SGP：`PI_REVIEW_PROVIDER=xiaomi-token-plan-sgp`、`PI_REVIEW_MODEL=mimo-v2.5-pro`。
-- 会议语义层默认权限：`MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow`、`MEETING_RAW_MEDIA_EXTERNAL_UPLOAD_DEFAULT=deny`。即 transcript/evidence 文本默认可发 DeepSeek/小米；原始录音、视频、base64 音频和 raw media 默认不可外发。
+- 会议语义层默认权限：`MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow`。ASR 阶段允许按 `MEETING_ASR_PROVIDER` 使用本地或云端 provider；原始录音可上传到明确配置的云端 ASR。ASR 之后，document worker、QA、Docker、Hermes、DeepSeek/小米仍只能接收 transcript/evidence 文本，不得接收 raw audio、视频或 base64 音频。
 - `.pi/settings.json` 只用于加载 `meeting-agent-pi-package`，不得写 provider、model、endpoint 或 API key。
 - 飞书凭证不进入 `.env.local`；飞书登录态、token 和 session 交给官方 `lark-cli` 管理。
 - 未脱敏的 `lark-cli auth status --verify` 输出不得进入模型上下文；如需用 PI 验证登录态，只允许使用 `feishu_cli(["auth","status","--verify"], redactionPolicy="auth-status-summary")` 这类脱敏摘要。
@@ -71,18 +71,19 @@ set +a
 pi --provider "$PI_REVIEW_PROVIDER" --model "$PI_REVIEW_MODEL"
 ```
 
-## 本地 ASR 默认策略
+## ASR Provider 默认策略
 
-会议音频转文字默认采用本地 Qwen3-ASR HTTP 服务，不再把原始音频上传给外部模型服务。PI 只通过 `meeting_transcribe_local_asr` 调 `LOCAL_ASR_SERVICE_URL`，不得直接启动批处理转写脚本作为兜底。
+会议音频转文字采用 provider abstraction：`MEETING_ASR_PROVIDER=auto|local_qwen3|aliyun_dashscope_paraformer`。默认 `auto`：存在百炼/DashScope API key 时优先云端 `aliyun_dashscope_paraformer`，否则回落本地 `local_qwen3`。不得直接启动批处理转写脚本作为兜底。
 
-- 默认 ASR 模型：`mlx-community/Qwen3-ASR-1.7B-4bit`。
+- 本地 ASR 模型：`mlx-community/Qwen3-ASR-1.7B-4bit`。
 - 本地模型目录：`models/Qwen3-ASR-1.7B-MLX-4bit`。
-- 服务入口：`meeting-agent-pi-package/tools/local_asr_http_service.py`，默认 `http://127.0.0.1:8765`。
+- 本地服务入口：`meeting-agent-pi-package/tools/local_asr_http_service.py`，默认 `http://127.0.0.1:8765`。
+- 云端 ASR provider：`aliyun_dashscope_paraformer`，默认模型 `paraformer-realtime-v2`，默认语言提示 `yue,zh,en`。
 - 运行时：Apple Silicon 上的 `mlx-qwen3-asr` / MLX Metal，服务常驻加载模型。
 - 默认切片：30 秒固定非重叠 chunk，便于断点续跑和 evidence 引用。
 - 输出：`transcriptSegments` 必须包含 `sourceFile`、`sourceHashSha256`、`chunkIndex`、`startSec`、`endSec`、`text`、`model`、`endpoint`。
-- 原始音频上传：默认禁止；除非用户单独明确授权，并且当前架构明确新增外部 ASR 路径。
-- 故障策略：本地 ASR 服务不可用时阻塞并报告 `local_asr_service_unavailable`；不自动改走小米、DeepSeek 或脚本兜底。
+- 原始音频上传：只允许在 ASR provider 阶段上传到配置的云端 ASR；后续文档、QA、发布、Hermes 和 Docker 阶段不得接收 raw audio。
+- 故障策略：云端 ASR 需区分鉴权、网络、模型、格式、超时和 partial；本地 ASR 服务不可用时报告 `local_asr_service_unavailable`。不得自动改走小米、DeepSeek 或脚本兜底。
 
 启动本地 ASR 服务：
 
@@ -101,7 +102,7 @@ pi --provider "$PI_REVIEW_PROVIDER" --model "$PI_REVIEW_MODEL"
 - 0 个失败 chunk。
 - 总 ASR 耗时约 17.94 分钟，RTF 约 0.317，约 3.15x realtime。
 
-会议 agent 后续阶段的参考链路是：local ASR -> evidence index -> planner 选择 meeting-minutes/document-router/writer -> 模型路由生成会议纪要、PRD/技术/运营文档 -> 小米 MiMo 或 QA worker 复核遗漏、幻觉、owner/deadline 和证据引用 -> QA safety review -> 可选飞书发布。该链路只适用于会议纪要/后续文档场景，不是 PI 全局固定 workflow。权限核心原则是：原始音频/视频只进入本地 ASR，不外发；ASR 后的 transcript/evidence、纪要草稿、复核意见和飞书文档写入默认放行，不要求每次重复授权。执行 agent 不得为了该默认放行动作创建临时脚本绕过工具链，应使用 PI provider、现有 prompt/skill 和 Feishu CLI 直通能力。
+会议 agent 后续阶段的参考链路是：ASR provider -> evidence index -> planner 选择 meeting-minutes/document-router/writer -> 模型路由生成会议纪要、PRD/技术/运营文档 -> 小米 MiMo 或 QA worker 复核遗漏、幻觉、owner/deadline 和证据引用 -> QA safety review -> 可选飞书发布。该链路只适用于会议纪要/后续文档场景，不是 PI 全局固定 workflow。权限核心原则是：原始音频只在 ASR 阶段处理；ASR 后的 transcript/evidence、纪要草稿、复核意见和飞书文档写入默认放行，不要求每次重复授权。执行 agent 不得为了该默认放行动作创建临时脚本绕过工具链，应使用 PI provider、现有 prompt/skill 和 Feishu CLI 直通能力。
 
 ## Phase 顺序
 
@@ -137,7 +138,7 @@ PI 输出 sanitized trajectory。Hermes sidecar 输出 proposal。人工 review 
 - 在 `.pi/settings.json`、wiki、trajectory、sidecar output 中写入 LLM API key、飞书 token 或 CLI session。
 - 将未脱敏的飞书登录态验证输出送入外部模型。
 - 把原始会议全文写入长期记忆。
-- 把原始录音、原始视频、base64 音频或未抽取的 raw media 上传给 DeepSeek、小米、飞书、Hermes 或其他外部服务。
+- 把原始录音、原始视频、base64 音频或未抽取的 raw media 上传给 DeepSeek、小米、飞书、Hermes、Docker/document worker 或非 ASR 外部服务。
 - 让 Hermes 持有飞书/Rokid token。
 - 让 Hermes 直接修改生产 skill/prompt。
 - 安装或运行 `mistralai==2.4.6`。
@@ -150,7 +151,7 @@ PI 输出 sanitized trajectory。Hermes sidecar 输出 proposal。人工 review 
 - 飞书文件夹创建、Markdown/文档创建、移动和更新默认按用户任务目标直接执行，不因普通会议内容再次请求授权。
 - 需要预览或确认时，可以显式调用可选 `approval_request`，但它不是飞书执行前置条件。
 - dry-run 只作为用户明确要求的预览策略，不是默认规则。
-- 只有外部 ASR 处理原始音视频、发送 IM/日历/任务给第三方、客户可见发布、安装依赖、扩大飞书/Rokid 权限 scope 时，才需要单独确认。
+- 只有发送 IM/日历/任务给第三方、客户可见发布、安装依赖、扩大飞书/Rokid 权限 scope，或把 raw media 交给非 ASR 外部服务时，才需要单独确认。
 
 ## 文档输出规则
 

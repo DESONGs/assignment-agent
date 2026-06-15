@@ -98,6 +98,8 @@ REQUIRED_RUNTIME_FILES = [
     "hermes-wiki-candidate.schema.json",
     "execution-profiles.json",
     "execution-profiles.schema.json",
+    "asr-providers.json",
+    "asr-providers.schema.json",
     "tool-load-manifest.json",
 ]
 
@@ -122,6 +124,7 @@ LIGHT_PROFILE_SKIPPED_STAGE_ALIASES = {
 PROFILE_REQUIRED_MARKER_ALIASES = {
     "audio_minutes": {
         "audio_normalize": ("audio_normalize", "audio normalize", "audio-normalize", "audio_normalized"),
+        "asr_transcribe": ("asr_transcribe", "asr provider", "asr_provider_resolved", "cloud_asr", "local_asr"),
         "local_asr": ("local_asr", "local ASR", "local-asr", "meeting_transcribe_local_asr"),
         "meeting_minutes": ("meeting_minutes", "meeting minutes", "meeting-minutes"),
     },
@@ -378,6 +381,8 @@ def capability_trace_markers(capability_id: str) -> set[str]:
         markers.update({"file-context", "fileContext"})
     if capability_id == "local-asr":
         markers.update({"local_asr", "meeting_transcribe_local_asr", "LOCAL_ASR"})
+    if capability_id == "cloud-asr":
+        markers.update({"cloud_asr", "meeting_transcribe_cloud_asr", "dashscope_asr_client", "ALIYUN_DASHSCOPE_API_KEY"})
     if capability_id == "model-fallback":
         markers.update({"model_route", "model-routing", "automaticFallback"})
     if capability_id == "calendar-task":
@@ -725,7 +730,8 @@ def validate_prompts() -> None:
         "feishuFileName",
         "Document Title Plan",
         "Markdown H1 必须等于 `meetingTitle`",
-        "ASR 后 transcript/evidence 文本是默认允许的语义输入",
+        "原始音频只允许在 ASR provider 阶段上传",
+        "只能使用 transcript/evidence 文本",
         "meetingProfile",
         "siblingForbiddenTerms",
         "unsupportedEntities",
@@ -1056,6 +1062,12 @@ def validate_extensions() -> None:
         "audio_downloaded",
         "audio_normalized",
         "audio-normalize.json",
+        "asr_provider_resolved",
+        "ensureAsrTranscription",
+        "aliyun_dashscope_paraformer",
+        "dashscope_asr_client.mjs",
+        "cloud_asr_completed",
+        "MEETING_ASR_PROVIDER",
         "local_asr_preflight",
         "local_asr_service_not_running",
         "FEISHU_AGENT_LOCAL_ASR_HEALTH_TIMEOUT_MS",
@@ -1110,6 +1122,8 @@ def validate_extensions() -> None:
         "handler_health_failed",
         "rawSecretsReturned",
         "rawMediaExternalUpload",
+        "provider_aware_local_asr_service_ctl_status",
+        "aliyun_dashscope_paraformer",
     ):
         if marker not in local_runtime_supervisor_text:
             fail(f"local_runtime_supervisor.py missing production supervisor marker: {marker}")
@@ -1121,7 +1135,8 @@ def validate_extensions() -> None:
         "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",
         "meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs",
         "asr_is_host_owned_and_not_stopped_by_default",
-        "local-asr remains host-owned",
+        "local_qwen3 remains host-owned",
+        "aliyun_dashscope_paraformer",
     ):
         if marker not in local_runtime_ctl_text:
             fail(f"local_runtime_ctl.py missing production control marker: {marker}")
@@ -1824,6 +1839,7 @@ def validate_runtime_configs() -> None:
         "document-lifecycle.schema.json": ("document-lifecycle-v1", "version", "documentId", "channel", "context", "sourceRun", "lifecycleEvents", "diffPointer", "destructiveActionsAllowed", "rawMediaExternalUpload"),
         "retrieval-index.schema.json": ("retrieval-index-v1", "version", "channel", "context", "sourceRun", "pointerOnly", "entries", "artifactPointer", "summaryPointer", "embeddingPointer", "boundedPreview", "rawMediaExternalUpload"),
         "source-context.schema.json": ("source-context-v1/context-manifest", "runtime-context-plane-v1", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "documentIdentity", "outputContract", "document-output-contract-v1", "retrievalPlanPath", "contextPackId", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "retrievalReasons", "vectorStoreUsed"),
+        "asr-providers.schema.json": ("asr-providers-v1", "local_qwen3", "aliyun_dashscope_paraformer", "rawMediaExternalUpload", "languageHints"),
     }.items():
         schema_text = json.dumps(load_json(runtime_root / schema_name), ensure_ascii=False)
         for marker in markers:

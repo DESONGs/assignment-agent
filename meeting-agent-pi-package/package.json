@@ -31,5 +31,8 @@
     "@larksuiteoapi/node-sdk": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "ws": "^8.20.1"
   }
 }

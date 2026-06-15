@@ -1,11 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { extname, basename, resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { spawn } from "node:child_process";
 
 type LocalAsrServiceResult = {
   ok: boolean;
@@ -13,6 +14,13 @@ type LocalAsrServiceResult = {
   body: unknown;
   text: string;
   error?: string;
+};
+
+type CommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
 };
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
@@ -141,6 +149,40 @@ function postJsonToAsrService(
     });
     req.write(body);
     req.end();
+  });
+}
+
+function runCommand(command: string, args: string[], timeoutMs: number): Promise<CommandResult> {
+  return new Promise((resolveCommand) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const child = spawn(command, args, {
+      cwd: workspaceDir,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.length > 5_000_000) child.kill("SIGTERM");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 5_000_000) child.kill("SIGTERM");
+    });
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolveCommand({ exitCode: error.code === "ENOENT" ? 127 : 1, stdout, stderr: stderr || error.message, timedOut });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolveCommand({ exitCode: code ?? 1, stdout, stderr, timedOut });
+    });
   });
 }
 
@@ -282,6 +324,69 @@ export default function (pi: ExtensionAPI) {
         externalAudioUpload: false,
         response: serviceResult.body,
       };
+      return {
+        content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "meeting_transcribe_cloud_asr",
+    label: "Transcribe Meeting With Cloud ASR",
+    description:
+      "Transcribe meeting audio through Aliyun DashScope Paraformer realtime ASR. Raw audio may be uploaded only for this ASR stage; API keys are read from environment and never written to artifacts.",
+    parameters: Type.Object({
+      paths: Type.Array(Type.String({ description: "Local audio paths to upload to the ASR provider." })),
+      meetingId: Type.String({ description: "Meeting id used in output metadata." }),
+      outputDir: Type.String({ description: "Artifact output directory." }),
+      meetingTitle: Type.Optional(Type.String({ description: "Meeting title for evidence-index.json." })),
+      model: Type.Optional(Type.String({ description: "Defaults to ALIYUN_ASR_MODEL or paraformer-realtime-v2." })),
+      endpoint: Type.Optional(Type.String({ description: "DashScope WebSocket endpoint." })),
+      languageHints: Type.Optional(Type.Array(Type.String({ description: "DashScope language_hints, e.g. yue zh en." }))),
+      vocabularyId: Type.Optional(Type.String({ description: "DashScope vocabulary_id." })),
+      workspaceId: Type.Optional(Type.String({ description: "DashScope workspace id header." })),
+      sampleRate: Type.Optional(Type.Number({ description: "sample_rate sent to DashScope. Defaults to 16000." })),
+      source: Type.Optional(Type.String({ description: "Source label written into metadata. Defaults to feishu." })),
+      privacy: Type.Optional(Type.String({ description: "Privacy label written into metadata. Defaults to internal." })),
+      timeoutMs: Type.Optional(Type.Number({ description: "Execution timeout in milliseconds. Defaults to 1800000." })),
+    }),
+    async execute(_toolCallId, params) {
+      const outputDir = resolve(params.outputDir);
+      const timeoutMs = params.timeoutMs ?? 1_800_000;
+      const paramsPath = join(outputDir, "asr", "cloud-asr-tool-params.json");
+      const resultPath = join(outputDir, "asr", "cloud-asr-tool-result.json");
+      const payload = {
+        ...params,
+        paths: params.paths.map((path) => resolve(path)),
+        outputDir,
+        source: params.source ?? "feishu",
+        privacy: params.privacy ?? "internal",
+      };
+      mkdirSync(dirname(paramsPath), { recursive: true });
+      writeFileSync(paramsPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+      const result = await runCommand(
+        process.execPath,
+        [join(packageDir, "tools", "dashscope_asr_client.mjs"), "--params-file", paramsPath, "--out", resultPath],
+        timeoutMs + 30_000,
+      );
+      let details: any = null;
+      try {
+        details = result.stdout ? JSON.parse(result.stdout) : null;
+      } catch {
+        details = null;
+      }
+      if (result.exitCode !== 0 || !details) {
+        details = {
+          status: "blocked",
+          reason: result.timedOut ? "cloud_asr_provider_timeout" : "cloud_asr_client_failed",
+          provider: "aliyun_dashscope_paraformer",
+          exitCode: result.exitCode,
+          stderrTail: result.stderr.slice(-2000),
+          rawSecretsReturned: false,
+          rawMediaExternalUpload: true,
+        };
+      }
       return {
         content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
         details,

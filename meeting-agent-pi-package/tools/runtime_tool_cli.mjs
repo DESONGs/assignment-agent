@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const toolDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(toolDir);
@@ -28,7 +29,32 @@ const LOCAL_ENV_ALLOWLIST = new Set([
   "PI_REVIEW_PROVIDER",
   "PI_REVIEW_MODEL",
   "MODEL_PROVIDER_MAX_TIMEOUT_MS",
+  "MEETING_ASR_PROVIDER",
+  "MEETING_ASR_FALLBACK_PROVIDER",
+  "ALIYUN_DASHSCOPE_API_KEY",
+  "DASHSCOPE_API_KEY",
+  "ALIYUN_DASHSCOPE_WORKSPACE_ID",
+  "ALIYUN_ASR_MODEL",
+  "ALIYUN_ASR_ENDPOINT",
+  "ALIYUN_ASR_LANGUAGE_HINTS",
+  "ALIYUN_ASR_VOCABULARY_ID",
+  "ALIYUN_ASR_SAMPLE_RATE",
+  "ALIYUN_ASR_TIMEOUT_MS",
+  "ALIYUN_ASR_AUDIO_FRAME_BYTES",
+  "ALIYUN_ASR_AUDIO_FRAME_DELAY_MS",
 ]);
+
+function ensureTypeScriptImportSupport() {
+  const hasStripTypes = process.execArgv.includes("--experimental-strip-types") ||
+    String(process.env.NODE_OPTIONS ?? "").includes("--experimental-strip-types");
+  if (hasStripTypes || process.env.FEISHU_AGENT_RUNTIME_TOOL_REEXEC_STRIP_TYPES === "1") return;
+  const result = spawnSync(process.execPath, ["--experimental-strip-types", ...process.argv.slice(1)], {
+    cwd: process.cwd(),
+    env: { ...process.env, FEISHU_AGENT_RUNTIME_TOOL_REEXEC_STRIP_TYPES: "1" },
+    stdio: "inherit",
+  });
+  process.exit(result.status ?? 1);
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -228,6 +254,7 @@ async function loadTools({ profile = "", requestedTool = "" } = {}) {
 }
 
 async function main() {
+  ensureTypeScriptImportSupport();
   const args = parseArgs(process.argv.slice(2));
   loadRuntimeEnv(args);
   const tool = String(args.tool ?? "");

@@ -21,6 +21,7 @@
         "requestedDocuments": { "type": "array", "items": { "type": "string" } },
         "hasAttachments": { "type": "boolean" },
         "hasFileContexts": { "type": "boolean" },
+        "requiresAsr": { "type": "boolean" },
         "requiresLocalAsr": { "type": "boolean" },
         "sourcePreparation": {
           "type": "object",
@@ -28,6 +29,7 @@
             "sourceSetMode": { "enum": ["consolidated"] },
             "inputModalities": { "type": "array", "items": { "type": "string" } },
             "sourceReferences": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+            "requiresAsr": { "type": "boolean" },
             "requiresLocalAsr": { "type": "boolean" },
             "requestedDocuments": { "type": "array", "items": { "type": "string" } },
             "conflictPolicy": { "const": "source_attribution" }
