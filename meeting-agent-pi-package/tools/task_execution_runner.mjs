@@ -32,7 +32,8 @@ const DOCUMENT_WORKER_KILL_MARGIN_MS = 30_000;
 const DEFAULT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS = 30_000;
 const DEFAULT_CLOUD_ASR_TIMEOUT_MS = 1_800_000;
 const DEFAULT_CLOUD_ASR_MODEL = "paraformer-realtime-v2";
-const DEFAULT_CLOUD_ASR_FILE_MODEL = "paraformer-v2";
+const DEFAULT_CLOUD_ASR_FILE_MODEL = "fun-asr";
+const DEFAULT_CLOUD_ASR_SINGLE_MIX_REVIEW_MODEL = "paraformer-v2";
 const DEFAULT_CLOUD_ASR_LANGUAGE_HINTS = ["yue", "zh", "en"];
 
 const RUNNER_EXECUTION_PROFILES = new Set([
@@ -696,6 +697,8 @@ function audioCacheKey(audios, providerConfig = {}) {
     asrModel: providerConfig.model ?? null,
     asrFileModel: providerConfig.fileModel ?? null,
     asrInputMode: providerConfig.inputMode ?? null,
+    singleMixMode: providerConfig.singleMixMode ?? null,
+    singleMixReviewModel: providerConfig.singleMixReviewModel ?? null,
     speakerDiarization: providerConfig.diarizationEnabled ?? null,
     speakerCount: providerConfig.speakerCount ?? null,
     languageHints: providerConfig.languageHints ?? null,
@@ -749,6 +752,8 @@ function resolveAsrProvider(options = {}) {
     fallbackProvider: fallback === "auto" ? "local_qwen3" : fallback,
     model,
     fileModel,
+    singleMixMode: options.aliyunAsrSingleMixMode ?? process.env.ALIYUN_ASR_SINGLE_MIX_MODE ?? "robust",
+    singleMixReviewModel: options.aliyunAsrSingleMixReviewModel ?? process.env.ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL ?? DEFAULT_CLOUD_ASR_SINGLE_MIX_REVIEW_MODEL,
     inputMode: options.aliyunAsrInputMode ?? process.env.ALIYUN_ASR_INPUT_MODE ?? "auto",
     diarizationEnabled: options.aliyunAsrDiarizationEnabled ?? process.env.ALIYUN_ASR_DIARIZATION_ENABLED ?? "auto",
     speakerCount: options.aliyunAsrSpeakerCount ?? process.env.ALIYUN_ASR_SPEAKER_COUNT ?? "",
@@ -1005,6 +1010,8 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
     provider: providerConfig.provider,
     model: providerConfig.model,
     fileModel: providerConfig.fileModel,
+    singleMixMode: providerConfig.singleMixMode,
+    singleMixReviewModel: providerConfig.singleMixReviewModel,
     inputMode: providerConfig.inputMode,
     diarizationEnabled: providerConfig.diarizationEnabled,
     speakerCount: providerConfig.speakerCount || null,
@@ -1019,6 +1026,8 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
     outputDir: paths.artifactsDir,
     model: providerConfig.model,
     fileModel: providerConfig.fileModel,
+    singleMixMode: providerConfig.singleMixMode,
+    singleMixReviewModel: providerConfig.singleMixReviewModel,
     inputMode: providerConfig.inputMode,
     fileEndpoint: providerConfig.fileEndpoint,
     diarizationEnabled: providerConfig.diarizationEnabled,
@@ -1077,6 +1086,8 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
     provider: providerConfig.provider,
     model: providerConfig.model,
     fileModel: providerConfig.fileModel,
+    singleMixMode: providerConfig.singleMixMode,
+    singleMixReviewModel: providerConfig.singleMixReviewModel,
     inputMode: providerConfig.inputMode,
     diarizationEnabled: providerConfig.diarizationEnabled,
     speakerCount: providerConfig.speakerCount || null,

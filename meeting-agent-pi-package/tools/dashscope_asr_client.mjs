@@ -14,10 +14,12 @@ import {
   realtimeFormatForPath,
 } from "./asr_media_formats.mjs";
 import { normalizeDiarizationPreference, normalizeSpeakerCount, prepareFileDiarization } from "./asr_diarization_helpers.mjs";
+import { buildSingleMixAnalysis, normalizeSingleMixMode } from "./single_mix_asr_helpers.mjs";
 
 const DEFAULT_ENDPOINT = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
 const DEFAULT_MODEL = "paraformer-realtime-v2";
-const DEFAULT_FILE_MODEL = "paraformer-v2";
+const DEFAULT_FILE_MODEL = "fun-asr";
+const DEFAULT_SINGLE_MIX_REVIEW_MODEL = "paraformer-v2";
 const DEFAULT_LANGUAGE_HINTS = ["yue", "zh", "en"];
 const DEFAULT_FILE_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const DEFAULT_OSS_SIGNED_URL_TTL_SECONDS = 24 * 60 * 60;
@@ -74,7 +76,8 @@ function readableTranscript(meetingTitle, segments) {
       ? "说话人待确认"
       : `说话人 ${Number.isFinite(Number(segment.speakerId)) ? Number(segment.speakerId) + 1 : segment.speakerId}`;
     const channel = segment.channelId === null || segment.channelId === undefined ? "" : ` · 声道 ${segment.channelId}`;
-    lines.push(`- **${time} · ${speaker}${channel}** ${segment.text}`);
+    const review = segment.singleMixEvidence?.status === "needs_review" ? " · 单录混音复核待确认" : "";
+    lines.push(`- **${time} · ${speaker}${channel}${review}** ${segment.text}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -715,6 +718,22 @@ function mockFileRun(params, source, eventPath) {
   const preference = normalizeDiarizationPreference(params.diarizationEnabled ?? "auto");
   const speakerCountHint = normalizeSpeakerCount(params.speakerCount);
   const detectedSpeakers = [...new Set(sentences.map((sentence) => sentence.speaker_id).filter((value) => value !== null && value !== undefined))];
+  const primarySegments = fileTranscriptSegments({ transcripts: [{ sentences }] }, source, model);
+  const singleMixMode = normalizeSingleMixMode(params.singleMixMode);
+  const reviewModel = params.singleMixReviewModel ?? DEFAULT_SINGLE_MIX_REVIEW_MODEL;
+  const reviewSentences = Array.isArray(params.mockReviewFileSentences) ? params.mockReviewFileSentences : sentences;
+  const reviewSegments = singleMixMode === "robust"
+    ? fileTranscriptSegments({ transcripts: [{ sentences: reviewSentences }] }, source, reviewModel)
+    : [];
+  const singleMixAnalysis = singleMixMode === "robust"
+    ? buildSingleMixAnalysis({
+        primarySegments,
+        reviewSegments,
+        primaryModel: model,
+        reviewModel,
+        sourceFile: source.basename,
+      })
+    : null;
   appendNdjson(eventPath, { ts: new Date().toISOString(), event: "cloud_asr_file_task_finished", taskId: "mock-cloud-file-asr", sourceFile: source.basename });
   return {
     status: "completed",
@@ -734,9 +753,18 @@ function mockFileRun(params, source, eventPath) {
       preparedChannels: 1,
       inputPrepared: false,
       overlapSpeechSeparationSupported: false,
-      overlapSpeechHandling: "best_effort_diarization_not_source_separation",
+      overlapSpeechHandling: singleMixMode === "robust" ? "dual_model_review_with_unresolved_overlap_gating" : "best_effort_diarization_not_source_separation",
+      singleMix: singleMixAnalysis ? {
+        status: singleMixAnalysis.status,
+        strategy: singleMixAnalysis.strategy,
+        reviewItemCount: singleMixAnalysis.reviewItemCount,
+        explicitOverlapCount: singleMixAnalysis.explicitOverlapCount,
+        sourceSeparationPerformed: false,
+        simultaneousSpeechRecoveryGuaranteed: false,
+      } : null,
     },
-    transcriptSegments: fileTranscriptSegments({ transcripts: [{ sentences }] }, source, model),
+    transcriptSegments: singleMixAnalysis?.transcriptSegments ?? primarySegments,
+    singleMixAnalysis,
     failedChunks: [],
     startedAt: new Date().toISOString(),
     completedAt: new Date().toISOString(),
@@ -754,7 +782,7 @@ async function transcribeFileRecording(params, source, eventPath, config, provid
   if (source.sizeBytes > MAX_FILE_TRANSCRIPTION_BYTES) {
     return blocked("cloud_asr_file_size_exceeded", { sizeBytes: source.sizeBytes, maxBytes: MAX_FILE_TRANSCRIPTION_BYTES });
   }
-  const diarization = await prepareFileDiarization(
+  const diarization = params._preparedDiarization ?? await prepareFileDiarization(
     source,
     join(resolve(params.outputDir), "asr", "diarization-input"),
     {
@@ -892,7 +920,7 @@ async function transcribeFileRecording(params, source, eventPath, config, provid
   }
   const transcriptSegments = fileTranscriptSegments(transcription.body, source, model);
   const detectedSpeakerIds = [...new Set(transcriptSegments.map((segment) => segment.speakerId).filter((value) => value !== null && value !== undefined))];
-  const speakerDiarization = {
+  let speakerDiarization = {
     ...diarization.metadata,
     speakerCountDetected: detectedSpeakerIds.length,
     speakerIds: detectedSpeakerIds,
@@ -905,7 +933,7 @@ async function transcribeFileRecording(params, source, eventPath, config, provid
     transcriptSegmentCount: transcriptSegments.length,
     speakerCountDetected: detectedSpeakerIds.length,
   });
-  return {
+  const result = {
     status: "completed",
     taskId,
     model,
@@ -926,6 +954,70 @@ async function transcribeFileRecording(params, source, eventPath, config, provid
     rawMediaExternalUpload: true,
     rawSecretsReturned: false,
     objectUri,
+  };
+  const singleMixMode = normalizeSingleMixMode(params.singleMixMode ?? process.env.ALIYUN_ASR_SINGLE_MIX_MODE ?? "robust");
+  if (singleMixMode !== "robust") return result;
+
+  const configuredReviewModel = params.singleMixReviewModel
+    ?? process.env.ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL
+    ?? DEFAULT_SINGLE_MIX_REVIEW_MODEL;
+  const reviewModel = configuredReviewModel === model
+    ? (model === "fun-asr" ? "paraformer-v2" : "fun-asr")
+    : configuredReviewModel;
+  appendNdjson(eventPath, {
+    ts: new Date().toISOString(),
+    event: "cloud_asr_single_mix_review_started",
+    sourceFile: source.basename,
+    primaryModel: model,
+    reviewModel,
+  });
+  const reviewRun = await transcribeFileRecording({
+    ...params,
+    fileModel: reviewModel,
+    singleMixMode: "disabled",
+    _preparedDiarization: diarization,
+  }, source, eventPath, config, parsedFileUrl.toString());
+  const reviewStatus = reviewRun.status === "completed" ? "completed" : reviewRun.reason ?? "review_model_failed";
+  const singleMixAnalysis = buildSingleMixAnalysis({
+    primarySegments: transcriptSegments,
+    reviewSegments: reviewRun.status === "completed" ? reviewRun.transcriptSegments : [],
+    primaryModel: model,
+    reviewModel,
+    reviewStatus,
+    sourceFile: source.basename,
+  });
+  speakerDiarization = {
+    ...speakerDiarization,
+    overlapSpeechHandling: "dual_model_review_with_unresolved_overlap_gating",
+    singleMix: {
+      status: singleMixAnalysis.status,
+      strategy: singleMixAnalysis.strategy,
+      reviewModel,
+      reviewItemCount: singleMixAnalysis.reviewItemCount,
+      explicitOverlapCount: singleMixAnalysis.explicitOverlapCount,
+      highSeverityCount: singleMixAnalysis.highSeverityCount,
+      sourceSeparationPerformed: false,
+      simultaneousSpeechRecoveryGuaranteed: false,
+    },
+  };
+  appendNdjson(eventPath, {
+    ts: new Date().toISOString(),
+    event: "cloud_asr_single_mix_review_finished",
+    sourceFile: source.basename,
+    primaryModel: model,
+    reviewModel,
+    reviewStatus,
+    reviewItemCount: singleMixAnalysis.reviewItemCount,
+    explicitOverlapCount: singleMixAnalysis.explicitOverlapCount,
+  });
+  return {
+    ...result,
+    speakerDiarization,
+    transcriptSegments: singleMixAnalysis.transcriptSegments,
+    singleMixAnalysis,
+    reviewTaskId: reviewRun.taskId ?? null,
+    reviewModel,
+    reviewStatus,
   };
 }
 
@@ -987,11 +1079,46 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
     sourceFile: sources[index]?.basename ?? null,
     ...(run.speakerDiarization ?? realtimeSpeakerDiarizationMetadata()),
   }));
+  const singleMixBySource = fileRuns
+    .map((run, index) => {
+      if (!run.singleMixAnalysis) return null;
+      const { transcriptSegments: _transcriptSegments, ...analysis } = run.singleMixAnalysis;
+      return {
+        sourceIndex: index,
+        sourceFile: sources[index]?.basename ?? null,
+        ...analysis,
+      };
+    })
+    .filter(Boolean);
+  const singleMix = {
+    enabled: singleMixBySource.length > 0,
+    inputTopology: singleMixBySource.length > 0 ? "single_mixed_recording" : null,
+    statuses: [...new Set(singleMixBySource.map((item) => item.status))],
+    reviewItemCount: singleMixBySource.reduce((total, item) => total + Number(item.reviewItemCount ?? 0), 0),
+    explicitOverlapCount: singleMixBySource.reduce((total, item) => total + Number(item.explicitOverlapCount ?? 0), 0),
+    highSeverityCount: singleMixBySource.reduce((total, item) => total + Number(item.highSeverityCount ?? 0), 0),
+    sourceSeparationPerformed: false,
+    simultaneousSpeechRecoveryGuaranteed: false,
+    artifact: singleMixBySource.length > 0 ? join(outputDir, "asr", "single-mix-analysis.json") : null,
+    bySource: singleMixBySource.map((item) => ({
+      sourceIndex: item.sourceIndex,
+      sourceFile: item.sourceFile,
+      status: item.status,
+      primaryModel: item.primaryModel,
+      reviewModel: item.reviewModel,
+      reviewStatus: item.reviewStatus,
+      speakerCountDetected: item.speakerCountDetected,
+      reviewItemCount: item.reviewItemCount,
+      explicitOverlapCount: item.explicitOverlapCount,
+      highSeverityCount: item.highSeverityCount,
+    })),
+  };
   const speakerDiarization = {
     enabled: diarizationBySource.some((item) => item.enabled === true),
     speakerLabelsAvailable: fileRuns.some((run) => (run.transcriptSegments ?? []).some((segment) => segment.speakerId !== null && segment.speakerId !== undefined)),
     statuses: [...new Set(diarizationBySource.map((item) => item.status).filter(Boolean))],
     overlapSpeechSeparationSupported: false,
+    singleMix,
     bySource: diarizationBySource,
   };
   const model = models.length === 1 ? models[0] : models.length > 1 ? "mixed" : params.model ?? process.env.ALIYUN_ASR_MODEL ?? DEFAULT_MODEL;
@@ -1038,6 +1165,7 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
       endpoint,
       inputModes,
       speakerDiarization,
+      singleMix,
       externalAudioUpload: rawMediaExternalUpload,
       rawMediaExternalUpload,
     },
@@ -1051,6 +1179,7 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
     builtAt: new Date().toISOString(),
     sources: sourceRows,
     speakerDiarization,
+    singleMix,
     transcriptSegments,
     rules: {
       keyClaimsRequireSource: true,
@@ -1067,6 +1196,7 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
     model,
     inputModes,
     speakerDiarization,
+    singleMix,
     sourceCount: sourceRows.length,
     transcriptSegments: transcriptSegments.length,
     failedChunks: failedChunks.length,
@@ -1080,6 +1210,7 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
       transcript: join(outputDir, "transcripts", "transcript.full.json"),
       readableTranscript: join(outputDir, "transcripts", "transcript.readable.md"),
       evidenceIndex: join(outputDir, "evidence", "evidence-index.json"),
+      singleMixAnalysis: singleMix.artifact,
       summary: join(outputDir, "summary.json"),
     },
   };
@@ -1088,6 +1219,20 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
   writeFileSync(join(outputDir, "transcripts", "transcript.readable.md"), readableTranscript(meetingTitle, transcriptSegments), "utf8");
   writeJson(join(outputDir, "evidence", "sources.json"), { assets: sourceRows });
   writeJson(join(outputDir, "evidence", "evidence-index.json"), evidence);
+  if (singleMix.enabled) {
+    writeJson(join(outputDir, "asr", "single-mix-analysis.json"), {
+      schemaVersion: "single-mix-analysis-v1",
+      builtAt: new Date().toISOString(),
+      inputTopology: "single_mixed_recording",
+      bySource: singleMixBySource,
+      rules: {
+        sourceSeparationPerformed: false,
+        simultaneousSpeechRecoveryGuaranteed: false,
+        reviewTextIsNeverSilentlyMerged: true,
+        unresolvedItemsMustNotBecomeCertainMeetingClaims: true,
+      },
+    });
+  }
   writeJson(join(outputDir, "summary.json"), summary);
   return summary;
 }
@@ -1127,13 +1272,18 @@ export async function transcribeDashScopeAsr(params) {
     }
   }
   const summary = buildOutputs(params, outputDir, sources, fileRuns);
+  const artifactFileRuns = fileRuns.map((run) => {
+    if (!run.singleMixAnalysis) return run;
+    const { transcriptSegments: _transcriptSegments, ...singleMixAnalysis } = run.singleMixAnalysis;
+    return { ...run, singleMixAnalysis };
+  });
   const runRecord = {
     schemaVersion: "cloud-asr-run-v1",
     status: "completed",
     provider: "aliyun_dashscope_paraformer",
     model: summary.model,
     sources: sources.map(({ path, basename: name, sizeBytes, hashSha256, format, extension, mediaType }) => ({ path, basename: name, sizeBytes, hashSha256, format, extension, mediaType })),
-    fileRuns,
+    fileRuns: artifactFileRuns,
     outputs: summary.outputs,
     rawSecretsReturned: false,
     rawMediaExternalUpload: summary.rawMediaExternalUpload === true,

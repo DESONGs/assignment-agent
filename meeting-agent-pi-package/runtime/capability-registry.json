@@ -371,7 +371,7 @@
     {
       "capabilityId": "cloud-asr",
       "status": "available",
-      "description": "Runs distinct Aliyun DashScope Paraformer file and realtime ASR paths; file recordings can preserve anonymous speaker diarization evidence after mono preparation.",
+      "description": "Runs distinct Aliyun DashScope recorded-file and realtime ASR paths; one mixed recording uses anonymous diarization plus an independent-model conflict review after mono preparation.",
       "defaultLoad": false,
       "contextCost": "medium",
       "toolPackage": "local-extension",
@@ -384,8 +384,8 @@
         "summary": "DashScope and OSS credentials are read from environment only; file ASR uses private OSS plus a short-lived signed URL, and artifacts never store credentials or signed URLs."
       },
       "triggers": ["audio", "video transcription", "transcribe", "ASR", "cloud ASR", "DashScope", "百炼", "录音", "音频", "视频转写", "转写", "粤语"],
-      "optionalEnv": ["MEETING_ASR_PROVIDER", "MEETING_ASR_FALLBACK_PROVIDER", "ALIYUN_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", "ALIYUN_DASHSCOPE_WORKSPACE_ID", "ALIYUN_ASR_INPUT_MODE", "ALIYUN_ASR_MODEL", "ALIYUN_ASR_FILE_MODEL", "ALIYUN_ASR_ENDPOINT", "ALIYUN_ASR_FILE_ENDPOINT", "ALIYUN_ASR_LANGUAGE_HINTS", "ALIYUN_ASR_VOCABULARY_ID", "ALIYUN_ASR_DIARIZATION_ENABLED", "ALIYUN_ASR_SPEAKER_COUNT", "ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED", "ALIYUN_OSS_BUCKET", "ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_BUCKET_ENDPOINT", "ALIYUN_OSS_ASR_PREFIX", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
-      "guardrails": ["audio_transcription policy gate required", "file and realtime endpoints remain distinct", "file diarization requires mono preparation", "speaker ids are anonymous evidence rather than identity", "overlap speech separation is not claimed", "provider must be aliyun_dashscope_paraformer", "document workers receive transcript/evidence only", "no credentials or signed URLs in logs or artifacts"]
+      "optionalEnv": ["MEETING_ASR_PROVIDER", "MEETING_ASR_FALLBACK_PROVIDER", "ALIYUN_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", "ALIYUN_DASHSCOPE_WORKSPACE_ID", "ALIYUN_ASR_INPUT_MODE", "ALIYUN_ASR_MODEL", "ALIYUN_ASR_FILE_MODEL", "ALIYUN_ASR_SINGLE_MIX_MODE", "ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL", "ALIYUN_ASR_ENDPOINT", "ALIYUN_ASR_FILE_ENDPOINT", "ALIYUN_ASR_LANGUAGE_HINTS", "ALIYUN_ASR_VOCABULARY_ID", "ALIYUN_ASR_DIARIZATION_ENABLED", "ALIYUN_ASR_SPEAKER_COUNT", "ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED", "ALIYUN_OSS_BUCKET", "ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_BUCKET_ENDPOINT", "ALIYUN_OSS_ASR_PREFIX", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
+      "guardrails": ["audio_transcription policy gate required", "file and realtime endpoints remain distinct", "file diarization requires mono preparation", "speaker ids are anonymous evidence rather than identity", "single mixed recordings use one primary transcript plus independent-model review", "review alternatives are never silently merged", "unresolved overlap or ASR conflicts cannot become certain meeting claims", "source separation and guaranteed simultaneous-speech recovery are not claimed", "provider must be aliyun_dashscope_paraformer", "document workers receive transcript/evidence only", "no credentials or signed URLs in logs or artifacts"]
     },
     {
       "capabilityId": "rokid-import",

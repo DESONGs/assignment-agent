@@ -118,6 +118,12 @@ heading density, and expression style.
 - Speaker diarization is not source separation. Simultaneous same-channel
   speech, semantic jumps, or unstable speaker labels are best-effort evidence;
   mark them as `重叠发言/归属待确认` instead of repairing them into certain facts.
+- For a single mixed recording, inspect `singleMix` metadata and source segments
+  marked `quality=needs_review`. The primary transcript remains the readable
+  baseline, while independent-model alternatives are review evidence only.
+  Never silently combine competing word hypotheses, and do not use an
+  unresolved review window as the sole support for a decision, owner, amount,
+  date, or commitment.
 - Reject unsupported entities: if a role, organization, table name, project
   name, or owner is not supported by the current `meetingProfile` or transcript,
   mark it as `待确认` or block publication.

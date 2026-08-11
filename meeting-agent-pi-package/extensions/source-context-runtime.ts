@@ -831,6 +831,7 @@ function audioRecordsAndSegments(params: any) {
     const speakerId = segment.speakerId ?? segment.speaker_id ?? null;
     const channelId = segment.channelId ?? segment.channel_id ?? null;
     const speakerLabel = segment.speakerLabel ?? (speakerId === null ? null : `speaker_${speakerId}`);
+    const singleMixEvidence = segment.singleMixEvidence ?? null;
     return {
       segmentId: `${sourceId}:chunk-${String(segment.chunkIndex ?? index).padStart(4, "0")}`,
       sourceId,
@@ -847,7 +848,7 @@ function audioRecordsAndSegments(params: any) {
       speakerId,
       speakerLabel,
       channelId,
-      quality: "ready",
+      quality: singleMixEvidence?.status === "needs_review" ? "needs_review" : "ready",
       metadata: {
         chunkIndex: segment.chunkIndex ?? index,
         sourceFile: segment.sourceFile ?? null,
@@ -856,6 +857,7 @@ function audioRecordsAndSegments(params: any) {
         speakerId,
         speakerLabel,
         channelId,
+        singleMixEvidence,
       },
     };
   });
@@ -984,6 +986,7 @@ function buildModelContext(params: {
       Number.isFinite(segment.startSec ?? NaN) ? `time=${segment.startSec}-${segment.endSec}` : null,
       segment.speakerLabel ? `speaker=${segment.speakerLabel}` : null,
       segment.channelId !== null && segment.channelId !== undefined ? `channel=${segment.channelId}` : null,
+      segment.quality !== "ready" ? `quality=${segment.quality}` : null,
     ].filter(Boolean).join(" | ");
     const text = segment.text.slice(0, Math.max(0, budget - header.length - 8));
     if (!text) continue;

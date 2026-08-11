@@ -17,6 +17,7 @@ import {
   normalizeSpeakerCount,
 } from "../tools/asr_diarization_helpers.mjs";
 import { transcribeDashScopeAsr } from "../tools/dashscope_asr_client.mjs";
+import { buildSingleMixAnalysis, textSimilarity } from "../tools/single_mix_asr_helpers.mjs";
 import { SUPPORTED_AUDIO_EXTENSIONS } from "../tools/audio_normalize_helpers.mjs";
 import { attachmentKind } from "../tools/im_file_context_helpers.mjs";
 import { classifyTaskIntent } from "../tools/task_router.mjs";
@@ -26,7 +27,7 @@ const EXPECTED_FILE_EXTENSIONS = [
   ".mp4", ".mpeg", ".ogg", ".opus", ".wav", ".webm", ".wma", ".wmv",
 ];
 
-test("cloud file ASR accepts the complete documented Paraformer file matrix", () => {
+test("cloud file ASR accepts the complete documented recorded-file matrix", () => {
   assert.deepEqual([...DASHSCOPE_FILE_EXTENSIONS].sort(), EXPECTED_FILE_EXTENSIONS);
   assert.deepEqual([...DASHSCOPE_REALTIME_FORMATS].sort(), ["aac", "amr", "mp3", "opus", "pcm", "speex", "wav"]);
   assert.equal(CLOUD_ASR_MEDIA_EXTENSIONS.has(".m4a"), true);
@@ -90,6 +91,35 @@ test("file diarization configuration is explicit and speaker count is bounded", 
   assert.equal(Number.isNaN(normalizeSpeakerCount(101)), true);
 });
 
+test("single mixed recording review exposes overlap and model conflicts without merging text", () => {
+  assert.equal(textSimilarity("确认安排。", "确认安排"), 1);
+  const primary = [
+    { chunkIndex: 0, startSec: 0, endSec: 2, text: "先确认酒店。", speakerId: 0 },
+    { chunkIndex: 1, startSec: 1.2, endSec: 2.5, text: "我不同意预算。", speakerId: 1 },
+    { chunkIndex: 2, startSec: 3, endSec: 4, text: "明天回复。", speakerId: 0 },
+  ];
+  const review = [
+    { chunkIndex: 0, startSec: 0, endSec: 2.5, text: "先确认机票，我不同意这个预算。", speakerId: 4 },
+    { chunkIndex: 1, startSec: 3, endSec: 4, text: "后天回复。", speakerId: 4 },
+    { chunkIndex: 2, startSec: 5, endSec: 6, text: "还有一个遗漏句子。", speakerId: 5 },
+  ];
+  const result = buildSingleMixAnalysis({
+    primarySegments: primary,
+    reviewSegments: review,
+    primaryModel: "fun-asr",
+    reviewModel: "paraformer-v2",
+    sourceFile: "meeting.m4a",
+  });
+  assert.equal(result.inputTopology, "single_mixed_recording");
+  assert.equal(result.sourceSeparationPerformed, false);
+  assert.equal(result.simultaneousSpeechRecoveryGuaranteed, false);
+  assert.ok(result.explicitOverlapCount >= 1);
+  assert.ok(result.reviewItems.some((item) => item.reasons.includes("cross_model_text_conflict")));
+  assert.ok(result.reviewItems.some((item) => item.reasons.includes("speech_missing_in_primary_model")));
+  assert.equal(result.transcriptSegments[0].text, primary[0].text);
+  assert.equal(result.transcriptSegments[0].singleMixEvidence.status, "needs_review");
+});
+
 test("file-mode client emits the standard artifact contract without using the realtime endpoint", async () => {
   const dir = mkdtempSync(join(tmpdir(), "assignment-cloud-file-asr-"));
   try {
@@ -109,11 +139,14 @@ test("file-mode client emits the standard artifact contract without using the re
       ],
     });
     assert.equal(result.status, "completed");
-    assert.equal(result.summary.model, "paraformer-v2");
+    assert.equal(result.summary.model, "fun-asr");
     assert.deepEqual(result.summary.inputModes, ["file"]);
     assert.equal(result.summary.transcriptSegments, 2);
     assert.equal(result.summary.speakerDiarization.enabled, true);
     assert.equal(result.summary.speakerDiarization.speakerLabelsAvailable, true);
+    assert.equal(result.summary.singleMix.enabled, true);
+    assert.equal(result.summary.singleMix.reviewItemCount, 0);
+    assert.equal(result.summary.singleMix.bySource[0].reviewItems, undefined);
     const transcript = JSON.parse(readFileSync(join(dir, "artifacts", "transcripts", "transcript.full.json"), "utf8"));
     assert.equal(transcript.transcription.endpoint, "dashscope-file-transcription-mock");
     assert.deepEqual(transcript.transcription.inputModes, ["file"]);
@@ -123,6 +156,9 @@ test("file-mode client emits the standard artifact contract without using the re
     assert.equal(evidence.speakerDiarization.speakerLabelsAvailable, true);
     const run = JSON.parse(readFileSync(join(dir, "artifacts", "asr", "cloud-asr-run.json"), "utf8"));
     assert.equal(run.rawMediaExternalUpload, false);
+    const singleMix = JSON.parse(readFileSync(join(dir, "artifacts", "asr", "single-mix-analysis.json"), "utf8"));
+    assert.equal(singleMix.inputTopology, "single_mixed_recording");
+    assert.equal(singleMix.rules.reviewTextIsNeverSilentlyMerged, true);
     assert.match(readFileSync(join(dir, "artifacts", "transcripts", "transcript.readable.md"), "utf8"), /说话人 2/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

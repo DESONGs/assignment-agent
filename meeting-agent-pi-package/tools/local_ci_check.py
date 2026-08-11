@@ -36,6 +36,7 @@ PYTHON_COMPILE_TARGETS = [
 NODE_CHECK_TARGETS = [
     "meeting-agent-pi-package/tools/asr_media_formats.mjs",
     "meeting-agent-pi-package/tools/asr_diarization_helpers.mjs",
+    "meeting-agent-pi-package/tools/single_mix_asr_helpers.mjs",
     "meeting-agent-pi-package/tools/audio_normalize_helpers.mjs",
     "meeting-agent-pi-package/tools/dashscope_asr_client.mjs",
     "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",

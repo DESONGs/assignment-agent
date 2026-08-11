@@ -84,10 +84,13 @@ and future IM scenarios. It is not a decision layer: `fast_answer` and
 document-oriented profiles prepare current attachments, explicit Feishu file
 URLs, parent/root resources, and modality-filtered cache hits into
 `evidence-pack.json`; recorded media uses cloud ASR first. Cloud-supported files
-use the OSS-backed Paraformer file endpoint, while realtime stream formats use
-the separate WebSocket endpoint. File ASR enables provider diarization by
-default; because that capability is mono-only, stereo recordings get a derived
-mono upload while the original remains untouched. Local `16k mono s16 WAV`
+use the OSS-backed asynchronous file endpoint, while realtime stream formats use
+the separate WebSocket endpoint. A single mixed recording is uploaded once and
+uses `fun-asr` diarization plus an independent `paraformer-v2` consistency
+review by default. Conflicting intervals remain explicit review evidence and
+are never silently merged into the primary transcript. Because file
+diarization is mono-only, stereo recordings get a derived mono upload while the
+original remains untouched. Local `16k mono s16 WAV`
 normalization remains a fallback preparation path. The runner then calls the existing Planner/Model Router/Prompt
 Registry/Document Worker/QA Gate/Policy Gate tools through
 `runtime_tool_cli.mjs` and records progress. Raw media may leave the host only
@@ -175,16 +178,23 @@ bot to receive chat events or publish results. The PI tools
 and redacted readiness checks without returning secrets.
 
 Audio transcription is cloud-first when a DashScope API key is configured.
-Recorded files use `paraformer-v2` through the HTTP asynchronous file endpoint;
+Recorded files use `fun-asr` as the primary model through the HTTP asynchronous file endpoint;
 the runtime uploads the source to private OSS and supplies a short-lived signed
-HTTPS URL. Recorded-file diarization is `auto` by default, accepts an optional
-2–100 speaker-count hint, and preserves anonymous `speaker_id`/channel evidence
-through transcript, evidence, and document context artifacts. Realtime streams
+HTTPS URL. In the default `robust` single-mix mode, the same uploaded object is
+also reviewed by `paraformer-v2`; cross-model omissions, text conflicts, speaker
+attribution conflicts, and provider timestamp overlaps are written to
+`asr/single-mix-analysis.json`. The primary transcript stays authoritative and
+affected segments are marked `needs_review`. Recorded-file diarization is
+`auto` by default, accepts an optional 2–100 speaker-count hint, and preserves
+anonymous `speaker_id`/channel evidence through transcript, evidence, and
+document context artifacts. Realtime streams
 use `paraformer-realtime-v2` through WebSocket and remain limited to the
 provider's mono stream codecs; that realtime path does not claim speaker
 diarization. Diarization clusters speaker turns but does not separate
-simultaneous same-channel voices, so overlap remains best-effort and is marked
-for confirmation downstream. These endpoints, models,
+simultaneous same-channel voices. Dual-model review improves detection of
+missing or unstable words but is not source separation and cannot guarantee
+recovery of every simultaneous speaker, so unresolved intervals are prevented
+from becoming certain meeting claims downstream. These endpoints, models,
 format matrices, and errors are configured separately. Local Qwen3-ASR remains
 an explicit fallback and receives normalized WAV paths only. Downstream
 DeepSeek, Xiaomi, Docker workers, and Hermes receive transcript/evidence text,
@@ -245,6 +255,9 @@ it should not receive credentials or direct write access.
   codecs and recorded-file audio/video extensions.
 - `asr_diarization_helpers.mjs`: probes recorded media and prepares a derived
   mono input only when file-mode speaker diarization requires it.
+- `single_mix_asr_helpers.mjs`: aligns the primary and independent review ASR
+  timelines for one mixed recording and emits explicit unresolved evidence
+  without silently rewriting the primary transcript.
 - `audio_normalize_helpers.mjs`: fallback media-to-audio helper that extracts or
   converts any supported cloud ASR container to `16k mono s16 WAV`.
 - `wechat_event_adapter.mjs`: fixture-only WeChat adapter skeleton; maps local

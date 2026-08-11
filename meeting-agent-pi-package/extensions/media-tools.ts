@@ -336,14 +336,16 @@ export default function (pi: ExtensionAPI) {
     name: "meeting_transcribe_cloud_asr",
     label: "Transcribe Meeting With Cloud ASR",
     description:
-      "Transcribe cloud-supported meeting audio or video through Aliyun DashScope Paraformer file or realtime ASR. Raw media may be uploaded only for this ASR stage; credentials are read from environment and never written to artifacts.",
+      "Transcribe one mixed recording through Aliyun DashScope file ASR with anonymous diarization and independent-model conflict review, or use the separate realtime ASR endpoint. Raw media may be uploaded only for this ASR stage; credentials are read from environment and never written to artifacts.",
     parameters: Type.Object({
       paths: Type.Array(Type.String({ description: "Local cloud-supported audio or video paths to send to the ASR provider." })),
       meetingId: Type.String({ description: "Meeting id used in output metadata." }),
       outputDir: Type.String({ description: "Artifact output directory." }),
       meetingTitle: Type.Optional(Type.String({ description: "Meeting title for evidence-index.json." })),
       model: Type.Optional(Type.String({ description: "Realtime model; defaults to ALIYUN_ASR_MODEL or paraformer-realtime-v2." })),
-      fileModel: Type.Optional(Type.String({ description: "Defaults to ALIYUN_ASR_FILE_MODEL or paraformer-v2." })),
+      fileModel: Type.Optional(Type.String({ description: "Primary recorded-file model; defaults to ALIYUN_ASR_FILE_MODEL or fun-asr." })),
+      singleMixMode: Type.Optional(Type.Union([Type.Literal("robust"), Type.Literal("disabled")], { description: "Robust mode reviews a single mixed recording with a second file ASR model." })),
+      singleMixReviewModel: Type.Optional(Type.String({ description: "Independent recorded-file review model; defaults to paraformer-v2." })),
       inputMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("file"), Type.Literal("realtime")])),
       endpoint: Type.Optional(Type.String({ description: "Realtime DashScope WebSocket endpoint only." })),
       fileEndpoint: Type.Optional(Type.String({ description: "Recorded-file DashScope HTTP asynchronous endpoint only." })),

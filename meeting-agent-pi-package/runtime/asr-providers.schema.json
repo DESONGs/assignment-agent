@@ -28,6 +28,7 @@
         "mode": { "enum": ["local", "cloud"] },
         "defaultModel": { "type": "string" },
         "defaultFileModel": { "type": "string" },
+        "singleMixedRecording": { "type": "object", "additionalProperties": true },
         "inputMode": { "enum": ["auto", "file", "realtime"] },
         "endpoint": { "type": "string" },
         "fileEndpoint": { "type": "string" },

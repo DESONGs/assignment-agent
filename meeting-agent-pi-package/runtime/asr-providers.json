@@ -25,7 +25,14 @@
       "providerId": "aliyun_dashscope_paraformer",
       "mode": "cloud",
       "defaultModel": "paraformer-realtime-v2",
-      "defaultFileModel": "paraformer-v2",
+      "defaultFileModel": "fun-asr",
+      "singleMixedRecording": {
+        "defaultMode": "robust",
+        "reviewModel": "paraformer-v2",
+        "strategy": "dual_model_diarization_consistency_review",
+        "sourceSeparationPerformed": false,
+        "simultaneousSpeechRecoveryGuaranteed": false
+      },
       "inputMode": "auto",
       "endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
       "fileEndpoint": "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
@@ -54,6 +61,8 @@
         "ALIYUN_DASHSCOPE_WORKSPACE_ID",
         "ALIYUN_ASR_MODEL",
         "ALIYUN_ASR_FILE_MODEL",
+        "ALIYUN_ASR_SINGLE_MIX_MODE",
+        "ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL",
         "ALIYUN_ASR_INPUT_MODE",
         "ALIYUN_ASR_ENDPOINT",
         "ALIYUN_ASR_FILE_ENDPOINT",
@@ -77,7 +86,8 @@
         "evidence/evidence-index.json",
         "evidence/sources.json",
         "asr/cloud-asr-run.json",
-        "asr/cloud-asr-events.ndjson"
+        "asr/cloud-asr-events.ndjson",
+        "asr/single-mix-analysis.json"
       ]
     }
   }
