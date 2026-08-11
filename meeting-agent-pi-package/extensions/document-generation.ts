@@ -26,8 +26,6 @@ const SECRET_PATTERNS = [
   /bearer\s+[A-Za-z0-9._\-]{8,}/i,
   /\b(FEISHU_APP_SECRET|DEEPSEEK_API_KEY|XIAOMI_TOKEN_PLAN_SGP_API_KEY)\b/i,
 ];
-const RAW_CONTENT_KEY_PATTERN =
-  /rawTranscript|fullTranscript|transcriptSegments|rawMeetingContent|transcriptText|rawMedia|base64Audio/i;
 
 function isInside(parent: string, child: string) {
   const rel = relative(parent, child);
@@ -78,8 +76,9 @@ function readContextManifestSummary(contextEnvelopeRef: string) {
         : null,
       sourceStructurePath: manifest.sourceStructurePath ?? null,
       sourceStructureSummary: manifest.sourceStructureSummary ?? null,
+      meetingIntelligence: manifest.meetingIntelligence ?? null,
       outputContract: manifest.outputContract ?? null,
-      fullRawContentIncluded: false,
+      fullContentAvailableByArtifact: true,
     };
   } catch {
     return null;
@@ -190,16 +189,6 @@ function containsSecretLikeValue(value: unknown) {
   return SECRET_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function containsRawContentKey(value: unknown, key = ""): boolean {
-  if (key === "rawSecretsReturned" || key === "rawMediaExternalUpload") return false;
-  if (RAW_CONTENT_KEY_PATTERN.test(key)) return true;
-  if (Array.isArray(value)) return value.some((item, index) => containsRawContentKey(item, String(index)));
-  if (value && typeof value === "object") {
-    return Object.entries(value).some(([childKey, childValue]) => containsRawContentKey(childValue, childKey));
-  }
-  return false;
-}
-
 function renderWorkItem(params: {
   docType?: string;
   promptFile?: string;
@@ -221,16 +210,6 @@ function renderWorkItem(params: {
   ) {
     throw new Error("document_prompt_secret_like_input_blocked");
   }
-  if (
-    containsRawContentKey(params.input) ||
-    containsRawContentKey(params.routerConclusion) ||
-    containsRawContentKey(params.evidenceSummary) ||
-    containsRawContentKey(params.upstreamDocuments) ||
-    containsRawContentKey(params.reviewContext)
-  ) {
-    throw new Error("document_prompt_raw_content_key_blocked");
-  }
-
   const record = params.promptFile ? promptRecordForFile(params.promptFile) : promptRecordFor(params.docType ?? "");
   if (!record) {
     throw new Error("document_prompt_not_found");
@@ -279,7 +258,7 @@ function renderWorkItem(params: {
           contextEnvelopeRef: params.contextEnvelopeRef,
           workUnitCount: workUnits.length,
           promptMode: "bounded_work_unit_context_pack",
-          fullRawContentIncluded: false,
+          fullContentAvailableByArtifact: true,
         }
       : null,
     workUnits,

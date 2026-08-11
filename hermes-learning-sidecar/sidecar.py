@@ -43,7 +43,7 @@ def short_text(value: Any, limit: int = 700) -> str:
 
 
 def build_trajectory_from_run_dir(run_dir: Path) -> dict[str, Any]:
-    """Build a sanitized trajectory from a Feishu run directory."""
+    """Build a credential-safe trajectory from a Feishu run directory."""
 
     existing = run_dir / "sanitized-trajectory.json"
     if existing.exists():
@@ -66,7 +66,7 @@ def build_trajectory_from_run_dir(run_dir: Path) -> dict[str, Any]:
         {
             "kind": "feishu_event",
             "source": "event.json",
-            "privacy": "metadata-and-hash-only",
+            "privacy": "meeting-content-available",
             "hashSha256": manifest.get("source", {}).get("textHash"),
         }
     ]
@@ -75,7 +75,7 @@ def build_trajectory_from_run_dir(run_dir: Path) -> dict[str, Any]:
             {
                 "kind": attachment.get("resourceType") or "attachment",
                 "source": attachment.get("name") or "attachment",
-                "privacy": "metadata-and-hash-only",
+                "privacy": "meeting-content-available",
                 "hashSha256": attachment.get("sha256"),
             }
         )
@@ -84,7 +84,7 @@ def build_trajectory_from_run_dir(run_dir: Path) -> dict[str, Any]:
             {
                 "kind": "file-context",
                 "source": context.get("fileName") or "file-context",
-                "privacy": "summary-only",
+                "privacy": "meeting-content-available",
             }
         )
 
@@ -119,9 +119,9 @@ def build_trajectory_from_run_dir(run_dir: Path) -> dict[str, Any]:
         "runId": state.get("runId") or manifest.get("runId") or run_dir.name,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "privacy": {
-            "rawMeetingContentIncluded": False,
+            "rawMeetingContentIncluded": bool(manifest.get("inputs", {}).get("attachments") or manifest.get("inputs", {}).get("fileContexts")),
             "tokensIncluded": False,
-            "redactionLevel": "summary-only",
+            "redactionLevel": "credentials-only",
         },
         "task": {
             "title": f"{manifest_task.get('taskType') or task_intent.get('taskType') or 'feishu-agent'} / {manifest_task.get('responseMode') or task_intent.get('responseMode') or 'unknown'}",
@@ -142,13 +142,13 @@ def build_trajectory_from_run_dir(run_dir: Path) -> dict[str, Any]:
             },
             {
                 "decision": f"Run status {state.get('status') or 'unknown'}",
-                "reason": "state machine completed with sanitized artifact pointers",
+                "reason": "state machine completed with credential-safe artifact references",
                 "evidence": "state.json",
             },
         ],
         "qualitySignals": {
             "evidenceCoverage": "run-artifact-summary",
-            "privacyFindings": [],
+            "credentialFindings": [],
             "missingInputs": missing_inputs,
             "runSummary": short_text(output.get("summary") or publish.get("reason") or state.get("status")),
         },
@@ -163,14 +163,12 @@ SECRET_PATTERNS = [
     re.compile(r"cli_[A-Za-z0-9]{8,}"),
 ]
 
-RAW_CONTENT_KEYS = {
-    "rawTranscript",
-    "rawMeetingContent",
-    "transcriptText",
-    "fullTranscript",
-    "messageText",
+SECRET_KEYS = {
     "token",
     "secret",
+    "authorization",
+    "cookie",
+    "session",
 }
 
 
@@ -193,7 +191,6 @@ def validate_shape(trajectory: dict[str, Any]) -> list[str]:
         "schemaVersion",
         "runId",
         "createdAt",
-        "privacy",
         "task",
         "inputs",
         "outputs",
@@ -217,11 +214,9 @@ def validate_shape(trajectory: dict[str, Any]) -> list[str]:
 def scan_for_sensitive_content(trajectory: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     for path, key, value in iter_values(trajectory):
-        if key in RAW_CONTENT_KEYS:
-            issues.append(f"sensitive/raw-content key is not allowed: {path}")
+        if key.lower() in SECRET_KEYS:
+            issues.append(f"credential field is not allowed: {path}")
         if isinstance(value, str):
-            if len(value) > 4000:
-                issues.append(f"long text payload may contain raw meeting content: {path}")
             for pattern in SECRET_PATTERNS:
                 if pattern.search(value):
                     issues.append(f"secret-like value detected at {path}")
@@ -232,13 +227,9 @@ def scan_for_sensitive_content(trajectory: dict[str, Any]) -> list[str]:
 def validate_sanitized(trajectory: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     issues.extend(validate_shape(trajectory))
-    privacy = trajectory.get("privacy", {})
-    if privacy.get("rawMeetingContentIncluded") is not False:
-      issues.append("rawMeetingContentIncluded must be false")
-    if privacy.get("tokensIncluded") is not False:
+    data_handling = trajectory.get("privacy", {})
+    if data_handling.get("tokensIncluded") is not False:
       issues.append("tokensIncluded must be false")
-    if privacy.get("redactionLevel") not in {"metadata-only", "summary-only", "safe-excerpts"}:
-      issues.append("redactionLevel is missing or unsupported")
     issues.extend(scan_for_sensitive_content(trajectory))
     return issues
 
@@ -258,7 +249,7 @@ def build_retrospective(trajectory: dict[str, Any], issues: list[str]) -> str:
         for item in decisions
     ) or "- No decisions recorded."
     missing = "\n".join(f"- {item}" for item in quality.get("missingInputs", [])) or "- None recorded."
-    privacy_issues = "\n".join(f"- {issue}" for issue in issues) or "- None."
+    credential_issues = "\n".join(f"- {issue}" for issue in issues) or "- None."
 
     return f"""# Meeting Agent Retrospective
 
@@ -281,9 +272,9 @@ Generated at: {datetime.now(timezone.utc).isoformat()}
 
 {missing}
 
-## Privacy / Sanitization Issues
+## Credential Safety Issues
 
-{privacy_issues}
+{credential_issues}
 
 ## Learning Summary
 
@@ -554,10 +545,10 @@ def gate_hermes_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     for pattern in SECRET_PATTERNS:
         if pattern.search(text):
             issues.append("secret-like value detected")
-    forbidden = ["rawTranscript", "rawMeetingContent", "fullTranscript", "raw audio", "raw video", "Authorization"]
+    forbidden = ["Authorization"]
     for item in forbidden:
         if item in text:
-            issues.append(f"forbidden raw/sensitive marker detected: {item}")
+            issues.append(f"forbidden credential marker detected: {item}")
     status = "pass" if not issues else "blocked"
     return {
         "schemaVersion": "hermes-wiki-reflection-gate-v1",

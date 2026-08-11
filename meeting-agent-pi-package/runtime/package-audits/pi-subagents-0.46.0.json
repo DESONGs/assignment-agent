@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "package-audit-v1",
+  "packageName": "pi-subagents",
+  "version": "0.46.0",
+  "source": "https://pi.dev/packages/pi-subagents",
+  "sourceRepository": "https://github.com/nicobailon/pi-subagents",
+  "publishedAt": "2026-08-11",
+  "distSha1": "1b7921c76d861a8764411d580aa20d98ecc7ae3c",
+  "readmeSummary": "Provides focused child Pi sessions, foreground/background delegation, scripted multi-agent workflows, structured outputs, run observability and a public extension RPC/delegation API.",
+  "dependencies": [
+    "jiti@2.7.0",
+    "typebox@1.1.38",
+    "yaml@2.8.3"
+  ],
+  "envReads": [
+    "Pi runtime/session control variables",
+    "PATH and PATHEXT for optional LSP diagnostics",
+    "PI_CODING_AGENT_DIR and agent discovery variables",
+    "optional MCP bearer-token environment names selected by explicit MCP configuration"
+  ],
+  "networkAccess": [
+    "No direct HTTP client was found in the core extension paths reviewed",
+    "Child Pi sessions can call configured model providers and any explicitly allowed network-capable tools"
+  ],
+  "fileWrites": [
+    "Child session, status, transcript and structured-output artifacts",
+    "Optional project .pi-subagents missions, schedules, refinements and worktrees",
+    "Optional user agent/config paths when administrative commands are explicitly invoked"
+  ],
+  "processExecution": [
+    "Spawns child Pi processes",
+    "Optional git worktree and LSP subprocesses",
+    "The package bin installer can clone or remove a user-level extension, but it is not an npm lifecycle script and is not invoked by this project"
+  ],
+  "promptInjectionRisk": "Child agents receive focused task prompts and selected context. Risk is reduced in this project by project-owned meeting agent definitions with a read-only tool allowlist, bounded evidence paths, stable schemas and parent reconciliation.",
+  "credentialHandling": "The package inherits the parent process environment so model-provider credentials remain available to child Pi sessions. Meeting child agents are denied shell/write/orchestration tools; credentials must never be placed in prompts, results or artifacts.",
+  "disableOrUninstallPath": "Remove the node_modules/pi-subagents resource paths and dependency from meeting-agent-pi-package/package.json, reinstall dependencies, then reload Pi.",
+  "compatibility": {
+    "piAi": ">=0.80.0",
+    "testedProjectBaseline": "Pi >=0.80.8 and Node >=22.19.0"
+  },
+  "smokeEvidence": [
+    "Pi 0.84.1 RPC loaded the package from ../meeting-agent-pi-package after validating that project package paths resolve relative to .pi",
+    "get_commands exposed subagent administration, workflow and fleet commands",
+    "subagents doctor reported async support available and discovered four project meeting specialists",
+    "single-review plans use the 0.46 workflowScript + runs.run(...) execution contract with fresh context and structured output",
+    "A real DeepSeek parent run observed read then subagent tool_execution_end and completed meeting-action-reviewer against synthetic meeting evidence",
+    "meeting specialist definitions are project-owned and read-only"
+  ],
+  "decision": "passed_smoke_lazy_enable",
+  "defaultLoad": false,
+  "rawSecretsReturned": false,
+  "rawTranscriptIncluded": false
+}

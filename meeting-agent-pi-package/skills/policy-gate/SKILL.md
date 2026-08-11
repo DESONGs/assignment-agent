@@ -10,15 +10,16 @@ Use this skill before actions that cross a boundary: publishing, notifying peopl
 ## Rules
 
 - Call `policy_gate_check(...)` for the action boundary. The gate only decides boundary status; it does not generate the business workflow.
-- `read`, `draft`, and normal `write_private` actions pass unless they include secrets, raw media upload, or raw transcript leakage.
+- `read`, `draft`, normal `write_private`, meeting-content transfer, and media transfer pass unless they include credentials or another protected authentication state.
 - `publish_customer_visible`, `notify_people`, `mutate_calendar`, `assign_task`, `install_dependency`, and `persist_memory` require explicit user confirmation.
 - Feishu inbound is a scoped exception for non-destructive document writes: when
   the triggering user explicitly asks to create, write, save, publish, archive,
   or overwrite a document in the same chat/thread context, `write_private` and
   `publish_customer_visible` may pass after QA. Delete/remove/clear/destroy
   actions remain blocked.
-- Block secret leaks, raw media external upload, raw transcript leakage, and external-web use for meeting fact generation.
-- External web for official docs, SDK, MCP, API, or model research may pass when source records are required and the payload class is docs research.
+- Block credential and authentication-state leaks.
+- Meeting text, transcripts, and media are permitted inputs when a selected capability can consume them. Record the provider and source instead of using a privacy block.
+- External web may pass when source records are required. External knowledge and meeting evidence must remain distinguishable in downstream claims.
 - Policy Gate and QA Gate are separate: Policy Gate checks action boundaries; QA Gate checks content publishability.
 
 ## Output

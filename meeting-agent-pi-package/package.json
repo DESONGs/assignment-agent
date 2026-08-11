@@ -1,34 +1,49 @@
 {
   "name": "meeting-agent-pi-package",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "PI package for meeting conclusion, document writing, official lark-cli Feishu workflows, Rokid Lingzhu ingestion, and Hermes sidecar learning.",
   "keywords": [
     "pi-package",
     "meeting-agent",
+    "subagents",
+    "dynamic-workflows",
     "feishu",
     "rokid",
     "hermes-sidecar"
   ],
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs && npm run typecheck:agentic",
+    "typecheck:agentic": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --allowJs false --types node extensions/meeting-agentic-orchestrator.ts extensions/planner-runtime.ts extensions/source-context-runtime.ts extensions/policy-gate.ts extensions/runtime-observability.ts"
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions",
+      "./node_modules/pi-subagents/index.ts",
+      "./node_modules/@quintinshaw/pi-dynamic-workflows/extensions/workflow.ts"
     ],
     "skills": [
-      "./skills"
+      "./skills",
+      "./node_modules/pi-subagents/skills",
+      "./node_modules/@quintinshaw/pi-dynamic-workflows/skills/workflow-authoring",
+      "./node_modules/@quintinshaw/pi-dynamic-workflows/skills/workflow-patterns"
     ],
     "prompts": [
-      "./prompts"
+      "./prompts",
+      "./node_modules/pi-subagents/prompts"
     ]
   },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "peerDependencies": {
-    "@larksuiteoapi/node-sdk": ">=1.24.0",
-    "@earendil-works/pi-coding-agent": ">=0.1.0",
-    "typebox": ">=0.1.0"
+    "@larksuiteoapi/node-sdk": ">=1.73.0",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@larksuiteoapi/node-sdk": {
@@ -36,6 +51,26 @@
     }
   },
   "dependencies": {
-    "ws": "^8.20.1"
-  }
+    "@quintinshaw/pi-dynamic-workflows": "3.5.1",
+    "pi-subagents": "0.46.0",
+    "protobufjs": "7.6.5",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
+    "@larksuiteoapi/node-sdk": "1.73.0",
+    "@types/node": "24.12.4",
+    "typebox": "1.3.7",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "protobufjs": "7.6.5"
+  },
+  "bundledDependencies": [
+    "@quintinshaw/pi-dynamic-workflows",
+    "pi-subagents"
+  ]
 }

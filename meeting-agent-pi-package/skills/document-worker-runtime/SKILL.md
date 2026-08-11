@@ -35,7 +35,7 @@ Use this skill after `document-router`, `source-context-runtime`, and `document_
 - Results must preserve `taskIndex` order after dependency-wave execution.
 - `model-route.json` records `sectionBatches`, `sectionAttempts`,
   `repairAttempts`, `missingSections`, `executionWaves`, and upstream dependency
-  usage without storing rendered prompts, secrets, raw request bodies, or raw media.
+  usage without storing credentials or authentication state.
 - Model traces must carry `contextPackId`, `sourceSegmentIds`,
   `promptBudgetChars`, and `retrievalReasons` for each provider attempt.
 - Publishing, Feishu writes, calendar/task mutation, and customer-visible output remain outside the worker and require QA/Policy gates.

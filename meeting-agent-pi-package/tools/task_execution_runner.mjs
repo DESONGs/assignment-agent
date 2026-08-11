@@ -9,6 +9,22 @@ import { spawn } from "node:child_process";
 import { AUDIO_NORMALIZE_VERSION, TARGET_AUDIO_SPEC, normalizeAudioBatch } from "./audio_normalize_helpers.mjs";
 import { isCloudAsrMedia, mediaExtension } from "./asr_media_formats.mjs";
 import { fetchFeishuDocumentReviewContext } from "./feishu_document_review_context_helpers.mjs";
+import {
+  buildFallbackMeetingAnalysis,
+  buildMeetingAnalysisPrompt,
+  buildMeetingQaFindings,
+  buildParticipantMap,
+  normalizeMeetingAnalysisResponse,
+  normalizeMeetingSegments,
+} from "./meeting_intelligence_helpers.mjs";
+import { buildMeetingOrchestrationPlan } from "./meeting_workflow_helpers.mjs";
+import {
+  buildPiMeetingOrchestrationInvocation,
+  loadPiMeetingOrchestrationEnv,
+  parsePiMeetingOrchestrationOutput,
+  reconcilePiMeetingOrchestrationResult,
+  shouldRunPiMeetingOrchestration,
+} from "./pi_meeting_orchestration_helpers.mjs";
 
 /**
  * Thin task execution runner.
@@ -35,6 +51,8 @@ const DEFAULT_CLOUD_ASR_MODEL = "paraformer-realtime-v2";
 const DEFAULT_CLOUD_ASR_FILE_MODEL = "fun-asr";
 const DEFAULT_CLOUD_ASR_SINGLE_MIX_REVIEW_MODEL = "paraformer-v2";
 const DEFAULT_CLOUD_ASR_LANGUAGE_HINTS = ["yue", "zh", "en"];
+const DEFAULT_MEETING_AGENTIC_DELEGATION_TIMEOUT_MS = 1_800_000;
+const DEFAULT_MEETING_AGENTIC_EVENT_MAX_CHARS = 25_000_000;
 
 const RUNNER_EXECUTION_PROFILES = new Set([
   "fast_answer",
@@ -204,6 +222,7 @@ function runCommand(command, args, options = {}) {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    const maxOutputChars = Number(options.maxOutputChars ?? 5_000_000);
     const child = spawn(command, args, {
       cwd: options.cwd ?? workspaceDir,
       env: { ...process.env, ...(options.env ?? {}) },
@@ -216,11 +235,11 @@ function runCommand(command, args, options = {}) {
     }, options.timeoutMs ?? 120000);
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
-      if (stdout.length > 5_000_000) child.kill("SIGTERM");
+      if (stdout.length > maxOutputChars) child.kill("SIGTERM");
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
-      if (stderr.length > 5_000_000) child.kill("SIGTERM");
+      if (stderr.length > maxOutputChars) child.kill("SIGTERM");
     });
     child.on("error", (error) => {
       clearTimeout(timeout);
@@ -651,6 +670,46 @@ function fileSummaryContextPath(outputDir) {
 
 function reviewContextPath(outputDir) {
   return join(outputDir, "review-context.json");
+}
+
+function meetingIntelligenceDir(outputDir) {
+  return join(outputDir, "meeting-intelligence");
+}
+
+function meetingAnalysisPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "meeting-analysis.json");
+}
+
+function meetingProfilePath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "meeting-profile.json");
+}
+
+function participantMapPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "participant-map.json");
+}
+
+function topicMapPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "topic-map.json");
+}
+
+function internalEvidenceMapPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "evidence-map.json");
+}
+
+function agentPlanPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "agent-plan.json");
+}
+
+function agenticOrchestrationPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "agentic-orchestration.json");
+}
+
+function agenticOrchestrationResultPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "agentic-orchestration-result.json");
+}
+
+function agenticOrchestrationEventsPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "agentic-orchestration-events.ndjson");
 }
 
 function completeAsrSummary(outputDir) {
@@ -1394,16 +1453,37 @@ function inferProjectTitleFromSources(sources) {
   return { title: "", source: "" };
 }
 
-function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdentity = null) {
+function meetingTitleFromAnalysis(meetingAnalysis) {
+  if (!meetingAnalysis) return null;
+  const participants = meetingAnalysis.participantResolution?.participants ?? [];
+  const participantPart = participants.length <= 3
+    ? participants.map((participant) => participant.displayName ?? participant.alias).filter(Boolean).join("与")
+    : `${participants.slice(0, 2).map((participant) => participant.displayName ?? participant.alias).filter(Boolean).join("、")}等${participants.length}人`;
+  const firstTopic = meetingAnalysis.topicMap?.[0] ?? null;
+  const topicPart = cleanTitlePart(firstTopic?.title, "会议主题待确认").slice(0, 28);
+  const supportedDecision = meetingAnalysis.evidenceMap?.find((claim) => claim.claimType === "decision" && claim.status === "supported");
+  const conclusionPart = cleanTitlePart(supportedDecision?.text ?? firstTopic?.coreJudgment, "结论待确认").slice(0, 32);
+  return {
+    title: `会议纪要｜${participantPart || "参会人待确认"}｜${topicPart}｜${conclusionPart}`,
+    participantPart: participantPart || "参会人待确认",
+    topicPart,
+    conclusionPart,
+  };
+}
+
+function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdentity = null, meetingAnalysis = null) {
   const userPrompt = task.sourceEvent?.message?.text ?? "";
   const userPromptPreview = cleanPromptForTitle(userPrompt).slice(0, 160);
+  const analyzedMeetingTitle = meetingTitleFromAnalysis(meetingAnalysis);
   if (documentIdentity?.titleByDocType && typeof documentIdentity.titleByDocType === "object") {
     const projectTitle = cleanTitlePart(documentIdentity.normalizedTitleBase ?? documentIdentity.projectName ?? documentIdentity.subject, "待确认项目");
     const documents = requestedDocuments.map((docType) => {
       const identityTitle = documentIdentity.titleByDocType?.[docType] ?? {};
       const prefix = DOC_TITLE_PREFIX[docType] ?? cleanTitlePart(docType, "文档");
       const focus = DOC_TITLE_FOCUS[docType] ?? "文档输出";
-      const title = looksLikeGenericUploadName(identityTitle.title)
+      const title = docType === "meeting-minutes" && analyzedMeetingTitle
+        ? analyzedMeetingTitle.title
+        : looksLikeGenericUploadName(identityTitle.title)
         ? (docType === "meeting-minutes" ? `${prefix}｜${projectTitle}｜${focus}｜待确认` : `${prefix}｜${projectTitle}｜${focus}`)
         : identityTitle.title;
       return {
@@ -1413,7 +1493,10 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
         titleBasis: {
           projectTitle,
           focus,
-          source: "document_identity",
+          source: docType === "meeting-minutes" && analyzedMeetingTitle ? "meeting_intelligence" : "document_identity",
+          participants: analyzedMeetingTitle?.participantPart ?? null,
+          topic: analyzedMeetingTitle?.topicPart ?? null,
+          conclusion: analyzedMeetingTitle?.conclusionPart ?? null,
           identityBasis: identityTitle.identityBasis ?? documentIdentity.basis ?? [],
           identityConfidence: identityTitle.identityConfidence ?? documentIdentity.confidence ?? "low",
           sourceTitle: documentIdentity.sourceTitle ?? null,
@@ -1438,7 +1521,9 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
   const documents = requestedDocuments.map((docType) => {
     const prefix = DOC_TITLE_PREFIX[docType] ?? cleanTitlePart(docType, "文档");
     const focus = DOC_TITLE_FOCUS[docType] ?? "文档输出";
-    const title = docType === "meeting-minutes"
+    const title = docType === "meeting-minutes" && analyzedMeetingTitle
+      ? analyzedMeetingTitle.title
+      : docType === "meeting-minutes"
       ? `${prefix}｜${projectTitle}｜${focus}｜待确认`
       : `${prefix}｜${projectTitle}｜${focus}`;
     return {
@@ -1449,6 +1534,9 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
         projectTitle,
         focus,
         source: promptProject ? "user_prompt" : sourceProject.source || "fallback",
+        participants: analyzedMeetingTitle?.participantPart ?? null,
+        topic: analyzedMeetingTitle?.topicPart ?? null,
+        conclusion: analyzedMeetingTitle?.conclusionPart ?? null,
         userPromptPreview,
       },
     };
@@ -1720,10 +1808,10 @@ async function buildReviewContext(task, paths, sources, contexts, options = {}) 
       fullDocumentInlineInMetrics: false,
       rawSecretsReturned: false,
       rawMediaExternalUpload: false,
-    },
-    rawSecretsReturned: false,
-    rawMediaExternalUpload: false,
-  };
+      },
+      rawSecretsReturned: false,
+      rawMediaExternalUpload: Boolean(asr.rawMediaExternalUpload),
+    };
   writeJson(reviewContextPath(paths.artifactsDir), reviewContext);
   return reviewContext;
 }
@@ -1793,6 +1881,283 @@ function syncMarkdownTitle(markdown, title) {
   return `# ${title}\n\n${body}`;
 }
 
+async function executeMeetingAgenticOrchestration(plan, task, paths, options, hooks) {
+  const decision = shouldRunPiMeetingOrchestration(plan, options);
+  if (pipelineMockModelEnabled(options)) {
+    const skipped = {
+      status: "skipped",
+      reason: "pipeline_mock_model",
+      mode: plan?.mode ?? "direct",
+      expectedTool: plan?.executor?.tool ?? null,
+      rawSecretsReturned: false,
+    };
+    writeJson(agenticOrchestrationResultPath(paths.artifactsDir), skipped);
+    return skipped;
+  }
+  if (!decision.run) {
+    const skipped = {
+      status: "skipped",
+      reason: decision.reason,
+      mode: plan?.mode ?? "direct",
+      expectedTool: plan?.executor?.tool ?? null,
+      rawSecretsReturned: false,
+    };
+    writeJson(agenticOrchestrationResultPath(paths.artifactsDir), skipped);
+    return skipped;
+  }
+
+  const envConfig = loadPiMeetingOrchestrationEnv(workspaceDir);
+  const piCodingAgentDir = join(paths.runDir, ".pi-agentic");
+  await hooks.onStep?.("meeting_agentic_delegation_started", "running", {
+    mode: plan.mode,
+    tool: plan.executor.tool,
+    modelCandidates: envConfig.candidates.map((candidate) => ({ provider: candidate.provider, model: candidate.model, role: candidate.role })),
+    authorizationSource: decision.reason,
+  });
+  const startedAt = Date.now();
+  const attempts = [];
+  const eventStreams = [];
+  let completedAttempt = null;
+  const timeoutMs = Number(options.meetingAgenticDelegationTimeoutMs ?? process.env.MEETING_AGENTIC_DELEGATION_TIMEOUT_MS ?? DEFAULT_MEETING_AGENTIC_DELEGATION_TIMEOUT_MS);
+  for (const [index, candidate] of envConfig.candidates.entries()) {
+    const invocation = buildPiMeetingOrchestrationInvocation({
+      workspaceDir,
+      packageDir,
+      planPath: agenticOrchestrationPath(paths.artifactsDir),
+      provider: candidate.provider,
+      model: candidate.model,
+      piCodingAgentDir: join(piCodingAgentDir, `attempt-${index + 1}`),
+    });
+    const commandResult = await runCommand(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: { ...envConfig.env, ...invocation.env },
+      timeoutMs,
+      maxOutputChars: Number(options.meetingAgenticEventMaxChars ?? process.env.MEETING_AGENTIC_EVENT_MAX_CHARS ?? DEFAULT_MEETING_AGENTIC_EVENT_MAX_CHARS),
+    });
+    eventStreams.push(commandResult.stdout);
+    const parsed = parsePiMeetingOrchestrationOutput(commandResult.stdout, plan.executor.tool);
+    const completed = commandResult.exitCode === 0 && parsed.status === "completed";
+    const attempt = {
+      provider: candidate.provider,
+      model: candidate.model,
+      role: candidate.role,
+      status: completed ? "completed" : "blocked",
+      reason: completed
+        ? null
+        : commandResult.timedOut
+          ? "pi_meeting_agentic_delegation_timeout"
+          : commandResult.exitCode !== 0
+            ? "pi_meeting_agentic_process_failed"
+            : parsed.reason,
+      exitCode: commandResult.exitCode,
+      timedOut: commandResult.timedOut,
+      observedTools: parsed.observedTools ?? [],
+      assistantSummary: parsed.assistantSummary ?? "",
+      errorMessages: parsed.errorMessages ?? [],
+      result: parsed.result ?? null,
+      eventCount: parsed.eventCount ?? 0,
+      parseErrors: parsed.parseErrors ?? [],
+      stderrTail: redactString(commandResult.stderr).slice(-2000),
+    };
+    attempts.push(attempt);
+    if (completed) {
+      completedAttempt = attempt;
+      break;
+    }
+  }
+  writeText(agenticOrchestrationEventsPath(paths.artifactsDir), eventStreams.filter(Boolean).join("\n"));
+  const finalAttempt = completedAttempt ?? attempts.at(-1) ?? {};
+  const status = completedAttempt ? "completed" : "blocked";
+  const result = {
+    schemaVersion: "meeting-agentic-orchestration-result-v1",
+    status,
+    reason: status === "completed" ? null : finalAttempt.reason ?? "pi_meeting_agentic_delegation_failed",
+    mode: plan.mode,
+    expectedTool: plan.executor.tool,
+    provider: finalAttempt.provider ?? null,
+    model: finalAttempt.model ?? null,
+    authorizationSource: decision.reason,
+    durationMs: Date.now() - startedAt,
+    exitCode: finalAttempt.exitCode ?? null,
+    timedOut: finalAttempt.timedOut ?? false,
+    loadedEnvKeys: envConfig.loadedKeys,
+    attempts: attempts.map((attempt) => ({
+      provider: attempt.provider,
+      model: attempt.model,
+      role: attempt.role,
+      status: attempt.status,
+      reason: attempt.reason,
+      exitCode: attempt.exitCode,
+      timedOut: attempt.timedOut,
+      observedTools: attempt.observedTools,
+      errorMessages: attempt.errorMessages,
+      eventCount: attempt.eventCount,
+    })),
+    observedTools: finalAttempt.observedTools ?? [],
+    assistantSummary: finalAttempt.assistantSummary ?? "",
+    result: finalAttempt.result ?? null,
+    eventCount: attempts.reduce((total, attempt) => total + Number(attempt.eventCount ?? 0), 0),
+    parseErrors: attempts.flatMap((attempt) => attempt.parseErrors ?? []),
+    eventsArtifact: workspaceRelative(agenticOrchestrationEventsPath(paths.artifactsDir)),
+    stderrTail: finalAttempt.stderrTail ?? "",
+    rawSecretsReturned: false,
+  };
+  writeJson(agenticOrchestrationResultPath(paths.artifactsDir), result);
+  await hooks.onStep?.("meeting_agentic_delegation_completed", status, {
+    mode: plan.mode,
+    tool: plan.executor.tool,
+    status,
+    reason: result.reason,
+    artifact: workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)),
+  });
+  return result;
+}
+
+async function ensureMeetingIntelligence(task, paths, options, hooks) {
+  if (!existsSync(transcriptPath(paths.artifactsDir))) {
+    return { status: "skipped", reason: "transcript_not_available", analysis: null };
+  }
+  const transcript = loadJson(transcriptPath(paths.artifactsDir));
+  const segments = normalizeMeetingSegments(transcript?.transcriptSegments ?? []);
+  if (segments.length === 0) return { status: "skipped", reason: "transcript_segments_empty", analysis: null };
+  const userPrompt = cleanUserPrompt(task.sourceEvent?.message?.text ?? "");
+  const participantMap = buildParticipantMap(segments, userPrompt);
+  const asrSummary = existsSync(asrSummaryPath(paths.artifactsDir)) ? loadJson(asrSummaryPath(paths.artifactsDir)) : null;
+  const prompt = buildMeetingAnalysisPrompt({
+    segments,
+    participantMap,
+    asrSummary,
+    userPrompt,
+    maxChars: Number(options.meetingAnalysisMaxPromptChars ?? process.env.FEISHU_AGENT_MEETING_ANALYSIS_MAX_PROMPT_CHARS ?? 140_000),
+  });
+
+  let analysis = null;
+  let routePlan = null;
+  let generation = null;
+  if (!pipelineMockModelEnabled(options)) {
+    routePlan = await callRuntimeTool("model_route_plan", {
+      taskType: "meeting_analysis",
+      docType: "meeting-minutes",
+      reasoningDepth: "deep",
+      estimatedComplexity: segments.length >= 120 ? "high" : "medium",
+    }, paths, options);
+    const candidate = routePlan?.status === "selected" ? routePlan.selected : null;
+    if (candidate) {
+      generation = await callModelGenerateText({
+        provider: candidate.provider,
+        model: candidate.model,
+        prompt: prompt.prompt,
+        systemPrompt: [
+          "你是 Meeting Intelligence Agent。你的任务是从带时间戳、匿名参会人和 ASR 质量标签的当前会议证据中建立结构化会议状态。",
+          "你自主识别会议类型、议题、分歧、共识、行动和开放问题，但不得发明姓名或把低质量语音升级为确定决定。",
+          "只输出符合用户 Prompt 中 contract 的 JSON。",
+        ].join(""),
+        temperature: 0.1,
+        maxTokens: Number(options.meetingAnalysisMaxTokens ?? process.env.FEISHU_AGENT_MEETING_ANALYSIS_MAX_TOKENS ?? 7000),
+        timeoutMs: Number(options.modelTimeoutMs ?? process.env.FEISHU_AGENT_MODEL_TIMEOUT_MS ?? 180_000),
+        modelRoute: routePlan,
+      }, paths, options, executionProfileForTask(task)?.id ?? "audio_minutes");
+      if (generation?.status === "completed") {
+        analysis = normalizeMeetingAnalysisResponse({
+          content: generation.content,
+          segments,
+          participantMap,
+          asrSummary,
+        });
+      }
+    }
+  }
+  if (!analysis) {
+    analysis = buildFallbackMeetingAnalysis({
+      segments,
+      participantMap,
+      asrSummary,
+      reason: pipelineMockModelEnabled(options)
+        ? "pipeline_mock_model"
+        : generation?.reason ?? routePlan?.reason ?? "meeting_analysis_response_invalid",
+    });
+  }
+  analysis = {
+    ...analysis,
+    generatedAt: nowIso(),
+    source: {
+      transcriptPath: workspaceRelative(transcriptPath(paths.artifactsDir)),
+      segmentCount: segments.length,
+      timelineTruncated: prompt.timeline.truncated,
+      timelineIncludedSegmentCount: prompt.timeline.includedSegmentIds.length,
+    },
+    model: generation?.status === "completed"
+      ? { provider: generation.provider, model: generation.model, status: generation.status }
+      : { provider: routePlan?.selected?.provider ?? null, model: routePlan?.selected?.model ?? null, status: generation?.status ?? routePlan?.status ?? "fallback" },
+  };
+  const orchestration = buildMeetingOrchestrationPlan(analysis, {
+    meetingAnalysisPath: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
+    transcriptPath: workspaceRelative(transcriptPath(paths.artifactsDir)),
+    participantMapPath: workspaceRelative(participantMapPath(paths.artifactsDir)),
+  });
+  analysis.agentPlan = {
+    ...analysis.agentPlan,
+    orchestrationMode: orchestration.mode,
+    specialistCount: orchestration.specialists.length,
+  };
+  writeJson(meetingAnalysisPath(paths.artifactsDir), analysis);
+  writeJson(meetingProfilePath(paths.artifactsDir), analysis.meetingProfile);
+  writeJson(participantMapPath(paths.artifactsDir), analysis.participantResolution);
+  writeJson(topicMapPath(paths.artifactsDir), { schemaVersion: "meeting-topic-map-v1", topics: analysis.topicMap });
+  writeJson(internalEvidenceMapPath(paths.artifactsDir), { schemaVersion: "meeting-evidence-map-v1", claims: analysis.evidenceMap });
+  writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...analysis.agentPlan });
+  writeJson(agenticOrchestrationPath(paths.artifactsDir), orchestration);
+  const delegatedReview = await executeMeetingAgenticOrchestration(orchestration, task, paths, options, hooks);
+  const delegationReconciliation = reconcilePiMeetingOrchestrationResult(
+    delegatedReview,
+    segments.map((segment) => segment.segmentId),
+  );
+  writeJson(agenticOrchestrationResultPath(paths.artifactsDir), {
+    ...delegatedReview,
+    reconciliation: delegationReconciliation,
+  });
+  analysis.delegatedReview = {
+    status: delegationReconciliation.status,
+    toolRunStatus: delegatedReview.status,
+    reason: delegatedReview.reason,
+    mode: orchestration.mode,
+    tool: orchestration.executor?.tool ?? null,
+    evidenceScopeSatisfied: delegationReconciliation.evidenceScopeSatisfied,
+    referencedSegmentIds: delegationReconciliation.referencedSegmentIds,
+    invalidSegmentIds: delegationReconciliation.invalidSegmentIds,
+    missingEvidencePaths: delegationReconciliation.missingEvidencePaths,
+    qaPriorities: delegationReconciliation.qaPriorities,
+    assistantSummary: delegationReconciliation.evidenceScopeSatisfied ? delegatedReview.assistantSummary ?? "" : "",
+    result: delegationReconciliation.result,
+    artifact: workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)),
+  };
+  analysis.agentPlan = {
+    ...analysis.agentPlan,
+    delegationStatus: delegationReconciliation.status,
+    delegationReason: delegatedReview.reason,
+  };
+  writeJson(meetingAnalysisPath(paths.artifactsDir), analysis);
+  writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...analysis.agentPlan });
+  await hooks.onStep?.("meeting_intelligence_completed", "completed", {
+    analysisMode: analysis.analysisMode,
+    meetingType: analysis.meetingProfile?.meetingType ?? null,
+    participantCount: analysis.participantResolution?.participantCount ?? 0,
+    unresolvedParticipantCount: analysis.participantResolution?.unresolvedCount ?? 0,
+    topicCount: analysis.topicMap?.length ?? 0,
+    reviewStrategy: analysis.agentPlan?.reviewStrategy ?? null,
+    orchestrationMode: orchestration.mode,
+    specialistCount: orchestration.specialists.length,
+    delegationStatus: delegationReconciliation.status,
+    delegationToolRunStatus: delegatedReview.status,
+    delegationReason: delegatedReview.reason,
+    artifact: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
+  });
+  if (analysis.participantResolution?.question) {
+    await hooks.progressReply?.(analysis.participantResolution.question, "participant_names_requested");
+  }
+  return { status: "completed", analysis, orchestration, delegatedReview, routePlan, generation };
+}
+
 async function buildEvidencePack(task, paths, options = {}) {
   const sourcePreparation = task.taskIntent?.sourcePreparation ?? {};
   const requestedDocuments = Array.isArray(task.taskIntent?.requestedDocuments) && task.taskIntent.requestedDocuments.length > 0
@@ -1828,6 +2193,7 @@ async function buildEvidencePack(task, paths, options = {}) {
   }
 
   const reviewContext = isDocumentRevisionTask(task) ? await buildReviewContext(task, paths, sources, contexts, options) : null;
+  const meetingAnalysis = options.meetingAnalysis ?? null;
   const sourceContext = await callRuntimeTool("source_context_prepare", {
     runId: task.runId,
     outputRoot: dirname(paths.runDir),
@@ -1839,10 +2205,11 @@ async function buildEvidencePack(task, paths, options = {}) {
     evidenceIndexPath: existsSync(evidenceIndexPath(paths.artifactsDir)) ? evidenceIndexPath(paths.artifactsDir) : undefined,
     asrSummaryPath: existsSync(asrSummaryPath(paths.artifactsDir)) ? asrSummaryPath(paths.artifactsDir) : undefined,
     reviewContext,
+    meetingAnalysis,
     operation: isDocumentRevisionTask(task) ? "document_revision" : requestedDocuments.includes("meeting-minutes") ? "meeting_minutes" : "create_document",
     sectionsPerUnit: options.sectionsPerUnit ?? options.sectionsPerBatch ?? 2,
   }, paths, options, executionProfileForTask(task)?.id ?? "");
-  const titlePlan = buildDocumentTitlePlan(task, requestedDocuments, sources, sourceContext.documentIdentity);
+  const titlePlan = buildDocumentTitlePlan(task, requestedDocuments, sources, sourceContext.documentIdentity, meetingAnalysis);
   writeJson(titlePlanPath(paths.artifactsDir), titlePlan);
 
   const pack = {
@@ -1874,7 +2241,7 @@ async function buildEvidencePack(task, paths, options = {}) {
       documentIdentity: sourceContext.documentIdentity ?? null,
       sourceStructureSummary: sourceContext.sourceStructureSummary ?? null,
       outputContract: sourceContext.outputContract ?? null,
-      fullRawContentIncluded: false,
+      fullContentAvailableByArtifact: true,
     },
     reviewContext: reviewContext
       ? {
@@ -1886,10 +2253,24 @@ async function buildEvidencePack(task, paths, options = {}) {
           artifact: workspaceRelative(reviewContextPath(paths.artifactsDir)),
         }
       : null,
+    meetingIntelligence: meetingAnalysis
+      ? {
+          status: meetingAnalysis.status,
+          analysisMode: meetingAnalysis.analysisMode,
+          meetingType: meetingAnalysis.meetingProfile?.meetingType ?? null,
+          participantCount: meetingAnalysis.participantResolution?.participantCount ?? 0,
+          unresolvedParticipantCount: meetingAnalysis.participantResolution?.unresolvedCount ?? 0,
+          topicCount: meetingAnalysis.topicMap?.length ?? 0,
+          delegationStatus: meetingAnalysis.delegatedReview?.status ?? "skipped",
+          delegationArtifact: meetingAnalysis.delegatedReview?.artifact ?? null,
+          suggestedFollowUpDocuments: meetingAnalysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+          artifact: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
+        }
+      : null,
     sourceMediaExternalUpload: false,
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-    fullRawContentIncluded: false,
+    fullContentAvailableByArtifact: true,
   };
   writeJson(evidencePackPath(paths.artifactsDir), pack);
   return {
@@ -1915,7 +2296,7 @@ async function buildEvidencePack(task, paths, options = {}) {
       outputContract: sourceContext.outputContract ?? null,
       sourceMediaExternalUpload: false,
       textEvidenceExternalLlmDefault: "allow",
-      fullRawContentIncluded: false,
+      fullContentAvailableByArtifact: true,
       reviewContext: reviewContext
         ? {
             status: reviewContext.status,
@@ -1926,6 +2307,7 @@ async function buildEvidencePack(task, paths, options = {}) {
             artifact: workspaceRelative(reviewContextPath(paths.artifactsDir)),
           }
         : null,
+      meetingIntelligence: pack.meetingIntelligence,
     },
     titlePlan,
     reviewContext,
@@ -2031,11 +2413,9 @@ function buildFileSummaryContext(task, paths, profileConfig = {}) {
     .filter((context) => context?.status === "ready")
     .slice(0, policy.maxSources);
   const sources = contexts.map((context, index) => {
-    const externalLlmAllowed = context.externalLlmAllowed !== false;
-    const preview = externalLlmAllowed
-      ? redactString(String(context.contextPreview ?? "").slice(0, policy.previewCharsPerSource))
-      : "";
-    const extractedText = externalLlmAllowed ? readTextIfAvailable(context.extractedTextPath, policy.extractedSliceChars * Math.max(1, policy.maxExtractedSlicesPerSource) * 4) : "";
+    const externalLlmAllowed = true;
+    const preview = redactString(String(context.contextPreview ?? "").slice(0, policy.previewCharsPerSource));
+    const extractedText = readTextIfAvailable(context.extractedTextPath, policy.extractedSliceChars * Math.max(1, policy.maxExtractedSlicesPerSource) * 4);
     return {
       sourceId: `file-${String(index + 1).padStart(2, "0")}`,
       fileName: context.fileName ?? null,
@@ -2060,7 +2440,7 @@ function buildFileSummaryContext(task, paths, profileConfig = {}) {
     sourceMediaExternalUpload: false,
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-    fullRawContentIncluded: false,
+    fullContentAvailableByArtifact: true,
   };
   writeJson(fileSummaryContextPath(paths.artifactsDir), fileContext);
   return fileContext;
@@ -2093,13 +2473,9 @@ function renderFileSummaryPrompt(task, fileContext) {
       }, null, 2),
       "",
     ];
-    if (!source.externalLlmAllowed) {
-      sourceParts.push("Text evidence omitted because this source is not allowed for external LLM use.", "");
-    } else {
-      if (source.preview) sourceParts.push("#### Preview", "", source.preview, "");
-      for (const slice of source.extractedSlices ?? []) {
-        sourceParts.push(`#### Extracted Slice: ${slice.label}`, "", slice.text, "");
-      }
+    if (source.preview) sourceParts.push("#### Preview", "", source.preview, "");
+    for (const slice of source.extractedSlices ?? []) {
+      sourceParts.push(`#### Extracted Slice: ${slice.label}`, "", slice.text, "");
     }
     budget = appendWithinBudget(parts, sourceParts.join("\n"), budget);
     if (budget <= 0) break;
@@ -2124,7 +2500,6 @@ async function planFastDraftRoute(task, paths, options, hooks, executionProfile,
   const routePlan = await callRuntimeTool("model_route_plan", {
     taskType: profileConfig.routeTaskType ?? "fast_draft",
     reasoningDepth: profileConfig.reasoningDepth ?? "fast",
-    privacyBoundarySatisfied: true,
   }, paths, options);
   const candidate = generationCandidate(routePlan, executionProfile, options);
   await callRuntimeTool("model_route_record", {
@@ -2372,11 +2747,15 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
       }
     }
+    const meetingIntelligence = requestedDocuments.includes("meeting-minutes")
+      ? await ensureMeetingIntelligence(task, paths, options, hooks)
+      : { status: "skipped", reason: "meeting_minutes_not_requested", analysis: null };
     const revisionMode = isDocumentRevisionTask(task);
     const documentQualityMode = String(options.documentQualityMode ?? process.env.FEISHU_AGENT_DOCUMENT_QUALITY_MODE ?? "stable").toLowerCase();
     const workflowSectionsPerBatch = documentQualityMode === "stable" ? 2 : 3;
     const { evidenceSummary, titlePlan, reviewContext, sourceContext } = await buildEvidencePack(task, paths, {
       ...options,
+      meetingAnalysis: meetingIntelligence.analysis,
       sectionsPerUnit: workflowSectionsPerBatch,
     });
     await hooks.onStep?.("evidence_pack_built", "completed", {
@@ -2412,6 +2791,11 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       requestedOutputs: requestedDocuments,
       availableArtifacts: [
         workspaceRelative(evidencePackPath(paths.artifactsDir)),
+        meetingIntelligence.analysis ? workspaceRelative(meetingAnalysisPath(paths.artifactsDir)) : null,
+        meetingIntelligence.analysis ? workspaceRelative(topicMapPath(paths.artifactsDir)) : null,
+        meetingIntelligence.analysis ? workspaceRelative(internalEvidenceMapPath(paths.artifactsDir)) : null,
+        meetingIntelligence.analysis ? workspaceRelative(agenticOrchestrationPath(paths.artifactsDir)) : null,
+        meetingIntelligence.analysis ? workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)) : null,
         revisionMode ? workspaceRelative(reviewContextPath(paths.artifactsDir)) : null,
         existsSync(transcriptPath(paths.artifactsDir)) ? workspaceRelative(transcriptPath(paths.artifactsDir)) : null,
         existsSync(evidenceIndexPath(paths.artifactsDir)) ? workspaceRelative(evidenceIndexPath(paths.artifactsDir)) : null,
@@ -2419,7 +2803,21 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       successCriteria: revisionMode
         ? ["批注/修改意图被覆盖", "修订后文档完整输出", "QA Gate 通过", "Policy Gate 通过", "最终发布/回复"]
         : ["请求文档生成", "QA Gate 通过", "Policy Gate 通过", "最终发布/回复"],
-      constraints: ["原始音频不得外发", "模型选择必须走 Model Router", "文档结构必须来自 Prompt Registry 和 Document Worker", "多源冲突按来源标注并列入待确认", "document_revision 只能作为 prompt overlay 和 review-context，不得新增第二编排层"],
+      constraints: ["凭证、Token、Cookie 和 Authorization 不得进入模型或日志", "模型选择必须走 Model Router", "会议结构由 Meeting Intelligence 与当前证据决定", "多源冲突按来源标注并列入待确认", "document_revision 只能作为 prompt overlay 和 review-context，不得新增第二编排层"],
+      meetingAnalysis: meetingIntelligence.analysis
+        ? {
+            meetingType: meetingIntelligence.analysis.meetingProfile?.meetingType ?? null,
+            topicCount: meetingIntelligence.analysis.topicMap?.length ?? 0,
+            participantCount: meetingIntelligence.analysis.participantResolution?.participantCount ?? 0,
+            unresolvedParticipantCount: meetingIntelligence.analysis.participantResolution?.unresolvedCount ?? 0,
+            complexity: meetingIntelligence.analysis.agentPlan?.meetingComplexity ?? null,
+            narrativeMode: meetingIntelligence.analysis.agentPlan?.narrativeMode ?? null,
+            reviewStrategy: meetingIntelligence.analysis.agentPlan?.reviewStrategy ?? null,
+            orchestrationMode: meetingIntelligence.analysis.agentPlan?.orchestrationMode ?? null,
+            specialistCount: meetingIntelligence.analysis.agentPlan?.specialistCount ?? 0,
+            suggestedFollowUpDocuments: meetingIntelligence.analysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+          }
+        : null,
     }, paths, options);
     await callRuntimeTool("planner_envelope_write", { runId: task.runId, envelope: planner, outputRoot }, paths, options);
     await hooks.onStep?.("planner_envelope_completed", planner.status === "blocked" ? "blocked" : "completed", { artifact: join(paths.runDir, "planner-envelope.json") });
@@ -2430,7 +2828,6 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       taskType: routeTaskType,
       docType: primaryDoc,
       reasoningDepth: requestedDocuments.some((doc) => ["meeting-minutes", "prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(doc)) ? "deep" : "fast",
-      privacyBoundarySatisfied: true,
     }, paths, options);
     await callRuntimeTool("model_route_record", { runId: task.runId, route: routePlan, outputRoot }, paths, options);
     await hooks.onStep?.("model_route_planned", routePlan.status === "selected" ? "completed" : "blocked", {
@@ -2567,13 +2964,30 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       };
     });
 
+    const meetingQa = meetingIntelligence.analysis?.analysisMode === "model_reasoned_validated"
+      ? buildMeetingQaFindings(meetingIntelligence.analysis, qaDocumentOutputs)
+      : {
+          omittedMacroTopics: [],
+          uncertainEvidenceClaims: [],
+          actionCoverageGaps: [],
+          speakerAttributionViolations: [],
+          unsupportedEntities: [],
+          crossMeetingTerms: [],
+          ambiguousTermExpansions: [],
+        };
+
     const qaGate = await callRuntimeTool("qa_gate_evaluate", {
       publishIntent: true,
       checks: {
-        privacy: { rawMediaExternalUpload: false, rawSecretsReturned: false, rawTranscriptInLongTermMemory: false },
-        contextBudget: { rawTranscriptInMainContext: false },
-        topicCoverage: { omittedMacroTopics: [] },
-        entitySafety: { unsupportedEntities: [], crossMeetingTerms: [], ambiguousTermExpansions: [] },
+        security: { rawSecretsReturned: false, secretsLeaked: false },
+        topicCoverage: { omittedMacroTopics: meetingQa.omittedMacroTopics, actionCoverageGaps: meetingQa.actionCoverageGaps },
+        entitySafety: {
+          unsupportedEntities: meetingQa.unsupportedEntities,
+          crossMeetingTerms: meetingQa.crossMeetingTerms,
+          ambiguousTermExpansions: meetingQa.ambiguousTermExpansions,
+          speakerAttributionViolations: meetingQa.speakerAttributionViolations,
+        },
+        asrEvidence: { uncertainEvidenceClaims: meetingQa.uncertainEvidenceClaims },
         reviewContext: revisionMode
           ? {
               required: true,
@@ -2658,6 +3072,16 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     }
     const artifacts = [
       { kind: "evidence-pack", name: "evidence-pack.json", localPath: evidencePackPath(paths.artifactsDir) },
+      meetingIntelligence.analysis ? { kind: "meeting-analysis", name: "meeting-analysis.json", localPath: meetingAnalysisPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "participant-map", name: "participant-map.json", localPath: participantMapPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "topic-map", name: "topic-map.json", localPath: topicMapPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "evidence-map", name: "evidence-map.json", localPath: internalEvidenceMapPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "agent-plan", name: "agent-plan.json", localPath: agentPlanPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "agentic-orchestration", name: "agentic-orchestration.json", localPath: agenticOrchestrationPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "agentic-orchestration-result", name: "agentic-orchestration-result.json", localPath: agenticOrchestrationResultPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis && existsSync(agenticOrchestrationEventsPath(paths.artifactsDir))
+        ? { kind: "agentic-orchestration-events", name: "agentic-orchestration-events.ndjson", localPath: agenticOrchestrationEventsPath(paths.artifactsDir) }
+        : null,
       revisionMode ? { kind: "review-context", name: "review-context.json", localPath: reviewContextPath(paths.artifactsDir) } : null,
       { kind: "document-title-plan", name: "document-title-plan.json", localPath: titlePlanPath(paths.artifactsDir) },
       lifecycleResult?.documentLifecyclePath ? { kind: "document-lifecycle", name: "document-lifecycle.json", localPath: lifecycleResult.documentLifecyclePath } : null,
@@ -2683,12 +3107,33 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     };
     const output = {
       status: publishable ? "completed" : "needs_fix",
-      summary: publishable ? `已基于 ${evidenceSummary.sourceCount} 个来源生成 ${documents.length} 份文档。` : finalFailureSummary(gateFailureReport),
+      summary: publishable
+        ? [
+            `已基于 ${evidenceSummary.sourceCount} 个来源生成 ${documents.length} 份文档。`,
+            meetingIntelligence.analysis?.participantResolution?.question ?? "",
+            meetingIntelligence.analysis?.agentPlan?.suggestedFollowUpDocuments?.length
+              ? `Agent 建议后续可生成：${meetingIntelligence.analysis.agentPlan.suggestedFollowUpDocuments.join("、")}。`
+              : "",
+          ].filter(Boolean).join(" ")
+        : finalFailureSummary(gateFailureReport),
       documents: publishable ? documents : [],
       qaGate,
       policyGate,
       artifacts,
-      details: publishable ? undefined : { finalFailureReport: gateFailureReport },
+      details: publishable
+        ? {
+            meetingIntelligence: {
+              meetingType: meetingIntelligence.analysis?.meetingProfile?.meetingType ?? null,
+              topicCount: meetingIntelligence.analysis?.topicMap?.length ?? 0,
+              participantCount: meetingIntelligence.analysis?.participantResolution?.participantCount ?? 0,
+              unresolvedParticipantCount: meetingIntelligence.analysis?.participantResolution?.unresolvedCount ?? 0,
+              narrativeMode: meetingIntelligence.analysis?.agentPlan?.narrativeMode ?? null,
+              orchestrationMode: meetingIntelligence.analysis?.agentPlan?.orchestrationMode ?? null,
+              specialistCount: meetingIntelligence.analysis?.agentPlan?.specialistCount ?? 0,
+              suggestedFollowUpDocuments: meetingIntelligence.analysis?.agentPlan?.suggestedFollowUpDocuments ?? [],
+            },
+          }
+        : { finalFailureReport: gateFailureReport },
       rawSecretsReturned: false,
       rawMediaExternalUpload: false,
     };

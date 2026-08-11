@@ -20,7 +20,9 @@ Use this skill before a non-trivial office task selects integrations, workers, o
 - Long meeting or multi-document tasks may recommend `meeting-minutes`, `local-asr`, `context-offload`, `agent-team-runtime`, `model-fallback`, and `qa-safety-review` when the task evidence calls for them.
 - Feishu inbound task, attachment, publish, or bot reply issues should recommend `feishu-agent-bridge`; `feishu-bot-gateway` is the optional SDK long-connection entrypoint. MCP is not a prerequisite for basic bot reply or publish.
 - SDK/MCP/API/current-documentation questions may recommend `web-access`, but only with source records and policy gate approval.
-- The planner envelope must not contain secrets, tokens, cookies, CLI sessions, App Secret values, raw media, or raw transcript bodies.
+- The planner envelope must not contain secrets, tokens, cookies, CLI sessions,
+  or App Secret values. Meeting-content references and bounded evidence are
+  allowed when they improve planning.
 
 ## Output
 

@@ -24,10 +24,10 @@
       "installState": "local",
       "securityReview": {
         "status": "passed",
-        "summary": "Local deterministic planner heuristic; does not read secrets or raw transcript bodies."
+        "summary": "Local planner consumes bounded meeting intelligence summaries without reading credentials or authentication state."
       },
       "triggers": ["all tasks", "plan", "planner", "envelope"],
-      "guardrails": ["fixedWorkflow=false", "no secrets", "no raw transcript in envelope"]
+      "guardrails": ["fixedWorkflow=false", "no credentials", "meeting intelligence may shape the scenario playbook"]
     },
     {
       "capabilityId": "policy-gate",
@@ -37,7 +37,7 @@
       "contextCost": "low",
       "toolPackage": "local-extension",
       "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency", "persist_memory"],
-      "policy": ["secret leak blocked", "raw media external upload blocked", "confirmation required for irreversible actions"],
+      "policy": ["credential leak blocked", "meeting content transfer allowed", "confirmation required for irreversible actions"],
       "observability": ["policyDecisions"],
       "installState": "local",
       "securityReview": {
@@ -50,7 +50,7 @@
     {
       "capabilityId": "meeting-minutes",
       "status": "available",
-      "description": "Produces evidence-grounded meeting minutes for meeting or transcript scenarios.",
+      "description": "Produces evidence-grounded meeting minutes from Meeting Intelligence, participant aliases, dynamic topic maps, and ASR quality evidence.",
       "defaultLoad": false,
       "contextCost": "medium",
       "toolPackage": "local-skill",
@@ -60,10 +60,28 @@
       "installState": "local",
       "securityReview": {
         "status": "passed",
-        "summary": "Local prompt/skill only; raw transcript must stay in local artifacts or evidence pointers."
+        "summary": "Meeting content may be used by selected models; participant identities remain alias-based unless explicitly mapped, and credentials remain excluded."
       },
       "triggers": ["meeting minutes", "summary", "transcript", "meeting", "会议", "纪要"],
-      "guardrails": ["evidence required", "no raw transcript in user output", "topicMap for long meetings"]
+      "guardrails": ["evidence required", "participant aliases by default", "model-reasoned topicMap", "ASR uncertainty cannot become certain claims"]
+    },
+    {
+      "capabilityId": "meeting-intelligence",
+      "status": "available",
+      "description": "Runs a model-reasoned, evidence-validated meeting understanding turn that creates participant, topic, evidence, and agent-plan artifacts before drafting.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-tools",
+      "toolIntents": ["read", "draft", "interact"],
+      "policy": ["meeting content transfer allowed", "credentials excluded", "participant names require explicit mapping"],
+      "observability": ["modelRoutes", "generatedArtifacts", "qaGate"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "The model may reason over meeting evidence; output references are validated against current segment ids and participant aliases are deterministic."
+      },
+      "triggers": ["meeting", "transcript", "ASR", "会议", "纪要", "录音", "转写"],
+      "guardrails": ["evidence ids validated", "stable aliases by default", "user name mappings override aliases", "needs_review evidence cannot own certain claims"]
     },
     {
       "capabilityId": "doc-writer",
@@ -258,7 +276,7 @@
       "contextCost": "medium",
       "toolPackage": "local-tools",
       "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people"],
-      "policy": ["CLI-first event consume", "raw media stays local", "QA Gate required before Feishu publish", "Policy Gate blocks destructive actions", "MCP not required"],
+      "policy": ["CLI-first event consume", "meeting content transfer allowed", "QA Gate required before Feishu publish", "Policy Gate blocks destructive actions", "MCP not required"],
       "observability": ["plannerDecisions", "policyDecisions", "workerDecisions", "toolCalls", "externalCalls", "generatedArtifacts"],
       "installState": "local",
       "securityReview": {
@@ -290,7 +308,7 @@
       },
       "triggers": ["wechat", "wechatcli", "微信", "微信群", "微信附件"],
       "runtimeSchemas": ["im-event.schema.json", "im-attachment.schema.json", "im-reply.schema.json", "office-task-state.schema.json"],
-      "guardrails": ["fixture-only in this iteration", "reuse task_execution_runner", "no office_task_pipeline", "no raw media external upload"]
+      "guardrails": ["fixture-only in this iteration", "reuse task_execution_runner", "no office_task_pipeline", "no credentials in events or artifacts"]
     },
     {
       "capabilityId": "file-context-service",
@@ -300,16 +318,16 @@
       "contextCost": "medium",
       "toolPackage": "local-tools",
       "toolIntents": ["read", "draft"],
-      "policy": ["cloud-supported audio/video may enter ASR only", "text files may use bounded text fallback", "general image/video understanding unsupported", "no full large file in metrics"],
+      "policy": ["selected capabilities may consume relevant meeting content", "text files may use bounded text fallback", "general image/video understanding unsupported", "no credentials in metrics"],
       "observability": ["contextBudget", "toolCalls", "generatedArtifacts"],
       "installState": "local",
       "securityReview": {
         "status": "passed",
-        "summary": "Records hashes, bounded previews and source paths; raw media is exposed only to the selected ASR provider stage."
+        "summary": "Records hashes, bounded previews and source paths; context limits are relevance/performance controls rather than meeting-content privacy blocks."
       },
       "triggers": ["file context", "附件", "PDF", "Word", "Excel", "音频", "录音", "图片", "视频"],
       "runtimeSchemas": ["file-context.schema.json", "im-attachment.schema.json"],
-      "guardrails": ["progressive disclosure", "raw media only to ASR provider", "unsupported media returns 目前暂不支持该功能"]
+      "guardrails": ["progressive disclosure for context quality", "credential redaction", "unsupported media returns 目前暂不支持该功能"]
     },
     {
       "capabilityId": "office-runtime",
@@ -357,7 +375,7 @@
       "contextCost": "medium",
       "toolPackage": "local-extension",
       "toolIntents": ["read"],
-      "policy": ["raw media external upload blocked", "loopback service only"],
+      "policy": ["local execution available", "loopback service only", "meeting content transfer not policy-blocked"],
       "observability": ["toolCalls", "generatedArtifacts", "contextBudget"],
       "installState": "local",
       "securityReview": {
@@ -366,7 +384,7 @@
       },
       "triggers": ["audio", "transcribe", "ASR", "录音", "音频", "转写"],
       "optionalEnv": ["LOCAL_ASR_SERVICE_URL", "LOCAL_ASR_BEARER_TOKEN", "LOCAL_ASR_INPUT_ROOTS", "LOCAL_ASR_OUTPUT_ROOTS", "LOCAL_ASR_MODEL_DIR"],
-      "guardrails": ["raw media local only", "service URL loopback only", "optional bearer token", "input/output root allowlist", "no external fallback"]
+      "guardrails": ["service URL loopback only", "optional bearer token", "input/output root allowlist", "no hidden fallback"]
     },
     {
       "capabilityId": "cloud-asr",
@@ -376,7 +394,7 @@
       "contextCost": "medium",
       "toolPackage": "local-extension",
       "toolIntents": ["read"],
-      "policy": ["raw media upload allowed for ASR stage", "provider allowlist required", "secrets never written to artifacts"],
+      "policy": ["meeting media transfer allowed", "provider selected explicitly", "secrets never written to artifacts"],
       "observability": ["toolCalls", "generatedArtifacts", "contextBudget", "cloudAsrEvents"],
       "installState": "local",
       "securityReview": {
@@ -385,17 +403,17 @@
       },
       "triggers": ["audio", "video transcription", "transcribe", "ASR", "cloud ASR", "DashScope", "百炼", "录音", "音频", "视频转写", "转写", "粤语"],
       "optionalEnv": ["MEETING_ASR_PROVIDER", "MEETING_ASR_FALLBACK_PROVIDER", "ALIYUN_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", "ALIYUN_DASHSCOPE_WORKSPACE_ID", "ALIYUN_ASR_INPUT_MODE", "ALIYUN_ASR_MODEL", "ALIYUN_ASR_FILE_MODEL", "ALIYUN_ASR_SINGLE_MIX_MODE", "ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL", "ALIYUN_ASR_ENDPOINT", "ALIYUN_ASR_FILE_ENDPOINT", "ALIYUN_ASR_LANGUAGE_HINTS", "ALIYUN_ASR_VOCABULARY_ID", "ALIYUN_ASR_DIARIZATION_ENABLED", "ALIYUN_ASR_SPEAKER_COUNT", "ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED", "ALIYUN_OSS_BUCKET", "ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_BUCKET_ENDPOINT", "ALIYUN_OSS_ASR_PREFIX", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
-      "guardrails": ["audio_transcription policy gate required", "file and realtime endpoints remain distinct", "file diarization requires mono preparation", "speaker ids are anonymous evidence rather than identity", "single mixed recordings use one primary transcript plus independent-model review", "review alternatives are never silently merged", "unresolved overlap or ASR conflicts cannot become certain meeting claims", "source separation and guaranteed simultaneous-speech recovery are not claimed", "provider must be aliyun_dashscope_paraformer", "document workers receive transcript/evidence only", "no credentials or signed URLs in logs or artifacts"]
+      "guardrails": ["file and realtime endpoints remain distinct", "file diarization requires mono preparation", "speaker ids are anonymous evidence rather than identity", "single mixed recordings use one primary transcript plus independent-model review", "review alternatives are never silently merged", "unresolved overlap or ASR conflicts cannot become certain meeting claims", "source separation and guaranteed simultaneous-speech recovery are not claimed", "provider must be aliyun_dashscope_paraformer", "no credentials or signed URLs in logs or artifacts"]
     },
     {
       "capabilityId": "rokid-import",
       "status": "available",
-      "description": "Imports local Rokid/Lingzhu export artifacts while keeping media local.",
+      "description": "Imports Rokid/Lingzhu export artifacts into the shared meeting intelligence path.",
       "defaultLoad": false,
       "contextCost": "medium",
       "toolPackage": "local-extension",
       "toolIntents": ["read"],
-      "policy": ["raw media external upload blocked"],
+      "policy": ["meeting content transfer allowed", "credential redaction required"],
       "observability": ["toolCalls", "generatedArtifacts"],
       "installState": "local",
       "securityReview": {
@@ -403,7 +421,7 @@
         "summary": "Local export ingestion only; hashes media and does not upload raw files."
       },
       "triggers": ["rokid", "lingzhu", "眼镜", "导出目录"],
-      "guardrails": ["local export first", "streaming media hashes", "no raw upload"]
+      "guardrails": ["local export first", "streaming media hashes", "no credentials in artifacts"]
     },
     {
       "capabilityId": "agent-team-runtime",
@@ -449,7 +467,7 @@
       "contextCost": "low",
       "toolPackage": "local-extension",
       "toolIntents": ["read", "draft"],
-      "policy": ["raw transcript local artifact only", "bounded readback"],
+      "policy": ["large evidence stays addressable by artifact pointer", "bounded readback follows relevance and model budget"],
       "observability": ["contextBudget", "generatedArtifacts"],
       "installState": "local",
       "securityReview": {
@@ -457,7 +475,7 @@
         "summary": "Local artifact writer enforces workspace-bounded paths and readback caps."
       },
       "triggers": ["long meeting", "raw transcript", "context prune", "evidence offload", "长会议", "上下文"],
-      "guardrails": ["raw transcript local artifact", "bounded readback", "main context keeps pointers"]
+      "guardrails": ["content-addressable artifacts", "bounded readback", "main context keeps relevant evidence and pointers"]
     },
     {
       "capabilityId": "model-fallback",
@@ -562,25 +580,44 @@
       "guardrails": ["disabled by default", "planner output remains explicit"]
     },
     {
-      "capabilityId": "third-party-subagents",
-      "status": "candidate",
-      "description": "Optional replacement or complement to local agent-team-runtime after package audit proves safer or more capable parallel worker execution.",
+      "capabilityId": "pi-subagents",
+      "status": "available",
+      "description": "Runs one or more focused child Pi sessions with fresh context for bounded meeting evidence review and returns results to the parent Agent.",
       "defaultLoad": false,
       "contextCost": "medium",
-      "toolPackage": "third-party",
+      "toolPackage": "pi-subagents@0.46.0",
       "toolIntents": ["read", "draft"],
-      "policy": ["task-shaped workers only", "no fixed role explosion", "no default load"],
+      "policy": ["task-shaped meeting specialists only", "project agent definitions are read-only", "parent retains final authority"],
       "observability": ["packageAudits", "workerDecisions"],
-      "installState": "not_installed",
+      "installState": "bundled",
       "securityReview": {
-        "status": "pending",
-        "summary": "Candidate only; must audit process isolation, context sharing, artifact access, env reads, network behavior, and disable path.",
-        "requiredBeforeEnable": ["package-audit artifact", "worker isolation review", "smoke test"],
+        "status": "passed",
+        "summary": "Version and tarball were audited; meeting roles use read-only tools, bounded evidence paths and parent reconciliation.",
+        "auditArtifact": "runtime/package-audits/pi-subagents-0.46.0.json",
         "auditArtifactRequired": true
       },
-      "candidatePackages": ["pi-subagents"],
-      "triggers": ["replace local agent-team-runtime", "parallel worker package"],
-      "guardrails": ["supply-chain review first", "no default load"]
+      "triggers": ["single independent meeting review", "fresh context", "subagent", "独立复核"],
+      "guardrails": ["fresh child context", "read-only meeting agents", "no credential output", "parent validates segment ids"]
+    },
+    {
+      "capabilityId": "pi-dynamic-workflows",
+      "status": "available",
+      "description": "Runs schema-validated dynamic meeting workflows with task-shaped specialists, parallel fan-out, completeness checks, verification and synthesis.",
+      "defaultLoad": false,
+      "contextCost": "high",
+      "toolPackage": "@quintinshaw/pi-dynamic-workflows@3.5.1",
+      "toolIntents": ["read", "draft", "review"],
+      "policy": ["selected from Meeting Intelligence complexity", "bounded concurrency and agent count", "no worktree isolation for meeting review", "parent retains final authority"],
+      "observability": ["packageAudits", "workerDecisions", "modelCalls", "plannerDecisions"],
+      "installState": "bundled",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Version and tarball were audited; meeting scripts use structured schemas, bounded specialists and read-only project agent types.",
+        "auditArtifact": "runtime/package-audits/pi-dynamic-workflows-3.5.1.json",
+        "auditArtifactRequired": true
+      },
+      "triggers": ["complex meeting", "multiple independent review axes", "dynamic workflow", "多人长会议", "并行证据核验"],
+      "guardrails": ["max six meeting specialists", "schema-validated outputs", "fresh model contexts", "no recursive orchestration tools", "parent reconciliation required"]
     },
     {
       "capabilityId": "multi-edit",

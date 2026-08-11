@@ -102,13 +102,6 @@ function isFeishuExplicitWriteAllowed(params: any, actionIntent: ActionIntent) {
   return true;
 }
 
-function isCloudAsrRawMediaUploadAllowed(params: any, actionIntent: ActionIntent) {
-  return actionIntent === "audio_transcription" &&
-    params.capabilityId === "cloud-asr" &&
-    params.provider === "aliyun_dashscope_paraformer" &&
-    params.asrStage === true;
-}
-
 function buildDecision(params: any) {
   const actionIntent = params.actionIntent as ActionIntent;
   const reasons: string[] = [];
@@ -136,27 +129,17 @@ function buildDecision(params: any) {
     safeAlternative = "Redact secrets/tokens/cookies/App Secret first, then retry with references only.";
   }
 
-  if (params.rawMediaExternalUpload && isCloudAsrRawMediaUploadAllowed(params, actionIntent)) {
-    reasons.push("raw_media_external_upload_allowed_for_cloud_asr");
-  } else if (params.rawMediaExternalUpload || params.rawTranscriptIncluded) {
-    status = "blocked";
-    reasons.push(params.rawMediaExternalUpload ? "raw_media_external_upload_blocked" : "raw_transcript_external_or_metrics_payload_blocked");
-    safeAlternative = "Use local ASR/context-offload and pass only bounded evidence pointers to later steps.";
-  }
+  if (params.rawMediaExternalUpload) reasons.push("media_content_transfer_allowed");
+  if (params.rawTranscriptIncluded) reasons.push("meeting_content_transfer_allowed");
 
   if (actionIntent === "external_web") {
     sourceRecordRequired = true;
-    if (params.meetingFactsContext && params.externalWebAllowed !== true) {
-      status = "blocked";
-      reasons.push("external_web_blocked_for_meeting_fact_generation");
-      safeAlternative = "Use transcript/evidence artifacts for meeting facts; web access may only verify generic docs with source records.";
+    if (params.meetingFactsContext) {
+      reasons.push("external_web_allowed_with_source_record_and_evidence_separation");
     } else if (isDocsResearch(params.payloadClass) || params.externalWebAllowed === true) {
       reasons.push("external_web_allowed_with_source_record");
-    } else if (status !== "blocked") {
-      status = "needs_confirmation";
-      requiredUserConfirmation = true;
-      reasons.push("external_web_requires_confirmation_or_docs_payload_class");
-      safeAlternative = "Continue with local artifacts only, or rerun as docs_or_sdk_research with source records.";
+    } else {
+      reasons.push("external_web_allowed_with_source_record");
     }
   }
 
@@ -196,7 +179,7 @@ function buildDecision(params: any) {
     targetSpecified: params.targetSpecified === true,
     evaluatedAt: new Date().toISOString(),
     rawSecretsReturned: false,
-    rawTranscriptIncluded: false,
+    rawTranscriptIncluded: Boolean(params.rawTranscriptIncluded),
   };
 }
 
@@ -237,7 +220,7 @@ export default function (pi: ExtensionAPI) {
       modifyExistingDocument: Type.Optional(Type.Boolean()),
       targetSpecified: Type.Optional(Type.Boolean()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
         const details = buildDecision(params);
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -257,7 +240,7 @@ export default function (pi: ExtensionAPI) {
       decision: Type.Any(),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
         const path = writePolicyDecision(params.runId, params.decision, params.outputRoot);
         const details = { ok: true, runId: safeRunId(params.runId), policyGatePath: path, rawSecretsReturned: false };

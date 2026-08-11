@@ -1602,10 +1602,10 @@ function buildAgentTaskMarkdown(task, paths) {
     "",
     "1. 调用 Planner Envelope，基于 Feishu inbound 事件、附件和用户文本选择 capability。",
     "2. 通过 Capability Registry 选择 `feishu-agent-bridge`、`local-asr`、`meeting-minutes`、`doc-writer`、`document-worker-runtime`、`model-fallback` 等需要的能力。",
-    "3. 若附件是云端 ASR 支持的音频或视频容器，优先使用受 Policy Gate 约束的 cloud ASR；只有 ASR provider 阶段可上传 raw media。后续 LLM、Docker、Hermes 和 document worker 只能读取 transcript/evidence。图片理解仍不支持。",
+    "3. 若附件是云端 ASR 支持的音频或视频容器，优先使用 cloud ASR，并在转录后运行 Meeting Intelligence：生成 participant map、meeting profile、topic map、evidence map 和 agent plan。会议内容可由所选能力使用，但凭证、OSS 签名、Cookie 和 Authorization 不得进入模型。图片理解仍不支持。",
     "4. 若附件是 PDF/Word/Excel/Markdown/TXT/CSV 等文本型文件，可作为 file-context 发送给 LLM；若 provider 不支持原生文件输入，使用 file-context 的 extractedTextPath/contextPreview 做渐进披露。",
     "5. 短任务（如一句话总结）只需要返回 `summary`，`documents` 可为空；不要启动长文档 worker pool。",
-    "6. 长文档结构必须走 document router -> document-prompt-registry -> document_prompt_render_batch -> document_workers_run sectionBatching；不得硬编码 PRD/Ops/Architecture/Checklist 章节。",
+    "6. 长文档执行走 document router -> Meeting Intelligence/Context -> document-prompt-registry -> document workers；章节内容和议题深度由当前证据与 agent plan 决定，不得硬编码行业议题。",
     "7. 生成结果必须运行 QA Gate 和 Policy Gate。Feishu 用户已明确请求创建、发布、保存、放到云端或修改时，非删除类 `write_private`/`publish_customer_visible` 可以视为已授权；QA blocking/needs_fix 或 Policy blocked 时不得发布。",
     "8. 删除、清空、移除、销毁类动作始终不支持，`summary` 必须直接写：目前暂不支持该功能。",
     "9. 用户请求当前不支持的能力时，`summary` 必须直接写：目前暂不支持该功能。",
@@ -2473,9 +2473,8 @@ function baseRunMetrics(runId, taskType = "feishu_agent") {
     capabilitySelections: [],
     packageAudits: [],
     rawSecretsReturned: false,
-    rawTranscriptIncluded: false,
-    rawPayloadRejected: false,
-    rejectedRawPayloadEvents: [],
+    meetingContentAllowed: true,
+    contentTruncationChars: 20000,
   };
 }
 
@@ -2634,8 +2633,8 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
     },
     privacy: {
       rawSecretsReturned: false,
-      rawMediaExternalUpload: false,
-      rawMeetingContentIncluded: false,
+      rawMediaExternalUpload: Boolean(agentOutput?.rawMediaExternalUpload),
+      rawMeetingContentIncluded: task.taskIntent?.taskType === "meeting_minutes",
       tokensIncluded: false,
     },
   };
@@ -2657,9 +2656,9 @@ function buildSanitizedTrajectoryFromManifest(manifest, task, state, agentOutput
     runId: task.runId,
     createdAt: nowIso(),
     privacy: {
-      rawMeetingContentIncluded: false,
+      rawMeetingContentIncluded: task.taskIntent?.taskType === "meeting_minutes",
       tokensIncluded: false,
-      redactionLevel: "summary-only",
+      redactionLevel: "credentials-only",
     },
     task: {
       title: `${manifest.task.taskType} / ${manifest.task.responseMode}`,
@@ -2669,19 +2668,19 @@ function buildSanitizedTrajectoryFromManifest(manifest, task, state, agentOutput
       {
         kind: "feishu_event",
         source: manifest.artifacts.event,
-        privacy: "metadata-and-hash-only",
+        privacy: "meeting-content-available",
         hashSha256: manifest.source.textHash ?? undefined,
       },
       ...(manifest.inputs.attachments ?? []).map((attachment) => ({
         kind: attachment.resourceType ?? "attachment",
         source: attachment.name ?? "attachment",
-        privacy: "metadata-and-hash-only",
+        privacy: "meeting-content-available",
         hashSha256: attachment.sha256 ?? undefined,
       })),
       ...(manifest.inputs.fileContexts ?? []).map((context) => ({
         kind: "file-context",
         source: context.fileName ?? "file-context",
-        privacy: "summary-only",
+        privacy: "meeting-content-available",
         hashSha256: context.extractedTextPath ? hashText(context.extractedTextPath) : undefined,
       })),
     ],
@@ -2716,7 +2715,7 @@ function buildSanitizedTrajectoryFromManifest(manifest, task, state, agentOutput
     ],
     qualitySignals: {
       evidenceCoverage: manifest.inputs.fileContexts?.length > 0 || manifest.inputs.attachments?.length > 0 ? "file-context-recorded" : "metadata-only",
-      privacyFindings: [],
+      credentialFindings: [],
       missingInputs,
       runSummary: safeShortText(manifest.outputs.summary || state.status, 800),
     },

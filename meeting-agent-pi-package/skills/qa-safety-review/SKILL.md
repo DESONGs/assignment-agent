@@ -1,13 +1,13 @@
 ---
 name: qa-safety-review
-description: Review meeting outputs before publication for evidence quality, hallucination risk, privacy, Feishu/Rokid permission boundaries, and unsafe dependency or skill-evolution behavior.
+description: Review meeting outputs before publication for evidence quality, hallucination risk, speaker attribution, action/topic coverage, Feishu permissions, and unsafe dependency or skill-evolution behavior.
 ---
 
 # QA Safety Review Skill
 
 Use this skill before publishing or proposing long-term memory/skill changes.
 
-For runtime enforcement, call `qa_gate_evaluate` with privacy, evidence,
+For runtime enforcement, call `qa_gate_evaluate` with security, evidence,
 topicCoverage, entitySafety, titleSync, Feishu readiness, webAccess, and
 contextBudget checks. Write publish gates with `qa_gate_write` when a run has a
 `runId`.
@@ -32,9 +32,8 @@ contextBudget checks. Write publish gates with `qa_gate_write` when a run has a
 - Scope: generated docs match the meeting and do not invent business decisions.
 - Macro-topic coverage: for meeting minutes, sustained topics across multiple
   transcript segments must not be omitted or collapsed into a single sentence.
-  Business model, pricing/fee structure, "超级个体", cooperation model, and
-  organization model discussions should be reported as `omittedMacroTopics` when
-  the output fails to expand them despite evidence.
+  Topic importance is determined by the current `topic-map.json`, not a fixed
+  list of business or product categories.
 - Document outputs: each PRD, operations plan, architecture document, and
   customer requirement checklist must cover the reason selected by
   `document-router`, include the prompt registry `requiredSections`, and keep
@@ -61,23 +60,19 @@ contextBudget checks. Write publish gates with `qa_gate_write` when a run has a
   handled. If Feishu comments were not available, the output must not pretend
   they were read; `comment_api_permission_blocked` or exported-body-only access
   must be preserved as `待确认`.
-- Privacy: personal, customer, token, and raw transcript data are not leaked.
-- Context: raw transcript/full evidence is offloaded to local artifacts, and the
-  main context is pointer-only with hashes, bounded previews, topic maps,
-  evidence maps, QA gates, and open questions.
-- ASR: raw audio stayed in the local Qwen3-ASR HTTP service; no script fallback
-  or external audio upload was used.
-- Text evidence: transcript/evidence may be sent to DeepSeek and Xiaomi by
-  default and should not be treated as a blocking issue. This is governed by
-  `MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow`.
-- Model split: DeepSeek generated the main text from evidence; Xiaomi MiMo
-  reviewed text evidence only and did not introduce unsupported facts.
+- Security: credentials, tokens, cookies, Authorization headers, and App Secret
+  values are never included in prompts, artifacts, or user-visible documents.
+- Text evidence and meeting media are permitted inputs for selected capabilities;
+  QA evaluates evidence use and attribution rather than applying a privacy block.
+- ASR evidence: claims supported only by `needs_review` audio spans must remain
+  unresolved; speaker aliases must exist in `participant-map.json`.
+- Model roles must reflect the recorded route. A fallback generation is not an
+  independent review pass.
 - Feishu: Markdown/document create, move, and update are allowed by default for
   the user's requested workflow; IM, calendar, task, customer-visible publish,
   or scope expansion requires explicit confirmation.
 - Feishu redaction: `lark-cli auth status` uses `auth-status-summary`; other
   CLI output that may enter model context uses `secret-scan`.
-- Rokid: raw media handling respects the source privacy label.
 - Legacy QA runs: existing `qa-runs/` folders are non-production evidence and
   raw transcript/response JSON must not be rehydrated into main context.
 - Reference PDF: style only; facts, owners, dates, and decisions from the PDF
@@ -90,7 +85,8 @@ contextBudget checks. Write publish gates with `qa_gate_write` when a run has a
 Return:
 
 - `status`: `pass`, `needs_fix`, or `blocked`.
-- `issues`: concise list with severity and fix.
+- `issues`: concise list with severity and fix, including ASR uncertainty,
+  speaker attribution, omitted-topic, and action-coverage findings.
 - `unsupportedEntities`: unsupported roles, organizations, table names, project
   names, owners, or deadlines.
 - `crossMeetingTerms`: terms copied from sibling meetings.

@@ -130,7 +130,7 @@
     },
     "fixedWorkflow": { "const": false },
     "rawSecretsReturned": { "const": false },
-    "rawTranscriptIncluded": { "const": false },
+    "meetingContentAccess": { "const": "allowed" },
     "createdAt": { "type": "string" }
   },
   "additionalProperties": true

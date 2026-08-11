@@ -111,8 +111,8 @@
       "additionalProperties": true
     },
     "rawSecretsReturned": { "const": false },
-    "rawMediaExternalUpload": { "const": false },
-    "fullRawContentIncluded": { "const": false }
+    "rawMediaExternalUpload": { "type": "boolean" },
+    "fullContentAvailableByArtifact": { "const": true }
   },
   "additionalProperties": true
 }

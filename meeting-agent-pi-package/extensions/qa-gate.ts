@@ -155,16 +155,8 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     }
   }
 
-  const privacy = checks?.privacy ?? {};
-  if (privacy.rawMediaExternalUpload === true) {
-    issues.push({
-      code: "privacy_raw_media_external_upload",
-      severity: "blocking",
-      message: "原始音视频被标记为外发。",
-      suggestedFix: "停止发布，改走本地 ASR 或取得明确授权并记录。",
-    });
-  }
-  if (privacy.secretsLeaked === true || privacy.rawSecretsReturned === true) {
+  const security = checks?.security ?? checks?.privacy ?? {};
+  if (security.secretsLeaked === true || security.rawSecretsReturned === true) {
     issues.push({
       code: "privacy_secret_leak",
       severity: "blocking",
@@ -172,15 +164,6 @@ function evaluateGate(checks: any, publishIntent: boolean) {
       suggestedFix: "立即删除泄漏内容，重新生成脱敏 artifact。",
     });
   }
-  if (privacy.rawTranscriptInLongTermMemory === true) {
-    issues.push({
-      code: "privacy_raw_transcript_memory",
-      severity: "blocking",
-      message: "原始转写全文进入长期记忆或 Hermes trajectory。",
-      suggestedFix: "只保留脱敏摘要、topicMap、evidence 指针和问题清单。",
-    });
-  }
-
   const evidence = checks?.evidence ?? {};
   addListIssue(issues, {
     list: evidence.missingEvidenceClaims ?? evidence.unsupportedClaims,
@@ -189,8 +172,15 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     message: "存在关键结论缺少证据支撑。",
     suggestedFix: "补充 evidence 或将结论改写为待确认/推断。",
   });
-
   const topicCoverage = checks?.topicCoverage ?? {};
+  addListIssue(issues, {
+    list: topicCoverage.actionCoverageGaps,
+    code: "topic_action_coverage_gaps",
+    severity: "needs_fix",
+    message: "会议中存在行动项，但纪要没有覆盖对应议题的后续动作。",
+    suggestedFix: "根据 topicMap 和 evidenceMap 补充行动项，owner 或日期不明确时保留待确认。",
+  });
+
   addListIssue(issues, {
     list: topicCoverage.omittedMacroTopics,
     code: "topic_omitted_macro_topics",
@@ -198,8 +188,24 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     message: "连续多个 transcript segment 的主议题被遗漏或过度压缩。",
     suggestedFix: "回到 topicMap，按主议题独立展开后再发布。",
   });
-
   const entitySafety = checks?.entitySafety ?? {};
+  addListIssue(issues, {
+    list: entitySafety.speakerAttributionViolations,
+    code: "speaker_attribution_violation",
+    severity: "blocking",
+    message: "纪要使用了 participant map 不支持的参会人身份或代号。",
+    suggestedFix: "改用 participant-map.json 中的稳定代号，或让用户提供明确姓名映射。",
+  });
+
+  const asrEvidence = checks?.asrEvidence ?? {};
+  addListIssue(issues, {
+    list: asrEvidence.uncertainEvidenceClaims,
+    code: "asr_uncertain_evidence_promoted",
+    severity: publishIntent ? "blocking" : "needs_fix",
+    message: "纪要把仅由 ASR 冲突片段支持的判断写成了确定事实。",
+    suggestedFix: "将对应决定、行动、owner、日期、金额或承诺改为待确认，或补充稳定证据。",
+  });
+
   addListIssue(issues, {
     list: entitySafety.unsupportedEntities,
     code: "entity_unsupported_entities",
@@ -263,16 +269,6 @@ function evaluateGate(checks: any, publishIntent: boolean) {
       severity: "needs_fix",
       message: "WebAccess 已使用但没有记录来源。",
       suggestedFix: "补齐来源链接，且不得把外部事实混入会议事实。",
-    });
-  }
-
-  const contextBudget = checks?.contextBudget ?? {};
-  if (contextBudget.rawTranscriptInMainContext === true) {
-    issues.push({
-      code: "context_raw_transcript_retained",
-      severity: "needs_fix",
-      message: "长会议原始 transcript 被长期保留在主上下文。",
-      suggestedFix: "将 transcript offload 为本地 artifact，主上下文只保留 topicMap/evidence map。",
     });
   }
 
@@ -552,7 +548,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "qa_gate_evaluate",
     label: "QA Gate Evaluate",
-    description: "Evaluate privacy, evidence, topic coverage, entity safety, title sync, Feishu readiness, web access, and context budget checks.",
+    description: "Evaluate evidence, topic/action coverage, speaker attribution, entity safety, title sync, Feishu readiness, web access, security, and context budget checks.",
     parameters: Type.Object({
       checks: Type.Any(),
       publishIntent: Type.Optional(Type.Boolean({ description: "Whether this gate controls a customer-visible or Feishu publish action." })),

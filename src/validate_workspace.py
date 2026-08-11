@@ -20,6 +20,7 @@ def project_wiki_root() -> Path:
 
 REQUIRED_SKILLS = [
     "meeting-minutes",
+    "meeting-agentic-orchestration",
     "document-router",
     "document-generation",
     "document-worker-runtime",
@@ -64,6 +65,7 @@ REQUIRED_EXTENSIONS = [
     "context-offload.ts",
     "source-context-runtime.ts",
     "office-runtime.ts",
+    "meeting-agentic-orchestrator.ts",
 ]
 
 REQUIRED_RUNTIME_FILES = [
@@ -445,21 +447,13 @@ def validate_public_contract_schema(schema_name: str, schema: dict) -> None:
         if field not in required:
             fail(f"{schema_name} must require {field}")
 
-    forbidden_storage_tokens = ("rawtranscript", "rawfile", "fulltext")
-    privacy_flags_seen = set()
+    security_flags_seen = set()
     for field_path, key, value in iter_schema_fields(schema):
         normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
-        if any(token in normalized_key for token in forbidden_storage_tokens):
-            fail(f"{schema_name} contains forbidden raw storage field: {field_path}")
-
-        privacy_flag = None
         if "rawsecretsreturned" in normalized_key:
-            privacy_flag = "rawSecretsReturned"
-        elif "rawmediaexternalupload" in normalized_key:
-            privacy_flag = "rawMediaExternalUpload"
-
-        if privacy_flag and isinstance(value, dict):
-            privacy_flags_seen.add(privacy_flag)
+            security_flags_seen.add("rawSecretsReturned")
+            if not isinstance(value, dict):
+                fail(f"{schema_name} must define {field_path} as a false constant")
             if value.get("const") is not False:
                 fail(f"{schema_name} must constrain {field_path} to false")
             if value.get("default") is True:
@@ -468,10 +462,8 @@ def validate_public_contract_schema(schema_name: str, schema: dict) -> None:
             if isinstance(enum_values, list) and True in enum_values:
                 fail(f"{schema_name} must not allow true for {field_path}")
 
-    if "rawSecretsReturned" not in privacy_flags_seen:
+    if "rawSecretsReturned" not in security_flags_seen:
         fail(f"{schema_name} must include rawSecretsReturned false marker")
-    if schema_name != "office-context.schema.json" and "rawMediaExternalUpload" not in privacy_flags_seen:
-        fail(f"{schema_name} must include rawMediaExternalUpload false marker")
 
 
 def validate_package() -> None:
@@ -479,10 +471,82 @@ def validate_package() -> None:
     if "pi-package" not in package.get("keywords", []):
         fail("meeting-agent-pi-package must include the pi-package keyword")
 
+    project_pi_settings = load_json(ROOT / ".pi" / "settings.json")
+    if project_pi_settings.get("packages") != ["../meeting-agent-pi-package"]:
+        fail(".pi/settings.json package paths resolve from .pi and must load ../meeting-agent-pi-package")
+
+    if package.get("engines", {}).get("node") != ">=22.19.0":
+        fail("meeting-agent-pi-package must declare the Pi 0.84-compatible Node baseline")
+    dependencies = package.get("dependencies", {})
+    if dependencies.get("pi-subagents") != "0.46.0":
+        fail("meeting-agent-pi-package must pin audited pi-subagents@0.46.0")
+    if dependencies.get("@quintinshaw/pi-dynamic-workflows") != "3.5.1":
+        fail("meeting-agent-pi-package must pin audited pi-dynamic-workflows@3.5.1")
+    if package.get("devDependencies", {}).get("@earendil-works/pi-coding-agent") != "0.84.1":
+        fail("meeting-agent-pi-package must pin the tested Pi 0.84.1 development runtime")
+    if (ROOT / ".nvmrc").read_text(encoding="utf-8").strip() != "22.23.1":
+        fail(".nvmrc must pin the tested Node 22.23.1 runtime")
+
     pi = package.get("pi", {})
     for key in ("extensions", "skills", "prompts"):
         if key not in pi:
             fail(f"package.json missing pi.{key}")
+    manifest_text = json.dumps(pi, ensure_ascii=False)
+    for marker in ("pi-subagents/index.ts", "pi-dynamic-workflows/extensions/workflow.ts"):
+        if marker not in manifest_text:
+            fail(f"package.json Pi manifest missing audited agentic resource: {marker}")
+
+    lock = load_json(ROOT / "meeting-agent-pi-package" / "package-lock.json")
+    locked = lock.get("packages", {})
+    expected_locked = {
+        "node_modules/pi-subagents": "0.46.0",
+        "node_modules/@quintinshaw/pi-dynamic-workflows": "3.5.1",
+        "node_modules/@earendil-works/pi-coding-agent": "0.84.1",
+        "node_modules/ws": "8.21.3",
+        "node_modules/protobufjs": "7.6.5",
+    }
+    for path, version in expected_locked.items():
+        if locked.get(path, {}).get("version") != version:
+            fail(f"package-lock.json must pin {path}@{version}")
+
+    for audit_name in ("pi-subagents-0.46.0.json", "pi-dynamic-workflows-3.5.1.json"):
+        audit = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "package-audits" / audit_name)
+        if audit.get("decision") != "passed_smoke_lazy_enable":
+            fail(f"package audit must record passed smoke decision: {audit_name}")
+
+    meeting_workflow = (ROOT / "meeting-agent-pi-package" / "tools" / "meeting_workflow_helpers.mjs").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "workflowScript",
+        'runs.run(\"meeting-review\"',
+        'context: "fresh"',
+        "outputSchema",
+        "buildPiSubagentRequest",
+        "completenessCheck",
+        "verify",
+    ):
+        if marker not in meeting_workflow:
+            fail(f"meeting workflow helper missing current Pi package API marker: {marker}")
+    if "request: {\n              agent:" in meeting_workflow:
+        fail("meeting workflow helper still uses the removed top-level pi-subagents agent/task launch form")
+
+    pi_orchestration = (ROOT / "meeting-agent-pi-package" / "tools" / "pi_meeting_orchestration_helpers.mjs").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "buildPiMeetingOrchestrationInvocation",
+        "parsePiMeetingOrchestrationOutput",
+        "reconcilePiMeetingOrchestrationResult",
+        "shouldRunPiMeetingOrchestration",
+        '"read,subagent,workflow"',
+        '"--no-session"',
+        "product_owner_enabled",
+        "invalidSegmentIds",
+        "missingEvidencePaths",
+    ):
+        if marker not in pi_orchestration:
+            fail(f"Pi meeting orchestration helper missing execution marker: {marker}")
 
 
 def validate_skills() -> None:
@@ -508,7 +572,7 @@ def validate_skills() -> None:
     qa = (ROOT / "meeting-agent-pi-package" / "skills" / "qa-safety-review" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    for marker in ("Title sync", "Text evidence", "transcript/evidence may be sent to DeepSeek and Xiaomi", "unsupportedEntities", "crossMeetingTerms", "ambiguousTermExpansions", "omittedMacroTopics"):
+    for marker in ("Title sync", "Text evidence", "participant-map.json", "needs_review", "unsupportedEntities", "crossMeetingTerms", "ambiguousTermExpansions", "omittedMacroTopics"):
         if marker not in qa:
             fail(f"qa-safety-review skill missing relaxed text-evidence marker: {marker}")
 
@@ -565,7 +629,7 @@ def validate_skills() -> None:
         "section-batched document workers",
         "QA Gate",
         "Policy Gate",
-        "Raw audio/video may be uploaded only by the cloud ASR provider stage",
+        "Meeting media and transcript content may be used by selected capabilities",
         "file-context",
         "task_execution_runner",
         "office-task-state",
@@ -596,7 +660,7 @@ def validate_docs_ignore_legacy_warning() -> None:
     if not (qa_root / "README.md").exists():
         fail("qa-runs/README.md non-production warning is required")
     qa_warning = (qa_root / "README.md").read_text(encoding="utf-8")
-    for marker in ("legacy, non-production evidence", "raw transcript", "pointer", "ASR evidence is local-only"):
+    for marker in ("legacy, non-production evidence", "pointer", "production-style artifacts"):
         if marker not in qa_warning:
             fail(f"qa-runs/README.md missing warning marker: {marker}")
 
@@ -639,7 +703,9 @@ def validate_required_behavior_docs() -> None:
         "pointer-only",
         "auth-status-summary",
         "secret-scan",
-        "local-only",
+        "Meeting Intelligence",
+        "pi-subagents",
+        "pi-dynamic-workflows",
         "dynamic worker pool",
         "model-route.json",
         "legacy `qa-runs/`",
@@ -730,13 +796,14 @@ def validate_prompts() -> None:
         "feishuFileName",
         "Document Title Plan",
         "Markdown H1 必须等于 `meetingTitle`",
-        "原始音频只允许在 ASR provider 阶段上传",
-        "只能使用 transcript/evidence 文本",
+        "Meeting Intelligence",
+        "participantResolution",
+        "quality=needs_review",
+        "已达成共识",
         "meetingProfile",
-        "siblingForbiddenTerms",
-        "unsupportedEntities",
-        "crossMeetingTerms",
-        "ambiguousTermExpansions",
+        "topicMap",
+        "evidenceMap",
+        "agentPlan",
     ):
         if marker not in meeting_prompt:
             fail(f"meeting-minutes prompt missing title/permission marker: {marker}")
@@ -1289,9 +1356,8 @@ def validate_extensions() -> None:
         "runtime_metrics_start",
         "runtime_metrics_record",
         "runtime_metrics_finish",
-        "rawTranscriptIncluded",
-        "runtime_metrics_raw_payload_blocked",
-        "RAW_CONTENT_KEY_PATTERN",
+        "meetingContentAllowed",
+        "TRUNCATED_FOR_METRICS_BUDGET",
         "plannerDecisions",
         "policyDecisions",
         "workerDecisions",
@@ -1300,6 +1366,13 @@ def validate_extensions() -> None:
       ):
         if marker not in runtime_obs:
             fail(f"runtime-observability.ts missing marker: {marker}")
+    for forbidden_marker in (
+        "runtime_metrics_raw_payload_blocked",
+        "REDACTED_RAW_MEETING_CONTENT_POINTER_REQUIRED",
+        "RAW_CONTENT_KEY_PATTERN",
+    ):
+        if forbidden_marker in runtime_obs:
+            fail(f"runtime-observability.ts still blocks meeting content: {forbidden_marker}")
 
     registry_ext = (ROOT / "meeting-agent-pi-package" / "extensions" / "capability-registry.ts").read_text(
         encoding="utf-8"
@@ -1429,6 +1502,7 @@ def validate_extensions() -> None:
         "policyRisks",
         "requiredArtifacts",
         "stopConditions",
+        'meetingContentAccess: "allowed"',
     ):
         if marker not in planner_runtime:
             fail(f"planner-runtime.ts missing Planner Envelope marker: {marker}")
@@ -1449,6 +1523,7 @@ def validate_extensions() -> None:
         "install_dependency",
         "persist_memory",
         "delete",
+        "rawTranscriptIncluded: Boolean(params.rawTranscriptIncluded)",
     ):
         if marker not in policy_gate:
             fail(f"policy-gate.ts missing Policy Gate marker: {marker}")
@@ -1603,7 +1678,7 @@ def validate_extensions() -> None:
         "retrieval_index_search",
         "memory_proposal_write",
         "destructive_document_action_blocked",
-        "retrieval_index_raw_or_secret_payload_blocked",
+        "retrieval_index_secret_payload_blocked",
         "pointerOnly: true",
         "autoPersisted: false",
         "office_runtime_output_root_outside_workspace_blocked",
@@ -1911,7 +1986,8 @@ def validate_runtime_configs() -> None:
         "enabledCapabilities",
         "modelCalls",
         "contextBudget",
-        "rawTranscriptIncluded",
+        "meetingContentAllowed",
+        "contentTruncationChars",
         "plannerDecisions",
         "policyDecisions",
         "workerDecisions",
@@ -1929,9 +2005,16 @@ def validate_sidecar_policy() -> None:
         fail("dependency policy must block mistralai==2.4.6")
 
     package = load_json(ROOT / "meeting-agent-pi-package" / "package.json")
+    bundled_pi_peers = {
+        "@earendil-works/pi-agent-core",
+        "@earendil-works/pi-ai",
+        "@earendil-works/pi-coding-agent",
+        "@earendil-works/pi-tui",
+        "typebox",
+    }
     for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
         for name, version in package.get(section, {}).items():
-            if version == "*":
+            if version == "*" and not (section == "peerDependencies" and name in bundled_pi_peers):
                 fail(f"wildcard runtime dependency is not allowed: {section}.{name}")
 
 
@@ -1956,6 +2039,9 @@ def validate_sidecar_safety() -> None:
     ):
         if marker not in sidecar:
             fail(f"sidecar missing fail-closed sanitization marker: {marker}")
+    for forbidden_marker in ("forbidden = [\"rawTranscript\"", "rawMeetingContent\", \"fullTranscript"):
+        if forbidden_marker in sidecar:
+            fail(f"sidecar still blocks meeting content: {forbidden_marker}")
     gate = ROOT / "hermes-learning-sidecar" / "hermes-wiki-reflection-gate.md"
     if not gate.exists():
         fail("missing Hermes Wiki reflection gate")
@@ -2181,8 +2267,6 @@ def validate_runtime_store_backend() -> None:
 def validate_trajectory_example() -> None:
     trajectory = load_json(ROOT / "src" / "examples" / "sanitized-trajectory.example.json")
     privacy = trajectory.get("privacy", {})
-    if privacy.get("rawMeetingContentIncluded") is not False:
-        fail("trajectory example must not include raw meeting content")
     if privacy.get("tokensIncluded") is not False:
         fail("trajectory example must not include tokens")
     for removed_field in ("approvalLog", "feishuActionLog"):

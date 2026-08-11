@@ -7,7 +7,7 @@ The architecture separates execution from learning:
 
 - PI is the active execution kernel for meeting ingestion, document generation,
   official `lark-cli` Feishu operations, and Rokid tool use.
-- Hermes is treated as a read-only learning sidecar that reviews sanitized task
+- Hermes is treated as a read-only learning sidecar that reviews task
   trajectories and proposes memory, prompt, skill, and eval improvements.
 - Human review is the only path from proposals back into production skills or
   prompts.
@@ -22,6 +22,30 @@ wiki/                      PRD, architecture, prompt, skill, and safety docs
 ```
 
 ## PI package install
+
+The upgraded package requires Node `>=22.19.0` and Pi `>=0.80.8`; the local
+development lock uses Pi `0.84.1`. The repository pins Node `22.23.1` in
+`.nvmrc`; run `nvm install && nvm use` when your current Node is older. Install
+package dependencies first with a compatible Node runtime:
+
+```bash
+cd meeting-agent-pi-package
+npm install --ignore-scripts
+cd ..
+```
+
+Use the project-locked Pi directly:
+
+```bash
+meeting-agent-pi-package/node_modules/.bin/pi --approve
+```
+
+If you prefer the global `pi` command, update it to the same tested baseline
+after switching Node:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent@0.84.1
+```
 
 From this workspace, install the package locally in PI:
 
@@ -54,16 +78,10 @@ set +a
 pi --provider "$PI_PROVIDER" --model "$PI_MODEL"
 ```
 
-Meeting privacy defaults:
-
-```text
-MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow
-MEETING_RAW_MEDIA_EXTERNAL_UPLOAD_DEFAULT=deny
-```
-
-Transcript/evidence text is the default semantic input for DeepSeek and Xiaomi.
-Raw audio/video/base64 media remains local-only unless a future task explicitly
-adds an external ASR path.
+Meeting content is available to the task-selected ASR, model, subagent,
+document, and QA capabilities. Context packs remain bounded for relevance,
+latency, and model budget. API keys, tokens, cookies, Authorization values,
+signed URLs, and login sessions remain excluded from prompts and artifacts.
 
 Runtime engineering is local-artifact first:
 
@@ -96,7 +114,9 @@ The default supervisor environment matches the live startup scripts:
 `FEISHU_AGENT_EXEC_MODE=execute`, `FEISHU_AGENT_ASYNC=1`,
 `FEISHU_AGENT_PUBLISH_MODE=live`, `FEISHU_AGENT_REPLY_MODE=live`, and
 `FEISHU_AGENT_PUBLISH_AS=user`. ASR stays Host-owned; the supervisor reports and
-can recover it, but raw audio is still never sent to Docker or external ASR.
+can recover it. Cloud file ASR may use private OSS and a short-lived signed URL;
+document workers consume extracted evidence because raw media is not useful to
+text generation.
 
 Run the unified local CI before production changes:
 
@@ -110,13 +130,13 @@ Docker compose config with the Docker Desktop CLI fallback, and Swift tests when
 `AgentWorkbench/` exists.
 - `policy-gate` checks action intent boundaries such as
   `publish_customer_visible`, `notify_people`, `mutate_calendar`,
-  `assign_task`, `external_web`, `install_dependency`, `persist_memory`, and raw
-  media external upload. It returns `pass`, `needs_confirmation`, or `blocked`
+  `assign_task`, `external_web`, `install_dependency`, and `persist_memory`. It
+  returns `pass`, `needs_confirmation`, or `blocked`
   without prescribing business steps.
 - `runtime_metrics_*` writes `runtime-runs/{run_id}/run.metrics.json`.
 - `capability_registry_*` keeps the Feishu Agent bridge, Feishu bot, Rokid,
-  WebAccess/MCP, Agent Team, and third-party subagent packages lazy until a task
-  needs them.
+  WebAccess/MCP and Agent execution capabilities inactive until a task needs
+  them.
 - `model_route_plan` may automatically fall back from DeepSeek to a configured
   candidate, but `model_route_record` must write `model-route.json`; silent
   fallback is not allowed. The default route for ordinary short drafting is
@@ -124,12 +144,20 @@ Docker compose config with the Docker Desktop CLI fallback, and Swift tests when
   work, and explicit deep-thinking requests route to
   `deepseek/deepseek-v4-pro`.
 - `context_offload_*` stores long transcript/evidence payloads under
-  `runtime-runs/{run_id}/offload/` so the main context is pointer-only for raw
-  transcript/full evidence: artifact path, hash, size, bounded preview,
+  `runtime-runs/{run_id}/offload/` so the main context stays focused: artifact
+  path, hash, size, bounded preview,
   topicMap, evidence map, QA gate, and open questions.
-- `agent_team_*` exposes dynamic worker components through Node
-  `worker_threads`; it uses a dynamic worker pool and does not preload fixed
-  subagent roles.
+- `meeting_agentic_plan` chooses direct parent reasoning, one fresh child via
+  `pi-subagents@0.46.0` using its current `workflowScript` + `runs.run(...)`
+  API, or a structured workflow via
+  `@quintinshaw/pi-dynamic-workflows@3.5.1`. Complex meetings use current-topic
+  specialists, schema validation, completeness checking, verification, and
+  parent reconciliation. The automatic meeting runner now executes the selected
+  Pi tool in a read-only non-interactive parent session and requires a real tool
+  completion event before marking delegation complete. Returned segment ids are
+  deterministically checked against the current transcript; contaminated output
+  is quarantined and becomes a blocking QA finding. `agent_team_*` remains a
+  local compatibility fallback.
 - `document_prompt_*` uses `document-prompt-registry.json` as the single
   `docType -> promptFile` mapping. It renders `prompts/*.md` with evidence and
   router conclusions before any document worker runs.
@@ -178,10 +206,10 @@ Capability Registry entries are planner-selectable capability descriptions, not
 a module checklist. Each entry must describe its `description`, `toolIntents`,
 `policy`, `observability`, `installState`, and `securityReview` so the Planner
 can justify capability selection and the Policy Gate can check risky actions.
-The package audit/install mechanism keeps third-party capabilities in candidate
-state until a security review is recorded; dependency installation requires
-`install_dependency` Policy Gate approval and writes a `packageAudits` metrics
-entry.
+The package audit/install mechanism keeps new third-party capabilities in
+candidate state until source/tarball review and smoke validation are recorded.
+The two Pi orchestration packages now have passed audit artifacts under
+`meeting-agent-pi-package/runtime/package-audits/`.
 
 Runtime metrics must expose planner, policy, worker, capability, and package
 decisions through `plannerDecisions`, `policyDecisions`, `workerDecisions`,
@@ -195,7 +223,7 @@ decisions through `plannerDecisions`, `policyDecisions`, `workerDecisions`,
 - Docker 常驻轻服务包含 `runtime-queue`、`pi-document-worker` 和 `hermes-worker`。
 - `fast_answer/file_summary 不进 Docker`，仍走 host 轻路径。
 - `document_generation/multi_source_synthesis 默认进 Docker worker`，但只有设置 `FEISHU_AGENT_DOCUMENT_WORKER_MODE=docker|local-docker|queue` 后才启用；未启用时保持 host runner。
-- `audio_minutes` 的 normalize + local ASR 留在 Host；后续 transcript/evidence 可作为 bounded artifact 进入文档阶段，但 `raw audio 不进容器`。
+- `audio_minutes` 的媒体准备与 ASR 留在 Host；后续 transcript/evidence 作为 bounded artifact 进入文档阶段，避免让文档容器承担无用的媒体解码职责。
 - `document_revision` v1 留在 Host，因为 Feishu comment/review-context 预取仍依赖 `lark-cli` 和本机凭证。
 - Docker worker 不调用 `lark-cli`，不 publish，不 reply，只产出 `agent-output.json` 和 runtime artifacts；Host 拉回结果后继续 QA/Policy 边界内的 Feishu 发布/回复。
 
@@ -343,13 +371,15 @@ fallback:
 npm install -g @earendil-works/pi-coding-agent@latest
 ```
 
-## Local ASR
+## ASR
 
-Audio-to-text is local-only and runs through a local HTTP service. Product
-inputs may be WAV/MP3/M4A/AAC/FLAC/OGG; the local runtime first writes
-`audio-normalize.json` and normalized `16k mono s16 WAV` files, then PI calls
-`meeting_transcribe_local_asr` with those local normalized paths. Raw audio is
-never uploaded to DeepSeek or Xiaomi.
+Recorded files are cloud-first when DashScope and OSS are configured. The
+primary path uses `fun-asr` through the asynchronous file endpoint, while
+`paraformer-v2` can independently review single-mix ambiguity. The source is
+uploaded once to private OSS and exposed to ASR through a short-lived signed
+URL. Realtime audio remains a separate WebSocket path using
+`paraformer-realtime-v2`. Local Qwen3-ASR remains an explicit offline fallback
+and receives normalized `16k mono s16 WAV` paths.
 
 The production path starts and monitors ASR through `local_runtime_ctl.py`.
 For direct ASR debugging, use the lifecycle helper or the raw service command:
@@ -374,22 +404,20 @@ models/Qwen3-ASR-1.7B-MLX-4bit
 ```
 
 The validated QA-RAW run produced 114 transcript segments from 56.62 minutes of
-audio with 0 failed chunks, at about 3.15x realtime. Raw audio is not uploaded by
-the ASR step. Downstream semantic drafting uses DeepSeek as the primary
-drafting/document model and Xiaomi MiMo as reviewer/fallback; both receive
-text evidence only. Transcript/evidence text is the default allowed semantic
-input; raw audio/video remains the only hard media boundary.
+audio with 0 failed chunks, at about 3.15x realtime. Downstream semantic
+drafting uses DeepSeek as the primary drafting/document model and Xiaomi MiMo as
+reviewer/fallback; the runtime gives each capability the evidence form it can
+actually use.
 There is no PI script fallback for ASR; if the local ASR service is unavailable,
 the tool blocks with `local_asr_service_unavailable`.
 
-Legacy evidence under `qa-runs/` is non-production. Do not rehydrate raw
-transcript, raw Feishu output, or model response JSON into the main context; use
-the README/marker warnings and regenerate production-style artifacts with local
-ASR, context offload, model-route recording, and QA gates.
+Legacy evidence under `qa-runs/` is non-production. Regenerate production-style
+artifacts with the current ASR, context retrieval, model-route recording, and QA
+gates before using it as completion evidence.
 
 ## Sidecar usage
 
-The sidecar consumes a sanitized trajectory artifact and writes proposals to an
+The sidecar consumes a trajectory artifact and writes proposals to an
 output directory. It does not read Feishu or Rokid credentials.
 
 ```bash

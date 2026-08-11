@@ -26,6 +26,8 @@ const TASK_TYPE = Type.Union([
 const ACTION_INTENT = Type.Union([
   Type.Literal("read"),
   Type.Literal("draft"),
+  Type.Literal("interact"),
+  Type.Literal("review"),
   Type.Literal("write_private"),
   Type.Literal("publish_customer_visible"),
   Type.Literal("notify_people"),
@@ -51,6 +53,8 @@ type TaskType =
 type ActionIntent =
   | "read"
   | "draft"
+  | "interact"
+  | "review"
   | "write_private"
   | "publish_customer_visible"
   | "notify_people"
@@ -157,6 +161,7 @@ function buildEnvelope(params: any) {
       params.taskDescription ?? "",
       ...(params.requestedOutputs ?? []),
       ...(params.availableArtifacts ?? []),
+      params.meetingAnalysis ? JSON.stringify(params.meetingAnalysis) : "",
     ].join(" "),
   );
   const taskType = inferTaskType(text, params.taskType);
@@ -197,19 +202,20 @@ function buildEnvelope(params: any) {
   const requiredArtifacts = ["planner-envelope.json"];
   const constraints = [
     "Do not use a fixed meeting pipeline unless the task is a meeting/transcript scenario.",
-    "Do not include secrets, tokens, cookies, CLI sessions, App Secret, or raw transcript bodies in planner/policy/metrics artifacts.",
+    "Do not include secrets, tokens, cookies, CLI sessions, or App Secret values in planner/policy/metrics artifacts.",
     "Enable optional capabilities only when task evidence justifies them.",
   ];
   const stopConditions = [
     "policy_gate_check returns blocked",
     "required input artifact is missing",
-    "requested action would leak secrets or raw media externally",
+    "requested action would leak credentials or authentication state",
   ];
 
   addToolPlan(toolPlan, "read", "capability_registry_plan", "Inspect capability readiness without loading optional tools.", false);
   addToolPlan(toolPlan, "draft", "local_model", "Create private working draft before any external action.", false);
 
-  const longOrMulti = hasAny(text, [
+  const meetingOrchestrationMode = String(params.meetingAnalysis?.orchestrationMode ?? "direct");
+  const longOrMulti = meetingOrchestrationMode === "dynamic_workflow" || hasAny(text, [
     "long meeting",
     "multi document",
     "raw transcript",
@@ -223,14 +229,52 @@ function buildEnvelope(params: any) {
 
   if (taskType === "meeting_minutes") {
     addCapability(capabilities, {
+      capabilityId: "meeting-intelligence",
+      reason: "Analyze participant aliases, meeting type, topics, claims, ASR uncertainty, and the adaptive document strategy before drafting.",
+      loadMode: "lazy",
+      contextCost: "medium",
+    });
+    addCapability(capabilities, {
       capabilityId: "meeting-minutes",
       reason: "Task asks for meeting minutes or transcript-based summary.",
       loadMode: "lazy",
       contextCost: "medium",
     });
-    requiredArtifacts.push("topicMap.json", "evidence-map.json", "meeting-minutes.md");
+    requiredArtifacts.push("meeting-intelligence/meeting-profile.json", "meeting-intelligence/participant-map.json", "meeting-intelligence/topic-map.json", "meeting-intelligence/evidence-map.json", "meeting-intelligence/agent-plan.json", "meeting-intelligence/agentic-orchestration.json", "meeting-minutes.md");
     constraints.push("Meeting facts must be sourced from transcript/evidence, not external web search.");
     stopConditions.push("topicMap omits a continuous macro topic");
+    if (Number(params.meetingAnalysis?.unresolvedParticipantCount ?? 0) > 0) {
+      addToolPlan(toolPlan, "interact", "participant_name_resolution", "Offer a non-blocking participant-name mapping question while stable aliases remain usable.", false);
+    }
+    if (params.meetingAnalysis?.reviewStrategy === "independent_model") {
+      addToolPlan(toolPlan, "review", "meeting_evidence_review", "Run an independent evidence review for complex or ASR-uncertain meeting claims.", false);
+    }
+    if (meetingOrchestrationMode === "single_subagent") {
+      addCapability(capabilities, {
+        capabilityId: "pi-subagents",
+        reason: "Meeting Intelligence found one independent review axis; a fresh focused child context is sufficient.",
+        loadMode: "lazy",
+        contextCost: "medium",
+      });
+      addToolPlan(toolPlan, "review", "subagent", "Delegate the bounded evidence-review task to the selected read-only meeting agent, then reconcile its result in the parent.", false);
+    }
+    if (meetingOrchestrationMode === "dynamic_workflow") {
+      addCapability(capabilities, {
+        capabilityId: "pi-dynamic-workflows",
+        reason: "Meeting Intelligence found multiple independent evidence-review axes that benefit from schema-validated fan-out and cross-checking.",
+        loadMode: "lazy",
+        contextCost: "high",
+      });
+      addToolPlan(toolPlan, "review", "workflow", "Run the bounded meeting agentic orchestration plan with specialist schemas, completeness check, verification and parent reconciliation.", false);
+    }
+    if (Array.isArray(params.meetingAnalysis?.suggestedFollowUpDocuments) && params.meetingAnalysis.suggestedFollowUpDocuments.length > 0) {
+      addCapability(capabilities, {
+        capabilityId: "document-generation",
+        reason: `Meeting Intelligence suggests optional follow-up documents: ${params.meetingAnalysis.suggestedFollowUpDocuments.join(", ")}.`,
+        loadMode: "lazy",
+        contextCost: "medium",
+      });
+    }
   }
 
   if (taskType === "meeting_minutes" && (longOrMulti || hasAny(text, ["audio", "video", "asr", "录音", "转写", "音频", "视频"]))) {
@@ -255,12 +299,14 @@ function buildEnvelope(params: any) {
       loadMode: "lazy",
       contextCost: "low",
     });
-    addCapability(capabilities, {
-      capabilityId: "agent-team-runtime",
-      reason: "Independent topic, evidence, and QA work can run as task-shaped workers.",
-      loadMode: "lazy",
-      contextCost: "medium",
-    });
+    if (meetingOrchestrationMode === "direct") {
+      addCapability(capabilities, {
+        capabilityId: "agent-team-runtime",
+        reason: "Local deterministic workers remain a compatibility fallback when Pi subagent orchestration is not selected.",
+        loadMode: "lazy",
+        contextCost: "medium",
+      });
+    }
     addCapability(capabilities, {
       capabilityId: "model-fallback",
       reason: "Long generation benefits from explicit model route/fallback records.",
@@ -401,22 +447,22 @@ function buildEnvelope(params: any) {
   }
 
   const parallelizableWorkers =
-    longOrMulti && taskType === "meeting_minutes"
+    meetingOrchestrationMode === "dynamic_workflow" && taskType === "meeting_minutes"
       ? [
           {
-            component: "topic-map",
-            reason: "Identify macro topics before final structure decisions.",
-            writeScope: "topicMap/evidence pointers only",
+            component: "meeting-specialists",
+            reason: `${Number(params.meetingAnalysis?.specialistCount ?? 0)} task-shaped specialists were selected from current meeting complexity.`,
+            writeScope: "structured evidence findings only",
           },
           {
-            component: "evidence-coverage",
-            reason: "Check that long continuous topics are not compressed into a single bullet.",
-            writeScope: "coverage report only",
+            component: "completeness-and-verification",
+            reason: "Cross-check specialist coverage and evidence traceability before synthesis.",
+            writeScope: "verification ledger only",
           },
           {
-            component: "qa-risk",
-            reason: "Pre-check omitted macro topics, cross-meeting terms, and action-item coverage.",
-            writeScope: "qa findings only",
+            component: "parent-reconciliation",
+            reason: "Parent Agent owns final conflict resolution, Meeting Intelligence updates and QA priorities.",
+            writeScope: "parent-owned meeting analysis and QA inputs",
           },
         ]
       : [];
@@ -439,7 +485,7 @@ function buildEnvelope(params: any) {
     fixedWorkflow: false,
     plannerMode: "scenario_playbook",
     rawSecretsReturned: false,
-    rawTranscriptIncluded: false,
+    meetingContentAccess: "allowed",
     createdAt: new Date().toISOString(),
   };
 }
@@ -464,8 +510,9 @@ export default function (pi: ExtensionAPI) {
       constraints: Type.Optional(Type.Array(Type.String())),
       requestedOutputs: Type.Optional(Type.Array(Type.String())),
       availableArtifacts: Type.Optional(Type.Array(Type.String())),
+      meetingAnalysis: Type.Optional(Type.Any()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
         const details = buildEnvelope(params);
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -485,7 +532,7 @@ export default function (pi: ExtensionAPI) {
       envelope: Type.Any(),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
         const path = writePlannerEnvelope(params.runId, params.envelope, params.outputRoot);
         const details = { ok: true, runId: safeRunId(params.runId), plannerEnvelopePath: path, rawSecretsReturned: false };

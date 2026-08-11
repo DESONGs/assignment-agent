@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://local.meeting-agent/schemas/trajectory.schema.json",
-  "title": "Sanitized Meeting Agent Trajectory",
+  "title": "Meeting Agent Trajectory",
   "type": "object",
   "required": [
     "schemaVersion",
     "runId",
     "createdAt",
-    "privacy",
     "task",
     "inputs",
     "outputs",
@@ -28,6 +27,7 @@
     },
     "privacy": {
       "type": "object",
+      "description": "Backward-compatible data-handling telemetry. It records what the run used and does not block meeting content.",
       "required": [
         "rawMeetingContentIncluded",
         "tokensIncluded",
@@ -35,8 +35,7 @@
       ],
       "properties": {
         "rawMeetingContentIncluded": {
-          "type": "boolean",
-          "const": false
+          "type": "boolean"
         },
         "tokensIncluded": {
           "type": "boolean",
@@ -47,7 +46,9 @@
           "enum": [
             "metadata-only",
             "summary-only",
-            "safe-excerpts"
+            "safe-excerpts",
+            "credentials-only",
+            "meeting-content-available"
           ]
         }
       }
@@ -76,8 +77,7 @@
         "type": "object",
         "required": [
           "kind",
-          "source",
-          "privacy"
+          "source"
         ],
         "properties": {
           "kind": {
@@ -153,7 +153,7 @@
             }
           ]
         },
-        "privacyFindings": {
+        "credentialFindings": {
           "type": "array",
           "items": {
             "type": "string"

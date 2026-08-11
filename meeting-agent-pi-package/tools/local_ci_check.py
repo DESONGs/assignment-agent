@@ -37,6 +37,9 @@ NODE_CHECK_TARGETS = [
     "meeting-agent-pi-package/tools/asr_media_formats.mjs",
     "meeting-agent-pi-package/tools/asr_diarization_helpers.mjs",
     "meeting-agent-pi-package/tools/single_mix_asr_helpers.mjs",
+    "meeting-agent-pi-package/tools/meeting_intelligence_helpers.mjs",
+    "meeting-agent-pi-package/tools/meeting_workflow_helpers.mjs",
+    "meeting-agent-pi-package/tools/pi_meeting_orchestration_helpers.mjs",
     "meeting-agent-pi-package/tools/audio_normalize_helpers.mjs",
     "meeting-agent-pi-package/tools/dashscope_asr_client.mjs",
     "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",
@@ -62,6 +65,8 @@ TS_CHECK_TARGETS = [
     "meeting-agent-pi-package/extensions/document-worker-runtime.ts",
     "meeting-agent-pi-package/extensions/qa-gate.ts",
     "meeting-agent-pi-package/extensions/policy-gate.ts",
+    "meeting-agent-pi-package/extensions/runtime-observability.ts",
+    "meeting-agent-pi-package/extensions/meeting-agentic-orchestrator.ts",
 ]
 
 

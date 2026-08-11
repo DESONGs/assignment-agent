@@ -27,4 +27,6 @@ Use this skill after meeting understanding and `document-router` have identified
 - Unknown `docType` values must return `unmappedDocuments` or blocked errors; do not silently omit requested documents.
 - Each prompt file must stay under `prompts/` and include exactly one `{{input}}` placeholder.
 - Keep generation evidence-bound: each final document must distinguish evidence facts, inference, and open questions.
-- Do not pass secrets, tokens, cookies, CLI sessions, App Secret values, or raw media through prompt rendering.
+- Do not pass secrets, tokens, cookies, CLI sessions, or App Secret values
+  through prompt rendering. Meeting content is allowed when relevant to the
+  selected work unit.

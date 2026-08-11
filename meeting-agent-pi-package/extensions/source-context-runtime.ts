@@ -689,6 +689,72 @@ function sourceBlocksForSegments(structure: SourceStructure, selected: SourceSeg
     .slice(0, 24);
 }
 
+function compactMeetingAnalysis(analysis: any, selectedSegmentIds: string[] = []) {
+  if (!analysis) return null;
+  const selected = new Set(selectedSegmentIds);
+  const compactItems = (values: any, limit = 4) => (Array.isArray(values) ? values : []).slice(0, limit).map((item: any) => ({
+    text: String(item?.text ?? item ?? "").slice(0, 320),
+    state: item?.state ?? null,
+    ownerAlias: item?.ownerAlias ?? null,
+    dueDate: item?.dueDate ?? null,
+    evidenceSegmentIds: (item?.evidenceSegmentIds ?? []).slice(0, 8),
+  }));
+  const allTopics = (Array.isArray(analysis.topicMap) ? analysis.topicMap : []).slice(0, 24);
+  const relevantTopics = allTopics.filter((topic: any) => selected.size === 0 || (topic.evidenceSegmentIds ?? []).some((id: string) => selected.has(String(id))));
+  const topics = (relevantTopics.length > 0 ? relevantTopics : allTopics.slice(0, 4)).slice(0, 8).map((topic: any) => ({
+    topicId: topic.topicId,
+    title: String(topic.title ?? "").slice(0, 120),
+    timeRange: topic.timeRange ?? null,
+    evidenceDensity: topic.evidenceDensity ?? null,
+    evidenceSegmentIds: (topic.evidenceSegmentIds ?? []).slice(0, 12),
+    speakerAliases: (topic.speakerAliases ?? []).slice(0, 20),
+    coreJudgment: String(topic.coreJudgment ?? "").slice(0, 500),
+    decisions: compactItems(topic.decisions),
+    actions: compactItems(topic.actions),
+    risks: compactItems(topic.risks),
+    openQuestions: compactItems(topic.openQuestions),
+  }));
+  const relevantClaims = (Array.isArray(analysis.evidenceMap) ? analysis.evidenceMap : [])
+    .filter((claim: any) => selected.size === 0 || (claim.evidenceSegmentIds ?? []).some((id: string) => selected.has(String(id))))
+    .slice(0, 30)
+    .map((claim: any) => ({
+      claimId: claim.claimId,
+      topicId: claim.topicId,
+      claimType: claim.claimType,
+      text: String(claim.text ?? "").slice(0, 400),
+      status: claim.status,
+      evidenceQuality: claim.evidenceQuality,
+      evidenceSegmentIds: (claim.evidenceSegmentIds ?? []).slice(0, 8),
+    }));
+  return {
+    status: analysis.status,
+    analysisMode: analysis.analysisMode,
+    meetingProfile: analysis.meetingProfile
+      ? {
+          meetingType: analysis.meetingProfile.meetingType,
+          participantMap: analysis.meetingProfile.participantMap,
+          allowedRoles: (analysis.meetingProfile.allowedRoles ?? []).slice(0, 60),
+          allowedTopics: (analysis.meetingProfile.allowedTopics ?? []).slice(0, 60),
+          allowedTerms: (analysis.meetingProfile.allowedTerms ?? []).slice(0, 100),
+          ambiguousTerms: (analysis.meetingProfile.ambiguousTerms ?? []).slice(0, 80),
+          languages: (analysis.meetingProfile.languages ?? []).slice(0, 30),
+          asrCapabilities: analysis.meetingProfile.asrCapabilities ?? null,
+        }
+      : null,
+    topicMap: topics,
+    topicIndex: allTopics.map((topic: any) => ({
+      topicId: topic.topicId,
+      title: String(topic.title ?? "").slice(0, 120),
+      timeRange: topic.timeRange ?? null,
+      evidenceDensity: topic.evidenceDensity ?? null,
+    })),
+    evidenceMap: relevantClaims,
+    agentPlan: analysis.agentPlan,
+    delegatedReview: analysis.delegatedReview ?? null,
+    participantResolution: analysis.participantResolution,
+  };
+}
+
 function buildOutputContract(): OutputContract {
   return {
     schemaVersion: "document-output-contract-v1",
@@ -786,7 +852,7 @@ function sourceRecordsFromFileContexts(fileContexts: any) {
       extractedTextPath: context.extractedTextPath ?? null,
       status: String(context.status ?? "ready"),
       extractionQuality: extractionStatus === "completed" && chars > 0 ? "ready" : chars > 0 ? "partial" : "missing",
-      privacyClass: context.externalLlmAllowed === false ? "local_only" : "text_evidence_allowed",
+      privacyClass: "meeting_content_available",
       metadata: {
         extension: context.extension ?? null,
         contextMode: context.contextMode ?? null,
@@ -811,7 +877,7 @@ function audioRecordsAndSegments(params: any) {
     extractedTextPath: params.transcriptPath ?? null,
     status: "ready",
     extractionQuality: Number(summary.failedChunks ?? 0) > 0 ? "partial" : "ready",
-    privacyClass: "transcript_text_allowed_raw_media_local_only",
+    privacyClass: "meeting_content_available",
     metadata: {
       durationSec: source.durationSec ?? null,
       chunkCount: source.chunkCount ?? null,
@@ -824,13 +890,20 @@ function audioRecordsAndSegments(params: any) {
   const transcriptSegments = (transcript?.transcriptSegments ?? evidence?.transcriptSegments ?? [])
     .filter((segment: any) => String(segment?.text ?? "").trim())
     .slice(0, 1200);
+  const participantBySpeaker = new Map<string, any>(
+    (params.meetingAnalysis?.participantResolution?.participants ?? [])
+      .filter((participant: any) => participant?.speakerId !== null && participant?.speakerId !== undefined)
+      .map((participant: any) => [String(participant.speakerId), participant]),
+  );
   const segments: SourceSegment[] = transcriptSegments.map((segment: any, index: number) => {
     const sourceIndex = Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0;
     const sourceId = records[sourceIndex]?.sourceId ?? records[0]?.sourceId ?? "audio-01";
     const title = records.find((record) => record.sourceId === sourceId)?.title ?? sourceId;
     const speakerId = segment.speakerId ?? segment.speaker_id ?? null;
     const channelId = segment.channelId ?? segment.channel_id ?? null;
-    const speakerLabel = segment.speakerLabel ?? (speakerId === null ? null : `speaker_${speakerId}`);
+    const providerSpeakerLabel = segment.speakerLabel ?? (speakerId === null ? null : `speaker_${speakerId}`);
+    const participant = speakerId === null ? null : participantBySpeaker.get(String(speakerId));
+    const speakerLabel = participant?.displayName ?? participant?.alias ?? providerSpeakerLabel;
     const singleMixEvidence = segment.singleMixEvidence ?? null;
     return {
       segmentId: `${sourceId}:chunk-${String(segment.chunkIndex ?? index).padStart(4, "0")}`,
@@ -856,6 +929,7 @@ function audioRecordsAndSegments(params: any) {
         model: segment.model ?? null,
         speakerId,
         speakerLabel,
+        providerSpeakerLabel,
         channelId,
         singleMixEvidence,
       },
@@ -917,7 +991,24 @@ function reviewRecordsAndSegments(reviewContext: any) {
   return { records: [record], segments };
 }
 
-function scoreSegment(segment: SourceSegment, terms: Set<string>, sectionText = "") {
+function meetingEvidencePriorityIds(meetingAnalysis: any, sectionText: string) {
+  const ids = new Set<string>();
+  const claims = Array.isArray(meetingAnalysis?.evidenceMap) ? meetingAnalysis.evidenceMap : [];
+  const wantedTypes = /行动|待办/u.test(sectionText)
+    ? new Set(["action"])
+    : /风险|待确认|开放问题/u.test(sectionText)
+      ? new Set(["risk", "open_question"])
+      : /决策|分歧|结论/u.test(sectionText)
+        ? new Set(["decision", "core_judgment"])
+        : new Set(["core_judgment", "decision", "action", "risk", "open_question"]);
+  for (const claim of claims) {
+    if (!wantedTypes.has(String(claim?.claimType ?? ""))) continue;
+    for (const id of Array.isArray(claim?.evidenceSegmentIds) ? claim.evidenceSegmentIds : []) ids.add(String(id));
+  }
+  return ids;
+}
+
+function scoreSegment(segment: SourceSegment, terms: Set<string>, sectionText = "", priorityIds = new Set<string>()) {
   const haystack = tokenize(`${segment.title}\n${segment.heading ?? ""}\n${segment.text}`);
   let score = 0;
   for (const term of terms) {
@@ -925,17 +1016,25 @@ function scoreSegment(segment: SourceSegment, terms: Set<string>, sectionText = 
     else if (term.length > 2 && segment.text.toLowerCase().includes(term)) score += 1;
   }
   if (segment.sourceType === "review_context") score += 6;
+  if (priorityIds.has(segment.segmentId)) score += 10;
+  if (segment.quality === "needs_review") score += /风险|待确认|开放问题/u.test(sectionText) ? 4 : -5;
   if (segment.segmentKind === "table") score += /范围|MVP|暂不做|功能需求|验收|需求确认|checklist|表格|清单/i.test(sectionText) ? 8 : 3;
   if (segment.heading) score += 1;
   return score;
 }
 
-function selectSegmentsForWorkUnit(segments: SourceSegment[], taskPrompt: string, docType: string, sections: string[], operation?: string) {
-  const terms = tokenize([taskPrompt, docType, sections.join(" "), operation ?? ""].join("\n"));
+function selectSegmentsForWorkUnit(segments: SourceSegment[], taskPrompt: string, docType: string, sections: string[], operation?: string, meetingAnalysis?: any) {
+  const analysisTerms = [
+    meetingAnalysis?.meetingProfile?.meetingType,
+    ...(meetingAnalysis?.meetingProfile?.allowedTopics ?? []),
+    ...(meetingAnalysis?.agentPlan?.focusAreas ?? []),
+  ].filter(Boolean).join(" ");
+  const terms = tokenize([taskPrompt, docType, sections.join(" "), operation ?? "", analysisTerms].join("\n"));
   const sectionText = [docType, sections.join(" ")].join(" ");
+  const priorityIds = meetingEvidencePriorityIds(meetingAnalysis, sectionText);
   const ranked = segments.map((segment) => ({
     segment,
-    score: scoreSegment(segment, terms, sectionText),
+    score: scoreSegment(segment, terms, sectionText, priorityIds),
   })).sort((a, b) => b.score - a.score || a.segment.segmentId.localeCompare(b.segment.segmentId));
   const selected: SourceSegment[] = [];
   let evidenceChars = 0;
@@ -949,6 +1048,9 @@ function selectSegmentsForWorkUnit(segments: SourceSegment[], taskPrompt: string
   }
   if (selected.length === 0) {
     for (const item of ranked.slice(0, Math.min(4, ranked.length))) selected.push(item.segment);
+  }
+  if (docType === "meeting-minutes") {
+    selected.sort((left, right) => left.sourceId.localeCompare(right.sourceId) || Number(left.startSec ?? 0) - Number(right.startSec ?? 0));
   }
   return {
     selected,
@@ -973,6 +1075,7 @@ function buildModelContext(params: {
   retrievalReasons: string[];
   operation?: string;
   speakerDiarization?: unknown;
+  meetingAnalysis?: any;
 }) {
   const evidenceBlocks: string[] = [];
   let budget = DEFAULT_EVIDENCE_HARD_CAP_CHARS;
@@ -1031,6 +1134,21 @@ function buildModelContext(params: {
       ? JSON.stringify(params.speakerDiarization, null, 2)
       : "No ASR speaker diarization metadata is available. Do not infer speaker identity or ownership.",
     "",
+    "## Meeting Intelligence",
+    "",
+    params.meetingAnalysis
+      ? JSON.stringify({
+          status: params.meetingAnalysis.status,
+          analysisMode: params.meetingAnalysis.analysisMode,
+          meetingProfile: params.meetingAnalysis.meetingProfile,
+          topicMap: params.meetingAnalysis.topicMap,
+          evidenceMap: params.meetingAnalysis.evidenceMap,
+          agentPlan: params.meetingAnalysis.agentPlan,
+          delegatedReview: params.meetingAnalysis.delegatedReview,
+          participantResolution: params.meetingAnalysis.participantResolution,
+        }, null, 2)
+      : "No Meeting Intelligence analysis is available; derive cautiously from selected evidence and mark gaps as 待确认.",
+    "",
     "## Selected Source Structure Blocks",
     "",
     sourceBlockSummary.length
@@ -1081,6 +1199,7 @@ function buildContextPlane(params: any) {
     ? params.requestedDocuments.map(String)
     : ["meeting-minutes"];
   const sourcePreparation = params.sourcePreparation ?? {};
+  const meetingAnalysis = params.meetingAnalysis ?? null;
   const operation = params.operation ?? (params.revisionMode ? "document_revision" : "create_document");
   const sectionsPerUnit = Math.max(1, Math.min(Number(params.sectionsPerUnit ?? params.sectionsPerBatch ?? 2) || 2, 6));
 
@@ -1152,8 +1271,9 @@ function buildContextPlane(params: any) {
     const requiredSections = record?.requiredSections?.length ? record.requiredSections : ["正文"];
     for (const [unitIndex, sections] of chunkSections(requiredSections, sectionsPerUnit).entries()) {
       const workUnitId = safeSegment(`${docType}-unit-${String(unitIndex + 1).padStart(2, "0")}-${sha256(sections.join("|")).slice(0, 8)}`);
-      const { selected, retrievalReasons } = selectSegmentsForWorkUnit(sourceSegments, taskPrompt, docType, sections, operation);
+      const { selected, retrievalReasons } = selectSegmentsForWorkUnit(sourceSegments, taskPrompt, docType, sections, operation, meetingAnalysis);
       const selectedSourceBlocks = sourceBlocksForSegments(sourceStructure, selected);
+      const meetingContext = compactMeetingAnalysis(meetingAnalysis, selected.map((segment) => segment.segmentId));
       const contextPackId = `${workUnitId}-${sha256(selected.map((segment) => segment.segmentId).join("|")).slice(0, 10)}`;
       const modelContext = buildModelContext({
         packId: contextPackId,
@@ -1168,6 +1288,7 @@ function buildContextPlane(params: any) {
         retrievalReasons,
         operation,
         speakerDiarization: audio.speakerDiarization,
+        meetingAnalysis: meetingContext,
       });
       const contextPack = {
         schemaVersion: "context-pack-v1",
@@ -1185,6 +1306,7 @@ function buildContextPlane(params: any) {
         tableBlockCount: selectedSourceBlocks.filter((block) => block.blockType === "table").length,
         retrievalReasons,
         speakerDiarization: audio.speakerDiarization,
+        meetingIntelligence: meetingContext,
         documentIdentity: {
           projectName: documentIdentity.projectName,
           subject: documentIdentity.subject,
@@ -1265,7 +1387,7 @@ function buildContextPlane(params: any) {
   writeJson(retrievalPlanPath, {
     schemaVersion: `${SOURCE_CONTEXT_VERSION}/retrieval-plan`,
     generatedAt: nowIso(),
-    strategy: "deterministic_section_retrieval",
+    strategy: meetingAnalysis ? "meeting_intelligence_guided_section_retrieval" : "deterministic_section_retrieval",
     vectorStoreUsed: false,
     ftsUsed: false,
     requestedDocuments,
@@ -1307,6 +1429,18 @@ function buildContextPlane(params: any) {
       commentAnchorCount: sourceStructure.commentAnchors.length,
     },
     documentIdentity,
+    meetingIntelligence: meetingAnalysis
+      ? {
+          status: meetingAnalysis.status,
+          analysisMode: meetingAnalysis.analysisMode,
+          meetingType: meetingAnalysis.meetingProfile?.meetingType ?? null,
+          participantCount: meetingAnalysis.participantResolution?.participantCount ?? 0,
+          unresolvedParticipantCount: meetingAnalysis.participantResolution?.unresolvedCount ?? 0,
+          topicCount: meetingAnalysis.topicMap?.length ?? 0,
+          narrativeMode: meetingAnalysis.agentPlan?.narrativeMode ?? null,
+          suggestedFollowUpDocuments: meetingAnalysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+        }
+      : null,
     outputContract,
     workUnitCount: workUnits.length,
     contextPackCount: workUnits.length,
@@ -1324,14 +1458,14 @@ function buildContextPlane(params: any) {
     gate,
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-    fullRawContentIncluded: false,
+    fullContentAvailableByArtifact: true,
   };
   writeJson(manifestPath, manifest);
 
   const contextBrief = [
     "## Runtime Context Plane",
     "",
-    "Source content is segmented and selected through source-context-runtime. Do not request or recreate full raw source text.",
+    "Source content is segmented and selected through source-context-runtime. Retrieve additional source segments when evidence needs them instead of adding unrelated content.",
     "",
     `contextManifest: ${workspaceRelative(manifestPath)}`,
     `sourceRecords: ${workspaceRelative(sourceRecordsPath)}`,
@@ -1375,21 +1509,21 @@ function buildContextPlane(params: any) {
       contextManifest: workspaceRelative(manifestPath),
       contextGate: gate,
       documentIdentity,
+      meetingIntelligence: manifest.meetingIntelligence,
       sourceStructureSummary: manifest.sourceStructureSummary,
       outputContract,
       sourceMediaExternalUpload: false,
       textEvidenceExternalLlmDefault: "allow",
-      fullRawContentIncluded: false,
+      fullContentAvailableByArtifact: true,
     },
     workUnits,
     gate,
     documentIdentity,
     sourceStructureSummary: manifest.sourceStructureSummary,
-    sourceStructurePath,
     outputContract,
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-    fullRawContentIncluded: false,
+    fullContentAvailableByArtifact: true,
   };
 }
 
@@ -1437,7 +1571,6 @@ function buildGate(params: {
   }
   for (const record of params.sourceRecords) {
     if (record.extractionQuality === "missing") warnings.push(`source_extraction_missing:${record.sourceId}`);
-    if (record.privacyClass === "local_only") warnings.push(`source_local_only:${record.sourceId}`);
   }
   if (params.operation === "document_revision") {
     const comments = Array.isArray(params.reviewContext?.comments) ? params.reviewContext.comments : [];
@@ -1502,6 +1635,7 @@ export default function (pi: ExtensionAPI) {
       evidenceIndexPath: Type.Optional(Type.String()),
       asrSummaryPath: Type.Optional(Type.String()),
       reviewContext: Type.Optional(Type.Any()),
+      meetingAnalysis: Type.Optional(Type.Any()),
       operation: Type.Optional(Type.String()),
       sectionsPerUnit: Type.Optional(Type.Number()),
     }),

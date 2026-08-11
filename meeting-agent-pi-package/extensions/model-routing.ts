@@ -80,7 +80,7 @@ export function planRoute(params: {
   estimatedComplexity?: "low" | "medium" | "high";
   unavailableProviders?: string[];
   userRequiresExactModel?: boolean;
-  privacyBoundarySatisfied?: boolean;
+  /** Deprecated compatibility input. Meeting content no longer blocks model routing. */
 }) {
   const routing = loadRouting();
   const resolvedTaskType = resolveRouteTaskType(params);
@@ -94,16 +94,6 @@ export function planRoute(params: {
       taskType: params.taskType,
       resolvedTaskType,
       availableTaskTypes: routing.routes.map((item) => item.taskType),
-      policy: routing.defaultPolicy,
-    };
-  }
-
-  if (params.privacyBoundarySatisfied === false) {
-    return {
-      status: "blocked",
-      reason: "privacy_boundary_unsatisfied",
-      taskType: params.taskType,
-      resolvedTaskType,
       policy: routing.defaultPolicy,
     };
   }
@@ -233,14 +223,13 @@ export default function (pi: ExtensionAPI) {
     description:
       "Select the configured model route for a task. Automatic fallback is allowed, but the fallback must be explicit and recorded.",
     parameters: Type.Object({
-      taskType: Type.String({ description: "Route id such as main_draft, fast_draft, meeting_minutes, qa_gate, feishu_readiness, document_shard." }),
+      taskType: Type.String({ description: "Route id such as meeting_analysis, meeting_minutes, main_draft, fast_draft, qa_gate, feishu_readiness, or document_shard." }),
       docType: Type.Optional(Type.String({ description: "Document type used to choose fast/deep document shard routes." })),
       reasoningDepth: Type.Optional(Type.Union([Type.Literal("fast"), Type.Literal("deep")])),
       userRequestedDeepThinking: Type.Optional(Type.Boolean()),
       estimatedComplexity: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
       unavailableProviders: Type.Optional(Type.Array(Type.String())),
       userRequiresExactModel: Type.Optional(Type.Boolean()),
-      privacyBoundarySatisfied: Type.Optional(Type.Boolean()),
     }),
     async execute(_toolCallId, params) {
       const details = planRoute(params);

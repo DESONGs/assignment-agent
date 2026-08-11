@@ -37,7 +37,7 @@
     "evaluatedAt": { "type": "string" },
     "channel": { "enum": ["feishu", "wechat", "local"] },
     "rawSecretsReturned": { "const": false },
-    "rawTranscriptIncluded": { "const": false },
+    "rawTranscriptIncluded": { "type": "boolean" },
     "feishuInbound": { "type": "boolean" },
     "explicitUserRequest": { "type": "boolean" },
     "userRequestedAction": { "type": "boolean" },

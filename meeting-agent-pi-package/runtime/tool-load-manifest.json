@@ -2,6 +2,7 @@
   "version": 1,
   "defaultTools": [
     "planner-runtime.ts",
+    "runtime-observability.ts",
     "model-routing.ts",
     "model-provider.ts",
     "document-generation.ts",
@@ -22,6 +23,7 @@
     ],
     "audio_minutes": [
       "planner-runtime.ts",
+      "meeting-agentic-orchestrator.ts",
       "source-context-runtime.ts",
       "model-routing.ts",
       "model-provider.ts",

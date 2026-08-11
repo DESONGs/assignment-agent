@@ -123,8 +123,8 @@ group publish, or cloud-doc workflows.
 - Host handler 继续拥有 Feishu live、`lark-cli`、macOS keychain、附件下载、发布、回复、本机 MLX ASR，以及 `document_revision` 的 Feishu comment/review-context 预取。
 - `fast_answer/file_summary 不进 Docker`，因为现有轻路径更快且不需要队列隔离。
 - `document_generation/multi_source_synthesis 默认进 Docker worker`；实际入队需要 `FEISHU_AGENT_DOCUMENT_WORKER_MODE=docker|local-docker|queue`，默认 `host` 保持兼容。
-- `audio_minutes` 先在 Host 完成 audio normalize + local ASR；后续 transcript/evidence 可以进入文档阶段，但 `raw audio 不进容器`。
-- Docker worker 只消费 bounded `task.json`、`file-context.json`、extracted text/evidence/source metadata，不接收 Feishu token、App Secret、CLI session、cookie 或 raw media。
+- `audio_minutes` 先在 Host 完成 cloud-first ASR，再运行 Meeting Intelligence，生成 participant map、meeting profile、topic map、evidence map 和 agent plan。
+- Docker worker 可消费任务所需的会议内容和结构化证据，但不接收 Feishu token、App Secret、CLI session、cookie、Authorization 或 OSS 签名。
 - Docker worker 不调用 `lark-cli`，不 publish，不 reply，只写 `agent-output.json` 和 runtime artifacts；Host 继续执行 Feishu publish/reply。
 
 常驻服务和默认资源档位：
@@ -142,9 +142,9 @@ resources and recent cache; cache fallback is modality-filtered so old audio
 cannot override document-writing prompts. Multiple files/audio/URLs are
 consolidated into one source context manifest by default. `file-context` only
 classifies, downloads, and extracts metadata/text; `source-context-runtime`
-creates source records, source segments, deterministic retrieval plans, bounded
-context packs, work units, and pre-generation context gates. User-uploaded text
-evidence may be sent to the LLM only through selected bounded context packs.
+creates source records, source segments, analysis-aware retrieval plans, bounded
+context packs, work units, and pre-generation context gates. Context bounding is
+used for relevance and performance rather than as a meeting-content privacy gate.
 Unsupported file types or unsupported requested actions return `目前暂不支持该功能`.
 
 To use the optional SDK long-connection gateway, enable the bot capability,
@@ -196,9 +196,35 @@ missing or unstable words but is not source separation and cannot guarantee
 recovery of every simultaneous speaker, so unresolved intervals are prevented
 from becoming certain meeting claims downstream. These endpoints, models,
 format matrices, and errors are configured separately. Local Qwen3-ASR remains
-an explicit fallback and receives normalized WAV paths only. Downstream
-DeepSeek, Xiaomi, Docker workers, and Hermes receive transcript/evidence text,
-never raw media or signed OSS URLs.
+an explicit fallback and receives normalized WAV paths only. Meeting content may
+be consumed by selected capabilities; credentials and signed OSS URLs remain
+excluded from prompts and artifacts.
+
+After ASR, `meeting_intelligence_helpers.mjs` drives a model-reasoned and
+evidence-validated analysis turn. It assigns stable aliases such as `参会人 A`,
+accepts optional explicit mappings such as `参会人 A=张三`, and writes
+`meeting-analysis.json`, `meeting-profile.json`, `participant-map.json`,
+`topic-map.json`, `evidence-map.json`, and `agent-plan.json`. Planner, context
+retrieval, meeting title generation, document workers, and QA consume these
+artifacts; topic and section depth are selected from the current meeting rather
+than a fixed industry workflow.
+
+Meeting delegation is adaptive rather than mandatory. `meeting_agentic_plan`
+and `meeting_workflow_helpers.mjs` inspect the current Meeting Intelligence and
+choose one of three paths: direct parent reasoning for a simple meeting, one
+fresh read-only child through `pi-subagents@0.46.0` using its current
+`workflowScript` + `runs.run(...)` API, or a bounded structured
+workflow through `@quintinshaw/pi-dynamic-workflows@3.5.1`. Complex meetings
+fan out only the evidence axes that exist in the current run, then use
+`completenessCheck`, `verify`, and a synthesis child. The parent validates
+segment ids and retains final authority. The Feishu/audio runner executes the
+selected plan in a restricted non-interactive Pi session, requires a real
+`tool_execution_end` event, and records `agentic-orchestration-result.json` plus
+events. It tries the configured review route before a distinct primary route;
+failures stay visible and fall back to parent review. Parent reconciliation then
+checks every returned segment id against the current transcript and quarantines
+cross-meeting or evidence-free findings before document generation and QA. The reviewed runtime baseline is Pi
+`>=0.80.8` and Node `>=22.19.0`; local development is locked to Pi `0.84.1`.
 
 The Hermes learning sidecar is intentionally excluded from this package because
 it should not receive credentials or direct write access.
@@ -240,8 +266,10 @@ it should not receive credentials or direct write access.
   local artifacts with bounded readback; main context remains pointer-only for
   raw transcript/full evidence.
 - `agent_team_components/plan/run`: run task-shaped worker components in
-  parallel with Node `worker_threads` from a dynamic worker pool, not fixed
-  always-on roles.
+  parallel with Node `worker_threads` as a compatibility fallback when Pi
+  subagent orchestration is not selected.
+- `meeting_agentic_plan`: choose direct parent reasoning, one fresh subagent,
+  or a schema-validated Dynamic Workflow from actual meeting complexity.
 - `feishu_event_runner.mjs`: consume `lark-cli event consume` NDJSON, normalize
   and deduplicate events, write sanitized event logs, and forward to the local
   handler.
@@ -258,6 +286,12 @@ it should not receive credentials or direct write access.
 - `single_mix_asr_helpers.mjs`: aligns the primary and independent review ASR
   timelines for one mixed recording and emits explicit unresolved evidence
   without silently rewriting the primary transcript.
+- `meeting_intelligence_helpers.mjs`: builds the bounded meeting-analysis prompt,
+  stable participant aliases, validated topic/evidence maps, adaptive agent plan,
+  and real QA findings consumed by the document pipeline.
+- `meeting_workflow_helpers.mjs`: converts Meeting Intelligence into bounded
+  specialist tasks and a structured Pi Dynamic Workflow without embedding the
+  transcript in the workflow script.
 - `audio_normalize_helpers.mjs`: fallback media-to-audio helper that extracts or
   converts any supported cloud ASR container to `16k mono s16 WAV`.
 - `wechat_event_adapter.mjs`: fixture-only WeChat adapter skeleton; maps local
@@ -291,9 +325,11 @@ it should not receive credentials or direct write access.
   `document-revision-overlay.md` to the base docType prompt, and document
   workers still use section batching through the normal prompt registry path.
 
-Third-party `pi-subagents`-style packages stay candidate-only until audited.
-The default implementation uses local workers so the package does not need an
-unreviewed subagent dependency to get real parallel execution.
+`pi-subagents@0.46.0` and `@quintinshaw/pi-dynamic-workflows@3.5.1` are bundled
+after tarball/source review, compatibility validation, package-load smoke tests,
+and a zero-vulnerability npm audit. Their audit records live under
+`runtime/package-audits/`. They are execution-lazy: the parent invokes them only
+when `agentic-orchestration.json` selects a delegated mode.
 
 Capability registry records are planner-selectable capability descriptions.
 Every capability record must include `description`, `toolIntents`, `policy`,

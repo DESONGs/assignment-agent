@@ -78,14 +78,7 @@
       "items": { "type": "object", "additionalProperties": true }
     },
     "rawSecretsReturned": { "type": "boolean" },
-    "rawTranscriptIncluded": { "type": "boolean" },
-    "rawPayloadRejected": { "type": "boolean" },
-    "rejectedRawPayloadEvents": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": true
-      }
-    }
+    "meetingContentAllowed": { "const": true },
+    "contentTruncationChars": { "type": "integer", "minimum": 1 }
   }
 }

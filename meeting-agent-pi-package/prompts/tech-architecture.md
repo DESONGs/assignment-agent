@@ -18,8 +18,8 @@
 - PI 是主动执行内核；Planner、Capability Registry、Policy Gate、Tool Execution、QA Gate、Observability 是运行期主线。
 - Agent Team 是动态 worker 组件池，不是固定 role 预设。
 - 文档结构来自 `prompts/*.md` 与 prompt registry；worker 不内置 PRD/运营/架构 scaffold。
-- DeepSeek 负责主文档生成，Xiaomi MiMo 只做复核/兜底；本地 Qwen3-ASR HTTP 服务只处理音视频转文字。
-- 原始音频/视频不上传给 DeepSeek、小米、飞书或 Hermes；transcript/evidence 文本属于默认允许的语义输入。
+- 模型角色必须以 Model Router 与实际运行记录为准；fallback 不等于独立复核。
+- 会议内容可由所选能力使用；凭证、签名 URL、Cookie 和 Authorization 状态不得进入模型或文档。
 - 飞书直接使用官方 `lark-cli` 或 bot gateway，不新增长期 Feishu Adapter 或自定义 action wrapper。
 - Xiaomi provider 不臆造 endpoint，必须通过 `XIAOMI_BASE_URL` 配置。
 

@@ -1,37 +1,56 @@
-生成会议纪要。
+生成证据可追溯、能够推动下一步行动的中文会议纪要。
 
-请使用已加载的 `meeting-minutes` skill，并按以下要求输出：
+## 核心输入
 
-- 语言：中文。
-- 必须为流水线生成元数据，字段为 `meetingTitle`、`titleBasis`、`sourceFile`、`feishuFileName`、`evidenceCoverage`；但最终上传飞书的用户可见 Markdown 不得包含 JSON 元数据块。
-- 必须先使用 `meetingProfile`：`meetingType`、`allowedRoles`、`allowedTopics`、`allowedTerms`、`ambiguousTerms`、`siblingForbiddenTerms`。正文中的角色、组织、表名、项目名和行动项 owner 必须来自当前 `meetingProfile` 或当前 transcript 的明确证据。
-- 不得把 `ambiguousTerms` 自行扩展成 profile 外业务专名；例如 transcript 只说“表/问题/材料”时，只能写“需求表/问题表/待确认材料”，不能补成其他会议中的 HR 表、薪酬表或财务表。
-- 如果输出中出现 `siblingForbiddenTerms` 或 profile/transcript 不支持的新实体，必须阻塞并请求修订，不得发布。
-- `meetingTitle` 必须根据会议内容生成，主要参考：与会人员/角色、会议内容、会议安排、会议结论。
-- 标题格式：`会议纪要｜{参与方/角色}｜{核心主题}｜{关键安排或结论}`；信息不足时使用角色称谓或 `待确认`，不得编造人名、日期或承诺。
-- 如果输入中包含 `Document Title Plan`，必须把它作为标题候选和飞书文件名候选；若 transcript/evidence 能支持更具体的参会方、核心主题或关键结论，可优化 `meetingTitle`，但最终 Markdown H1 和飞书文件名必须仍与同一个 `meetingTitle` 同步。
-- Markdown H1 必须等于 `meetingTitle`。
-- 飞书 Markdown 文件名必须等于 `feishuFileName`，由 `meetingTitle` 派生，格式 `{meetingTitle}.md`，并去除 `/ \ : * ? " < > |` 等不适合文件名的字符。
-- 必须先在内部生成 `topicMap`（不进入用户可见 Markdown）：每个主议题包含 `macroTopic`、`timeRange`、`evidenceDensity`、`coreJudgment`、`decisions`、`actions`、`risks`、`openQuestions`。凡是连续多个 transcript segment 讨论、有明确判断、有后续动作或有风险/开放问题的内容，都应列为主议题候选。
-- 参考 PDF 或历史纪要的核心是“议题级总结逻辑”，不是固定目录模板：先识别会议中的产品需求、技术方案、商业模式、组织协作、合作结构、融资/发展判断等主议题，再决定章节层级。
-- 结构必须根据 `topicMap` 动态选择：简单执行型会议可使用“会议主题、核心结论、关键讨论与需求拆解、决策与分歧、行动项、风险与开放问题、最终判断”；多议题/战略型会议应使用“会议主题、核心结论、若干主议题章节、代办事项、风险与开放问题、最终判断”。
-- 多议题/战略型会议中，产品需求、商业模式、收费结构、超级个体、渠道合作、组织模式等只要有连续证据，不得压缩成一个 bullet；必须独立展开背景/问题、关键判断、边界或方案、后续动作和开放问题。
-- 产品类主议题优先展开 MVP 边界、数据安全、部署环境、功能范围、待确认条件；业务类主议题优先展开公司定位、收费方式、交付模式、合作结构、近期策略；组织类主议题优先展开角色分工、知识库/复用资产、前后台协作。
-- 行动项结构要服务执行：简单会议可用表格；复杂会议优先按主议题分组 checklist，确保每个重要主议题都有对应后续动作或明确写出“暂无行动项/待确认”。
-- 所有关键判断必须可回溯到内部 evidence；用户可见 Markdown 只写自然时间点或来源描述，不显示 raw evidence id、chunk id、源音频文件名、`transcriptSegments` 字段名。
-- 起草前必须检查 `ASR Speaker Evidence` 与 segment 的 `speaker` / `channel` 标签。不同 speaker 标签的连续发言不得合并成同一个人的观点；存在分歧时应按“说话人 1/2…”保留各自立场。
-- `speaker_id` 只代表本次录音内的匿名聚类，不等于真实姓名、角色或行动项 owner。只有 transcript 明确自报身份或 `meetingProfile` 有直接映射证据时才能写姓名/角色，否则统一使用匿名说话人标签或 `待确认`。
-- `speakerDiarization.enabled=false`、`speakerLabelsAvailable=false` 或状态为 `unsupported_realtime_endpoint` 时，不得根据语气、上下文或 system prompt 猜测换人位置。实时 Paraformer 不提供文件端说话人分离，需在会后用文件端重跑才能获得该类证据。
-- 说话人分离不是重叠语音的源分离。多人同时讲话、语义跳变或标签频繁切换只能标记为“重叠发言/归属待确认”，不得将鸡尾酒会场景中的残缺内容改写为确定事实。
-- 发布前 QA 必须检查 `unsupportedEntities`、`crossMeetingTerms`、`ambiguousTermExpansions` 和 `omittedMacroTopics`。前三类属于 blocking issue；`omittedMacroTopics` 若遗漏了连续多个 transcript segment 的主议题，必须修订后再发布。
-- QA 结论、Evidence Notes、模型复核说明、`externalAudioUpload` 注释和其他测试字段只写入本地 QA artifact，不得出现在飞书会议纪要正文。
-- 不确定内容标记为 `待确认`。
-- 粤语/普通话/英文混合会议：最终正文统一用简体中文业务书面语；产品名、人名、项目名、英文术语、关键粤语原话保留原词。疑似方言误识别、低置信或语义跳变片段必须进入“待确认/风险”，不得强行改写成确定事实。
-- 不编造 owner、deadline、预算或外部事实。
-- 不要输出原始长转写。
-- DeepSeek 负责主稿；小米 MiMo 复核建议只有能引用当前会议 evidence 时才合入。小米 MiMo 复核必须检查是否存在 `omittedMacroTopics`：连续多个 segment 的主议题是否被遗漏，商业模式/收费结构/超级个体/合作方式/组织模式是否被压缩成单句，行动项是否覆盖所有主议题。
-- 原始音频只允许在 ASR provider 阶段上传到已配置的云端 ASR；后续 document worker、QA、外部 LLM、Docker 和 Hermes 只能使用 transcript/evidence 文本，不得接收 raw audio 或 base64 audio。
-- 如果会议输入中包含参考 PDF 或历史纪要，只学习其层级密度、标题组织、议题展开方式和表达风格，不把其中事实、owner、日期或决策混入当前会议。
+- `Meeting Intelligence` 是当前会议的结构化理解结果，包含 `meetingProfile`、`participantResolution`、`topicMap`、`evidenceMap` 和 `agentPlan`。
+- `Selected Source Evidence` 是当前章节可以引用的原始证据。
+- `ASR Speaker Evidence` 描述说话人聚类、单录混音复核和 ASR 能力边界。
+- 如果 Meeting Intelligence 与原始证据冲突，以原始证据为准，并把冲突写入待确认事项。
+
+## 参会人规则
+
+- 优先使用 `participantResolution.participants[].displayName`。
+- 未经用户确认的姓名不得使用；改用稳定代号 `参会人 A`、`参会人 B` 等。
+- `speaker_id` 只是录音内匿名聚类，不等于姓名、职位或行动项负责人。
+- 不同参会人的观点、异议和回应不得合并成同一个人的立场。
+
+## 会议理解规则
+
+- 严格区分：提议、异议、讨论中判断、已达成共识、被否决方案、行动项和开放问题。
+- 不得把“有人建议”“可以考虑”“后面看看”改写成会议决定。
+- `quality=needs_review` 或 `evidenceQuality=needs_review_only` 的内容只能作为风险或待确认证据；不得单独支持姓名、owner、日期、金额、承诺或已达成决定。
+- 粤语、普通话和英文混合内容统一整理为简体中文业务表达；产品名、项目名和有证据支持的术语保留原词。语义跳变或方言误识别必须标记待确认。
+- 不补充会议外事实，不把历史纪要、参考文档或其他会议的实体混入当前会议。
+
+## 内容组织
+
+- 使用 Prompt Registry 指定的稳定二级章节。
+- 在“主要议题”内，根据 `agentPlan.narrativeMode` 和 `topicMap` 动态生成三级标题；不要输出字面意义上的“主议题章节”占位内容。
+- 每个持续讨论的主议题应覆盖：背景或问题、关键判断、方案边界、不同立场、决定状态、行动和开放问题；没有证据的字段可以省略。
+- “核心结论”只保留有充分证据的高价值判断，并明确哪些是已决定、哪些仍未决定。
+- “决策与分歧”应保留少数意见、被否决方案和仍未形成共识的事项。
+- “行动项”只写会议中真实提出的行动。Owner 或日期不明确时写 `待确认`，不得为了表格完整而编造。
+- “风险与待确认事项”汇总 ASR 冲突、归属不确定、依赖条件、未决问题和需要用户确认的参会人映射。
+
+## 标题与输出
+
+- 标题格式：`会议纪要｜{参与方/角色}｜{核心主题}｜{关键安排或结论}`。
+- 如果上下文包含 `Document Title Plan`，将其作为标题候选；Meeting
+  Intelligence 有更具体且可验证的参与方、主题或结论时可以优化，但
+  H1 与文件名必须继续来自同一个最终标题。
+- 流水线内部继续记录 `meetingTitle`、`titleBasis`、`feishuFileName` 和
+  `evidenceCoverage`；这些机器字段不进入用户可见正文。
+- 信息不足时使用参会人代号、角色称谓或 `待确认`，不得猜姓名、日期或承诺。
+- Markdown H1 必须等于 `meetingTitle`；飞书文件名由同一标题派生为 `{meetingTitle}.md`。
+- 用户可见正文不得出现 JSON 元数据、raw evidence id、chunk id、源音频文件名、内部模型复核说明或 QA 字段。
+- 不复制原始长转录。
+
+## Agent 行为
+
+- 根据当前会议内容自主决定议题展开深度，不套用固定行业关键词。
+- 如果 `agentPlan.suggestedFollowUpDocuments` 有值，只在纪要末尾作为后续建议，不自动声称这些文档已经生成。
+- 如果没有形成会议共识，不强制生成“最终判断”；在对应章节明确写未决状态。
+- 重要判断必须能回溯到当前会议证据；证据不足时写 `待确认`。
 
 会议输入：
 

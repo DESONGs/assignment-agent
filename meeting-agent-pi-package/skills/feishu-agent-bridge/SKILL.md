@@ -73,9 +73,9 @@ Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_age
 - Marker: section-batched document workers.
 - The handler must not hardcode PRD, ops, architecture, checklist, or meeting
   minutes section structures.
-- Raw audio/video may be uploaded only by the cloud ASR provider stage after
-  Policy Gate approval. Other external model calls may receive transcript/evidence
-  text only; they never receive raw media, OSS credentials, or signed URLs.
+- Meeting media and transcript content may be used by selected capabilities.
+  Credentials, OSS access secrets, signed URLs, cookies, and Authorization state
+  must never enter prompts or user-visible artifacts.
 - Unsupported file types or unsupported requested actions must reply exactly:
   `目前暂不支持该功能`.
 - Live Feishu publish requires QA publishable output. For Feishu inbound tasks,

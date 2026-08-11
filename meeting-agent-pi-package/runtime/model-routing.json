@@ -6,7 +6,6 @@
     "recordArtifact": "model-route.json",
     "blockedWhen": [
       "no_candidate_model_available",
-      "privacy_boundary_unsatisfied",
       "user_requires_exact_model",
       "manual_or_blocked_candidate_selected"
     ]
@@ -33,6 +32,14 @@
       "primary": { "provider": "deepseek", "model": "deepseek-v4-pro", "strength": "deep" },
       "fallbacks": [
         { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "deep-fallback" },
+        { "provider": "manual", "model": "blocked-with-actionable-error", "strength": "blocked" }
+      ]
+    },
+    {
+      "taskType": "meeting_analysis",
+      "primary": { "provider": "deepseek", "model": "deepseek-v4-pro", "strength": "structured-reasoning" },
+      "fallbacks": [
+        { "provider": "xiaomi", "model": "mimo-v2.5-pro", "strength": "structured-reasoning-fallback" },
         { "provider": "manual", "model": "blocked-with-actionable-error", "strength": "blocked" }
       ]
     },

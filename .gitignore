@@ -8,8 +8,18 @@ node_modules/
 .build/
 **/.build/
 
-# Local runtime state and dependency/model caches.
+# Local runtime state and dependency/model caches. Keep the reviewed Pi project
+# contract and meeting subagent definitions versioned; generated Pi state stays
+# ignored.
 .pi/
+!.pi/
+.pi/*
+!.pi/SYSTEM.md
+!.pi/settings.json
+!.pi/agents/
+.pi/agents/*
+!.pi/agents/meeting-*.md
+.pi-subagents/
 .hf-cache/
 .hf-home/
 .uv-cache/

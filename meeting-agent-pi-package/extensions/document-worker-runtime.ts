@@ -17,7 +17,7 @@ type DocumentWorkItem = {
     contextEnvelopeRef?: string;
     workUnitCount?: number;
     promptMode?: string;
-    fullRawContentIncluded?: boolean;
+    fullContentAvailableByArtifact?: boolean;
   } | null;
   workUnits?: Array<{
     workUnitId: string;
@@ -69,6 +69,18 @@ const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
 const SYSTEM_PROMPT =
   "你是一个证据约束的中文办公文档写作 worker。你只根据当前 work unit 的 bounded context pack 和目标章节写作，不调用飞书，不修改日历/任务，不编造 owner/deadline/budget/外部事实。输出 Markdown。";
+const MEETING_SYSTEM_PROMPT = [
+  "你是会议理解与执行提炼 Agent，不是普通文档续写器。",
+  "你必须使用 Meeting Intelligence、当前 work unit 的证据和 participant map，自主判断当前章节应突出哪些议题、分歧、共识、行动和开放问题。",
+  "证据优先级为：用户明确事实；多模型一致且质量稳定的 ASR；主模型单独支持的 ASR；quality=needs_review 的冲突片段。",
+  "冲突片段不得单独支持已决定事项、姓名、owner、日期、金额或承诺。speaker id 只是匿名聚类；未确认姓名一律使用参会人代号。",
+  "严格区分提议、异议、讨论中判断、已达成共识、被否决方案和未决事项。会议没有形成共识时，不得替会议生成最终结论。",
+  "输出中文 Markdown，只写当前目标章节。",
+].join("");
+
+function systemPromptForDocType(docType: string) {
+  return docType === "meeting-minutes" ? MEETING_SYSTEM_PROMPT : SYSTEM_PROMPT;
+}
 
 function positiveInteger(value: unknown, fallback: number) {
   if (value === undefined || value === null) return fallback;
@@ -576,6 +588,7 @@ async function generateWithRetry(params: {
     }
     const generation = await generateWithCandidates({
       prompt: params.prompt,
+      systemPrompt: systemPromptForDocType(params.docType),
       initialRoute: params.initialRoute,
       candidates: params.candidates,
       mockResponse: params.mockResponse,
@@ -961,6 +974,7 @@ function isFallbackEligible(generation: any) {
 
 async function generateWithCandidates(params: {
   prompt: string;
+  systemPrompt?: string;
   initialRoute: any;
   candidates: any[];
   mockResponse?: string;
@@ -1028,7 +1042,7 @@ async function generateWithCandidates(params: {
       provider: candidate.provider,
       model: candidate.model,
       prompt: params.prompt,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: params.systemPrompt ?? SYSTEM_PROMPT,
       temperature: params.temperature,
       maxTokens: params.maxTokens,
       mockResponse: params.mockResponse,
@@ -1193,7 +1207,6 @@ async function generateOne(params: {
         userRequestedDeepThinking: params.userRequestedDeepThinking,
         estimatedComplexity: params.estimatedComplexity,
         unavailableProviders: params.unavailableProviders,
-        privacyBoundarySatisfied: true,
       });
 
   if (initialRoute.status === "blocked") {

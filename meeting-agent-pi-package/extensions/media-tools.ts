@@ -336,7 +336,7 @@ export default function (pi: ExtensionAPI) {
     name: "meeting_transcribe_cloud_asr",
     label: "Transcribe Meeting With Cloud ASR",
     description:
-      "Transcribe one mixed recording through Aliyun DashScope file ASR with anonymous diarization and independent-model conflict review, or use the separate realtime ASR endpoint. Raw media may be uploaded only for this ASR stage; credentials are read from environment and never written to artifacts.",
+      "Transcribe one mixed recording through Aliyun DashScope file ASR with anonymous diarization and independent-model conflict review, or use the separate realtime ASR endpoint. Meeting media is available to this selected capability; credentials are read from environment and never written to artifacts.",
     parameters: Type.Object({
       paths: Type.Array(Type.String({ description: "Local cloud-supported audio or video paths to send to the ASR provider." })),
       meetingId: Type.String({ description: "Meeting id used in output metadata." }),
@@ -432,10 +432,9 @@ export default function (pi: ExtensionAPI) {
         rawTranscriptPointerRequired: transcriptSegments.length > 0,
         rules: {
           keyClaimsRequireSource: true,
-          rawTranscriptLongTermMemory: false,
-          externalAudioUpload: false,
+          meetingContentUse: "task_selected_capabilities",
+          contextSelectionBasis: "relevance_and_model_budget",
           textEvidenceExternalLlmDefault: "allow",
-          rawMediaExternalUploadDefault: "deny",
           publishConfirmationOptional: true,
         },
       };

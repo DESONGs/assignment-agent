@@ -90,35 +90,51 @@ function segmentsFromInput(input) {
   return text.split(/\\n+/).filter(Boolean).map((line, index) => ({ id: "line_" + index, text: line, chunkIndex: index }));
 }
 
-function includesAny(text, patterns) {
-  return patterns.some((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
-}
-
 function topicMapExtractor(input) {
-  const segments = segmentsFromInput(input);
-  const groups = [
-    { topicId: "product_requirements", label: "产品需求与 MVP 边界", patterns: ["mvp", "功能", "需求", "空镜", "文字识别", "剪辑", "素材"] },
-    { topicId: "business_model", label: "商业模式与收费结构", patterns: ["商业模式", "收费", "价格", "付费", "收入", "报价", "成本"] },
-    { topicId: "super_individual_collaboration", label: "超级个体与合作方式", patterns: ["超级个体", "合作", "分成", "交付", "供应方", "制作方", "伙伴"] },
-    { topicId: "data_security", label: "数据安全与部署边界", patterns: ["数据安全", "本地", "私有化", "权限", "脱敏", "安全"] },
-    { topicId: "feishu_workflow", label: "飞书工作流与发布", patterns: ["飞书", "机器人", "文档", "wiki", "lark", "feishu"] },
-    { topicId: "action_plan", label: "行动计划与下一步", patterns: ["下一步", "行动", "todo", "负责", "时间", "推进"] }
-  ];
-  const topics = groups.map((group) => {
-    const matched = segments
-      .map((segment, index) => ({ segment, index }))
-      .filter(({ segment }) => includesAny(String(segment.text || ""), group.patterns));
+  const intelligenceTopics = input?.meetingAnalysis?.topicMap || input?.meetingIntelligence?.topicMap;
+  if (Array.isArray(intelligenceTopics) && intelligenceTopics.length > 0) {
+    const topics = intelligenceTopics.slice(0, 24).map((topic, index) => ({
+      topicId: topic.topicId || "topic_" + index,
+      label: topic.title || topic.macroTopic || "议题 " + (index + 1),
+      segmentCount: Array.isArray(topic.evidenceSegmentIds) ? topic.evidenceSegmentIds.length : 0,
+      segmentRefs: (topic.evidenceSegmentIds || []).slice(0, 20),
+      sample: [topic.coreJudgment].filter(Boolean).map((value) => String(value).slice(0, 240)),
+      shouldExpand: topic.evidenceDensity?.sustained === true || (topic.evidenceSegmentIds || []).length >= 3
+    }));
     return {
-      topicId: group.topicId,
-      label: group.label,
-      segmentCount: matched.length,
-      segmentRefs: matched.slice(0, 12).map(({ segment, index }) => segment.id || segment.segmentId || segment.chunkIndex || index),
-      sample: matched.slice(0, 3).map(({ segment }) => String(segment.text || "").slice(0, 160)),
-      shouldExpand: matched.length >= 2
+      componentId: "topic_map_extractor",
+      source: "meeting_intelligence",
+      topics,
+      omittedMacroTopicRisk: topics.filter((topic) => topic.shouldExpand).map((topic) => topic.topicId),
+      segmentCount: topics.reduce((total, topic) => total + topic.segmentCount, 0)
     };
-  }).filter((topic) => topic.segmentCount > 0);
+  }
+  const segments = segmentsFromInput(input);
+  const stop = new Set(["这个", "那个", "然后", "就是", "我们", "你们", "他们", "一个", "可以", "还是", "不是", "没有", "什么", "怎么", "已经", "比较", "可能"]);
+  const groupSize = Math.max(8, Math.ceil(segments.length / 8));
+  const topics = [];
+  for (let start = 0; start < segments.length; start += groupSize) {
+    const matched = segments.slice(start, start + groupSize);
+    const counts = new Map();
+    const terms = matched.map((segment) => String(segment.text || "")).join(" ").match(/[A-Za-z][A-Za-z0-9_.-]{2,}|[一-龥]{2,6}/g) || [];
+    for (const term of terms) {
+      if (stop.has(term)) continue;
+      counts.set(term, (counts.get(term) || 0) + 1);
+    }
+    const labels = [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 3).map(([term]) => term);
+    const index = topics.length;
+    topics.push({
+      topicId: "timeline_topic_" + (index + 1),
+      label: labels.length ? labels.join(" / ") : "时间段议题 " + (index + 1),
+      segmentCount: matched.length,
+      segmentRefs: matched.slice(0, 20).map((segment, offset) => segment.id || segment.segmentId || segment.chunkIndex || start + offset),
+      sample: matched.slice(0, 3).map((segment) => String(segment.text || "").slice(0, 160)),
+      shouldExpand: matched.length >= 3
+    });
+  }
   return {
     componentId: "topic_map_extractor",
+    source: "generic_timeline_fallback",
     topics,
     omittedMacroTopicRisk: topics.filter((topic) => topic.shouldExpand).map((topic) => topic.topicId),
     segmentCount: segments.length

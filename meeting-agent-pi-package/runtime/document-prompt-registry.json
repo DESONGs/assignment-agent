@@ -6,7 +6,7 @@
       "promptFile": "meeting-minutes.md",
       "aliases": ["meeting", "minutes", "meeting-minutes", "会议纪要", "纪要"],
       "parallelizable": false,
-      "requiredSections": ["会议主题", "核心结论", "主议题章节", "行动项", "风险与开放问题", "最终判断"]
+      "requiredSections": ["会议概况", "核心结论", "主要议题", "决策与分歧", "行动项", "风险与待确认事项"]
     },
     {
       "docType": "prd",

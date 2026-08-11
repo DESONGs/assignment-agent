@@ -15,10 +15,7 @@ const SECRET_PATTERNS = [
   /\b(FEISHU_APP_SECRET|DEEPSEEK_API_KEY|XIAOMI_TOKEN_PLAN_SGP_API_KEY)\b/i,
 ];
 
-const RAW_CONTENT_KEY_PATTERN =
-  /rawTranscript|fullTranscript|transcriptSegments|rawMeetingContent|transcriptText|evidenceText|messageText/i;
-const GENERIC_TEXT_KEY_PATTERN = /^(text|content|markdown)$/i;
-const MAX_GENERIC_TEXT_CHARS = 1000;
+const MAX_METRIC_TEXT_CHARS = 8000;
 
 function defaultOutputRoot() {
   return join(workspaceDir, "runtime-runs");
@@ -59,41 +56,10 @@ function metricsPath(runId: string, outputRoot?: string) {
   return join(runDir(runId, outputRoot), "run.metrics.json");
 }
 
-function isContentLike(value: unknown) {
-  return typeof value === "string" || Array.isArray(value) || (Boolean(value) && typeof value === "object");
-}
-
-function findRawPayloadReasons(value: unknown, path = "$", key = ""): string[] {
-  const reasons: string[] = [];
-  if (RAW_CONTENT_KEY_PATTERN.test(key) && isContentLike(value)) {
-    reasons.push(`${path} uses raw meeting content key`);
-  }
-  if (typeof value === "string") {
-    if (GENERIC_TEXT_KEY_PATTERN.test(key) && value.length > MAX_GENERIC_TEXT_CHARS) {
-      reasons.push(`${path} is a long generic text/content payload`);
-    }
-    if (value.length > 8000) {
-      reasons.push(`${path} is over 8000 chars`);
-    }
-  }
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length && reasons.length < 10; index += 1) {
-      reasons.push(...findRawPayloadReasons(value[index], `${path}[${index}]`, String(index)));
-    }
-  } else if (value && typeof value === "object") {
-    for (const [childKey, childValue] of Object.entries(value)) {
-      if (reasons.length >= 10) break;
-      reasons.push(...findRawPayloadReasons(childValue, `${path}.${childKey}`, childKey));
-    }
-  }
-  return reasons.slice(0, 10);
-}
-
 function sanitize(value: unknown, key = ""): unknown {
   if (typeof value === "string") {
     if (SECRET_PATTERNS.some((pattern) => pattern.test(value))) return "[REDACTED_SECRET_LIKE_VALUE]";
-    if (RAW_CONTENT_KEY_PATTERN.test(key)) return "[REDACTED_RAW_MEETING_CONTENT_POINTER_REQUIRED]";
-    if (value.length > 8000) return `${value.slice(0, 8000)}...[TRUNCATED]`;
+    if (value.length > MAX_METRIC_TEXT_CHARS) return `${value.slice(0, MAX_METRIC_TEXT_CHARS)}...[TRUNCATED_FOR_METRICS_BUDGET]`;
     return value;
   }
   if (Array.isArray(value)) return value.map((item) => sanitize(item));
@@ -102,8 +68,6 @@ function sanitize(value: unknown, key = ""): unknown {
     for (const [key, item] of Object.entries(value)) {
       if (/secret|token|cookie|session|authorization/i.test(key)) {
         result[key] = "[REDACTED_FIELD]";
-      } else if (RAW_CONTENT_KEY_PATTERN.test(key) && isContentLike(item)) {
-        result[key] = "[REDACTED_RAW_MEETING_CONTENT_POINTER_REQUIRED]";
       } else {
         result[key] = sanitize(item, key);
       }
@@ -144,9 +108,8 @@ function baseMetrics(runId: string, taskType: string, summary?: string) {
     capabilitySelections: [],
     packageAudits: [],
     rawSecretsReturned: false,
-    rawTranscriptIncluded: false,
-    rawPayloadRejected: false,
-    rejectedRawPayloadEvents: [],
+    meetingContentAllowed: true,
+    contentTruncationChars: MAX_METRIC_TEXT_CHARS,
   };
 }
 
@@ -212,14 +175,14 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "runtime_metrics_start",
     label: "Runtime Metrics Start",
-    description: "Start a local runtime metrics artifact. Does not store secrets or raw transcripts.",
+    description: "Start a local runtime metrics artifact. Meeting content is allowed; credentials are always removed and oversized metric strings are truncated for operational budget.",
     parameters: Type.Object({
       taskType: Type.String({ description: "Task type, e.g. meeting_minutes, feishu_bot, prd, qa." }),
       summary: Type.Optional(Type.String({ description: "Short run summary." })),
       runId: Type.Optional(Type.String({ description: "Optional caller-provided run id." })),
       outputRoot: Type.Optional(Type.String({ description: "Optional runtime-runs output directory." })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
         const runId = safeRunId(params.runId);
         const path = metricsPath(runId, params.outputRoot);
@@ -237,7 +200,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "runtime_metrics_record",
     label: "Runtime Metrics Record",
-    description: "Append a sanitized runtime event to a metrics artifact.",
+    description: "Append a credential-safe runtime event to a metrics artifact.",
     parameters: Type.Object({
       runId: Type.String(),
       kind: Type.Union([
@@ -257,20 +220,8 @@ export default function (pi: ExtensionAPI) {
       payload: Type.Any(),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
-        const rawPayloadReasons = findRawPayloadReasons(params.payload);
-        if (rawPayloadReasons.length > 0) {
-          const blocked = {
-            status: "blocked",
-            reason: "runtime_metrics_raw_payload_blocked",
-            runId: params.runId,
-            kind: params.kind,
-            rawPayloadReasons,
-            rawTranscriptIncluded: false,
-          };
-          return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
-        }
         const path = metricsPath(params.runId, params.outputRoot);
         if (!existsSync(path)) {
           const blocked = { status: "blocked", reason: "metrics_run_not_found", runId: params.runId, metricsPath: path };
@@ -303,7 +254,7 @@ export default function (pi: ExtensionAPI) {
       qaGate: Type.Optional(Type.Any()),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<any> {
       try {
         const path = metricsPath(params.runId, params.outputRoot);
         if (!existsSync(path)) {

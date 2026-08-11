@@ -1,6 +1,6 @@
 ---
 name: runtime-observability
-description: Record PI runtime metrics artifacts for enabled capabilities, model routes, tool calls, context budget, generated artifacts, and QA gate status without storing secrets or raw transcripts.
+description: Record PI runtime metrics artifacts for enabled capabilities, model routes, tool calls, context budget, generated artifacts, and QA gate status while removing credentials.
 ---
 
 # Runtime Observability Skill
@@ -16,8 +16,8 @@ Use this skill at the start and end of non-trivial runs, and whenever the run en
 ## Rules
 
 - Record enabled capabilities, model calls, external calls, generated artifacts, context budget, and final QA gate.
-- Do not record Feishu App Secret, model API keys, cookies, bearer tokens, CLI sessions, or raw transcript text.
-- Long transcripts must be offloaded as local artifacts. Metrics should store counts, hashes, and artifact paths only.
+- Do not record Feishu App Secret, model API keys, cookies, bearer tokens, or CLI sessions.
+- Meeting content is allowed. Large values may be truncated in metrics for operational size, while complete transcripts remain available through their run artifacts.
 - If `model_route_plan` falls back to another provider/model, record the fallback in `model-route.json` and in runtime metrics.
 
 ## Output

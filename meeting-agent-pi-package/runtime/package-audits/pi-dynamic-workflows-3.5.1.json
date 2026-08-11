@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "package-audit-v1",
+  "packageName": "@quintinshaw/pi-dynamic-workflows",
+  "version": "3.5.1",
+  "source": "https://pi.dev/packages/%40quintinshaw/pi-dynamic-workflows",
+  "sourceRepository": "https://github.com/QuintinShaw/pi-dynamic-workflows",
+  "publishedAt": "2026-08-05",
+  "distSha1": "9ef036a12e2d19ba1bec653ec727e4f04cabbeff",
+  "readmeSummary": "Provides JavaScript-authored dynamic orchestration with agent, parallel, pipeline, verify, judgePanel, bounded retry/gate helpers, resumable journals, model routing and optional worktree isolation.",
+  "dependencies": [
+    "acorn@^8.16.0"
+  ],
+  "envReads": [
+    "Model-provider and Pi runtime configuration are consumed through the host model registry",
+    "No package-specific credential environment read was found in the reviewed workflow extension paths"
+  ],
+  "networkAccess": [
+    "Subagents call configured model providers",
+    "An optional web-research toolset can fetch URLs, but the meeting workflow does not select that toolset"
+  ],
+  "fileWrites": [
+    "Run journals, locks, results and saved workflows under ~/.pi/workflows",
+    "Optional project git worktrees under .pi/worktrees",
+    "Optional persisted child Pi sessions when explicitly enabled"
+  ],
+  "processExecution": [
+    "Spawns fresh Pi agent sessions",
+    "Uses array-argument execFile calls for optional git worktree creation/removal and diff inspection"
+  ],
+  "promptInjectionRisk": "Workflow scripts can delegate arbitrary prompts and tools. This project supplies bounded, schema-validated meeting plans, project-owned read-only agent types, explicit concurrency limits and no automatic worktree isolation for meeting-content analysis.",
+  "credentialHandling": "Model credentials remain host-managed. Meeting workflows do not expose environment variables, do not enable bash/write tools for specialist agents and do not persist child sessions by default.",
+  "disableOrUninstallPath": "Remove the node_modules/@quintinshaw/pi-dynamic-workflows resource paths and dependency from meeting-agent-pi-package/package.json, reinstall dependencies, then reload Pi.",
+  "compatibility": {
+    "piCodingAgent": ">=0.80.8",
+    "piTui": ">=0.80.6",
+    "node": ">=22.19.0"
+  },
+  "smokeEvidence": [
+    "Pi 0.84.1 RPC loaded the workflow extension from the bundled resource path",
+    "get_commands exposed workflow control, model tiers and built-in patterns",
+    "meeting_agentic_plan produced a bounded six-specialist schema-validated workflow",
+    "The installed package parseWorkflowScript accepted the generated meeting-evidence-review workflow",
+    "A real three-topic run completed seven agents across specialist, completeness, verification and synthesis phases",
+    "The smoke surfaced out-of-transcript segment ids; parent reconciliation now quarantines such output and feeds violations to QA instead of trusting workflow synthesis",
+    "npm audit reported zero vulnerabilities after dependency upgrades"
+  ],
+  "decision": "passed_smoke_lazy_enable",
+  "defaultLoad": false,
+  "rawSecretsReturned": false,
+  "rawTranscriptIncluded": false
+}

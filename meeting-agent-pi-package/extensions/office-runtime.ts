@@ -40,7 +40,7 @@ const DOCUMENT_ACTION = Type.Union([
 ]);
 
 const DESTRUCTIVE_ACTIONS = new Set(["delete", "clear", "remove", "destroy"]);
-const RAW_CONTENT_KEY_PATTERN = /raw|transcript|fullText|fileText|requestBody|authorization|cookie|secret|token|session/i;
+const SECRET_KEY_PATTERN = /authorization|cookie|secret|token|session/i;
 const SECRET_VALUE_PATTERN =
   /(app_secret|client_secret|refresh_token|access_token|authorization|cookie|session)\s*[:=]\s*["']?[^"',\s]+|bearer\s+[A-Za-z0-9._-]+/gi;
 
@@ -120,22 +120,22 @@ function boundedPreview(value?: string, max = 900) {
   return redactString(String(value ?? "").replace(/\s+/g, " ").trim()).slice(0, max);
 }
 
-function containsRawContentRisk(value: unknown, path: string[] = []): string | null {
+function containsSecretRisk(value: unknown, path: string[] = []): string | null {
   if (!value || typeof value !== "object") return null;
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
-      const nested = containsRawContentRisk(value[index], [...path, String(index)]);
+      const nested = containsSecretRisk(value[index], [...path, String(index)]);
       if (nested) return nested;
     }
     return null;
   }
   for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
     const joined = [...path, key].join(".");
-    if (RAW_CONTENT_KEY_PATTERN.test(key) && !/fileToken|folderToken|sourceRun|rawSecretsReturned|rawMediaExternalUpload/i.test(key)) {
+    if (SECRET_KEY_PATTERN.test(key) && !/fileToken|folderToken|wikiToken|sourceRun|rawSecretsReturned/i.test(key)) {
       return joined;
     }
     if (typeof entryValue === "string" && hasSecretLikeValue(entryValue)) return joined;
-    const nested = containsRawContentRisk(entryValue, [...path, key]);
+    const nested = containsSecretRisk(entryValue, [...path, key]);
     if (nested) return nested;
   }
   return null;
@@ -325,8 +325,8 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       try {
-        const risk = containsRawContentRisk(params);
-        if (risk) throw new Error(`office_runtime_raw_or_secret_payload_blocked:${risk}`);
+        const risk = containsSecretRisk(params);
+        if (risk) throw new Error(`office_runtime_secret_payload_blocked:${risk}`);
         const plan = params.plan ?? buildLifecyclePlan({ ...params, action: params.action ?? "create" });
         const artifact = buildLifecycleArtifact(params, plan);
         const path = writeJson(artifactPath(params.runId, "document-lifecycle.json", params.outputRoot), artifact);
@@ -363,8 +363,8 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       try {
-        const risk = containsRawContentRisk(params);
-        if (risk) throw new Error(`office_runtime_raw_or_secret_payload_blocked:${risk}`);
+        const risk = containsSecretRisk(params);
+        if (risk) throw new Error(`office_runtime_secret_payload_blocked:${risk}`);
         const object = {
           schemaVersion: "office-object-v1",
           version: "v1",
@@ -397,7 +397,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "retrieval_index_write",
     label: "Retrieval Index Write",
-    description: "Write a pointer-only retrieval-index.json artifact. Raw transcripts, full files, request bodies, and secrets are blocked.",
+    description: "Write a compact retrieval-index.json artifact with pointers and bounded previews. Credentials and authentication state are blocked.",
     parameters: Type.Object({
       runId: Type.String(),
       indexId: Type.Optional(Type.String()),
@@ -413,8 +413,8 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       try {
-        const risk = containsRawContentRisk(params);
-        if (risk) throw new Error(`retrieval_index_raw_or_secret_payload_blocked:${risk}`);
+        const risk = containsSecretRisk(params);
+        if (risk) throw new Error(`retrieval_index_secret_payload_blocked:${risk}`);
         const entries = params.entries.map((entry: unknown, index: number) => normalizeRetrievalEntry(params, entry, index));
         const missingPointer = entries.find((entry: any) => !entry.pointers.artifactPointer);
         if (missingPointer) throw new Error("retrieval_index_artifact_pointer_required");

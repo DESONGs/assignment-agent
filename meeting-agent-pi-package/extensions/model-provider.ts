@@ -42,10 +42,6 @@ const SECRET_PATTERNS = [
   /bearer\s+[A-Za-z0-9._\-]{8,}/i,
 ];
 const PROVIDER_ENV_NAMES = ["DEEPSEEK_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY", "XIAOMI_BASE_URL"];
-const RAW_CONTENT_KEY_PATTERN =
-  /rawTranscript|fullTranscript|transcriptSegments|rawMeetingContent|transcriptText|rawMedia|base64Audio/i;
-const RAW_CONTENT_JSON_FIELD_PATTERN =
-  /["'](?:rawTranscript|fullTranscript|transcriptSegments|rawMeetingContent|transcriptText|rawMedia|base64Audio)["']\s*:/i;
 const MAX_PROMPT_CHARS = 180_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TIMEOUT_MS = 600_000;
@@ -61,16 +57,6 @@ function providerRecord(provider: string) {
 function containsSecretLikeValue(value: unknown) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return SECRET_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-function containsRawContentKey(value: unknown, key = ""): boolean {
-  if (RAW_CONTENT_KEY_PATTERN.test(key)) return true;
-  if (typeof value === "string") return RAW_CONTENT_JSON_FIELD_PATTERN.test(value);
-  if (Array.isArray(value)) return value.some((item, index) => containsRawContentKey(item, String(index)));
-  if (value && typeof value === "object") {
-    return Object.entries(value).some(([childKey, childValue]) => containsRawContentKey(childValue, childKey));
-  }
-  return false;
 }
 
 function routeMatchesProvider(route: any, provider: string, model: string) {
@@ -238,10 +224,6 @@ export async function generateText(params: GenerateTextParams) {
     if (containsSecretLikeValue(params.prompt) || containsSecretLikeValue(params.systemPrompt)) {
       return blocked("model_prompt_secret_like_input_blocked");
     }
-    if (containsRawContentKey({ prompt: params.prompt, systemPrompt: params.systemPrompt })) {
-      return blocked("model_prompt_raw_content_key_blocked");
-    }
-
     const record = providerRecord(params.provider);
     if (!record) {
       return blocked("model_provider_not_found");
