@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { spawn } from "node:child_process";
+import { cloudAsrMediaKind } from "../tools/asr_media_formats.mjs";
 
 type LocalAsrServiceResult = {
   ok: boolean;
@@ -43,8 +44,8 @@ function sha256(path: string) {
 
 function mediaType(path: string) {
   const ext = extname(path).toLowerCase();
-  if ([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"].includes(ext)) return "audio";
-  if ([".mp4", ".mov", ".mkv", ".avi", ".webm"].includes(ext)) return "video";
+  const asrKind = cloudAsrMediaKind(ext);
+  if (asrKind) return asrKind;
   if ([".png", ".jpg", ".jpeg", ".webp", ".heic"].includes(ext)) return "image";
   if ([".txt", ".md", ".json", ".srt", ".vtt"].includes(ext)) return "text";
   return "unknown";
@@ -335,14 +336,20 @@ export default function (pi: ExtensionAPI) {
     name: "meeting_transcribe_cloud_asr",
     label: "Transcribe Meeting With Cloud ASR",
     description:
-      "Transcribe meeting audio through Aliyun DashScope Paraformer realtime ASR. Raw audio may be uploaded only for this ASR stage; API keys are read from environment and never written to artifacts.",
+      "Transcribe cloud-supported meeting audio or video through Aliyun DashScope Paraformer file or realtime ASR. Raw media may be uploaded only for this ASR stage; credentials are read from environment and never written to artifacts.",
     parameters: Type.Object({
-      paths: Type.Array(Type.String({ description: "Local audio paths to upload to the ASR provider." })),
+      paths: Type.Array(Type.String({ description: "Local cloud-supported audio or video paths to send to the ASR provider." })),
       meetingId: Type.String({ description: "Meeting id used in output metadata." }),
       outputDir: Type.String({ description: "Artifact output directory." }),
       meetingTitle: Type.Optional(Type.String({ description: "Meeting title for evidence-index.json." })),
-      model: Type.Optional(Type.String({ description: "Defaults to ALIYUN_ASR_MODEL or paraformer-realtime-v2." })),
-      endpoint: Type.Optional(Type.String({ description: "DashScope WebSocket endpoint." })),
+      model: Type.Optional(Type.String({ description: "Realtime model; defaults to ALIYUN_ASR_MODEL or paraformer-realtime-v2." })),
+      fileModel: Type.Optional(Type.String({ description: "Defaults to ALIYUN_ASR_FILE_MODEL or paraformer-v2." })),
+      inputMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("file"), Type.Literal("realtime")])),
+      endpoint: Type.Optional(Type.String({ description: "Realtime DashScope WebSocket endpoint only." })),
+      fileEndpoint: Type.Optional(Type.String({ description: "Recorded-file DashScope HTTP asynchronous endpoint only." })),
+      diarizationEnabled: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("auto")])),
+      speakerCount: Type.Optional(Type.Number({ description: "Optional speaker-count hint from 2 to 100 for file diarization." })),
+      timestampAlignmentEnabled: Type.Optional(Type.Boolean({ description: "Enable file-transcription timestamp alignment; defaults to true." })),
       languageHints: Type.Optional(Type.Array(Type.String({ description: "DashScope language_hints, e.g. yue zh en." }))),
       vocabularyId: Type.Optional(Type.String({ description: "DashScope vocabulary_id." })),
       workspaceId: Type.Optional(Type.String({ description: "DashScope workspace id header." })),

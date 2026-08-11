@@ -12,6 +12,13 @@
 - 云端默认语言提示：`yue,zh,en`，用于粤语、普通话、英文夹杂会议。
 - 已验证真实 DashScope WebSocket smoke：`languageHints=["yue","zh","en"]` 完成转写，`failedChunks=0`。
 - 原始音频只允许 ASR provider 阶段上传；后续文档生成、QA、Docker、Hermes 和外部 LLM 只消费 transcript/evidence。
+- 2026-08-12 起，录音文件与实时流拆为两个明确端口：
+  - 文件：`paraformer-v2` + HTTP 异步任务 + 私有 OSS 短期签名 URL；保留云端支持的 17 种音视频容器。
+  - 实时：`paraformer-realtime-v2` + WebSocket；仅使用官方实时编码矩阵和单声道输入。
+- `ALIYUN_ASR_INPUT_MODE=auto` 只负责选路，不会把 `.m4a` 容器伪装为 `aac` 实时流；文件端不可用时才进入显式规范化重试。
+- 文件端默认启用匿名说话人分离：`diarization_enabled=true`，可选 `speaker_count=2..100` 仅作为提示。能力要求单声道，源文件为双/多声道时只生成派生单声道上传，原文件不修改。
+- 文件端 `speaker_id` 与 `channel_id` 会贯通 transcript/evidence/Source Context；实时端明确记录不支持该能力，不能由 system prompt 猜测补齐。
+- 该能力是 speaker diarization，不是重叠语音 source separation；鸡尾酒会场景中的同声道同时发言仍属于 best-effort 证据。
 
 ## Summary
 
@@ -124,8 +131,13 @@ MEETING_RAW_MEDIA_EXTERNAL_UPLOAD_DEFAULT=allow_for_cloud_asr
 ALIYUN_DASHSCOPE_API_KEY=...
 ALIYUN_DASHSCOPE_WORKSPACE_ID=...
 ALIYUN_ASR_MODEL=paraformer-realtime-v2
+ALIYUN_ASR_FILE_MODEL=paraformer-v2
 ALIYUN_ASR_ENDPOINT=wss://dashscope.aliyuncs.com/api-ws/v1/inference
+ALIYUN_ASR_FILE_ENDPOINT=https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription
 ALIYUN_ASR_LANGUAGE_HINTS=yue,zh,en
+ALIYUN_ASR_DIARIZATION_ENABLED=auto
+ALIYUN_ASR_SPEAKER_COUNT=
+ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED=true
 ALIYUN_ASR_VOCABULARY_ID=...
 ALIYUN_ASR_REGION=cn-beijing
 ```
@@ -456,6 +468,8 @@ Live QA 达标后，将 `audio_minutes` 默认 ASR provider 改为 `aliyun_dashs
 - 默认模型明确为 `paraformer-realtime-v2`。
 - 粤语为主、普通话和英文混合会议能生成可读会议纪要。
 - transcript/evidence artifact 路径保持兼容。
+- 文件转录可生成匿名说话人标签，并在下游纪要中保留分歧但不臆测身份。
+- 实时转录不会宣称具备文件端说话人分离；需要最终纪要时允许在会后用文件端重跑。
 - cloud ASR cache 与 local ASR cache 不互相污染。
 - raw audio 上传只发生在 ASR stage，并写入可审计 artifact。
 - API key 不出现在 run artifact、metrics、wiki、Hermes memory 或飞书回复。

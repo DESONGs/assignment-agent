@@ -83,10 +83,15 @@ and future IM scenarios. It is not a decision layer: `fast_answer` and
 `file_summary` only call Model Router / Model Provider and reply directly;
 document-oriented profiles prepare current attachments, explicit Feishu file
 URLs, parent/root resources, and modality-filtered cache hits into
-`evidence-pack.json`; audio sources are normalized to local `16k mono s16 WAV`
-before ASR. The runner then calls the existing Planner/Model Router/Prompt
+`evidence-pack.json`; recorded media uses cloud ASR first. Cloud-supported files
+use the OSS-backed Paraformer file endpoint, while realtime stream formats use
+the separate WebSocket endpoint. File ASR enables provider diarization by
+default; because that capability is mono-only, stereo recordings get a derived
+mono upload while the original remains untouched. Local `16k mono s16 WAV`
+normalization remains a fallback preparation path. The runner then calls the existing Planner/Model Router/Prompt
 Registry/Document Worker/QA Gate/Policy Gate tools through
-`runtime_tool_cli.mjs`, records progress, and keeps raw audio local.
+`runtime_tool_cli.mjs` and records progress. Raw media may leave the host only
+during the Policy-Gated cloud ASR stage.
 `runtime_tool_cli.mjs` reads `runtime/tool-load-manifest.json` and accepts
 `--profile`, so short profiles do not load document worker, QA, Policy, publish,
 or ASR extensions.
@@ -169,13 +174,21 @@ bot to receive chat events or publish results. The PI tools
 `feishu_bot_gateway_plan` and `feishu_bot_gateway_check` expose setup guidance
 and redacted readiness checks without returning secrets.
 
-Audio transcription is local-only through the local HTTP service. Product audio
-input is normalized locally by `audio_normalize_helpers.mjs` before
-`meeting_transcribe_local_asr` calls the Qwen3-ASR HTTP service on
-`LOCAL_ASR_SERVICE_URL`; the service still receives normalized WAV paths only
-and returns a blocked state if unavailable. The package intentionally has no PI
-script fallback for ASR. Raw audio stays local; downstream DeepSeek and Xiaomi calls
-receive transcript/evidence text only.
+Audio transcription is cloud-first when a DashScope API key is configured.
+Recorded files use `paraformer-v2` through the HTTP asynchronous file endpoint;
+the runtime uploads the source to private OSS and supplies a short-lived signed
+HTTPS URL. Recorded-file diarization is `auto` by default, accepts an optional
+2–100 speaker-count hint, and preserves anonymous `speaker_id`/channel evidence
+through transcript, evidence, and document context artifacts. Realtime streams
+use `paraformer-realtime-v2` through WebSocket and remain limited to the
+provider's mono stream codecs; that realtime path does not claim speaker
+diarization. Diarization clusters speaker turns but does not separate
+simultaneous same-channel voices, so overlap remains best-effort and is marked
+for confirmation downstream. These endpoints, models,
+format matrices, and errors are configured separately. Local Qwen3-ASR remains
+an explicit fallback and receives normalized WAV paths only. Downstream
+DeepSeek, Xiaomi, Docker workers, and Hermes receive transcript/evidence text,
+never raw media or signed OSS URLs.
 
 The Hermes learning sidecar is intentionally excluded from this package because
 it should not receive credentials or direct write access.
@@ -226,10 +239,14 @@ it should not receive credentials or direct write access.
   attachments, build file-context, generate the PI task prompt, run mock or
   execute mode, and write publish/reply artifacts.
 - `im_file_context_helpers.mjs`: shared Feishu/WeChat file-context helper for
-  attachment classification, text extraction, progressive disclosure, audio
-  local-ASR-only, and image/video unsupported handling.
-- `audio_normalize_helpers.mjs`: local audio normalize helper for
-  WAV/MP3/M4A/AAC/FLAC/OGG -> `16k mono s16 WAV` before local ASR.
+  attachment classification, text extraction, progressive disclosure, and
+  cloud-ASR-compatible audio/video source readiness.
+- `asr_media_formats.mjs`: single provider-aligned source of truth for realtime
+  codecs and recorded-file audio/video extensions.
+- `asr_diarization_helpers.mjs`: probes recorded media and prepares a derived
+  mono input only when file-mode speaker diarization requires it.
+- `audio_normalize_helpers.mjs`: fallback media-to-audio helper that extracts or
+  converts any supported cloud ASR container to `16k mono s16 WAV`.
 - `wechat_event_adapter.mjs`: fixture-only WeChat adapter skeleton; maps local
   WeChat-shaped input into unified IM contracts and calls the same handler in
   mock/dry-run mode without duplicating the Agent flow.

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { accessSync, constants, cpSync, existsSync, mkdirSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { CLOUD_ASR_MEDIA_EXTENSIONS } from "./asr_media_formats.mjs";
 
 export const AUDIO_NORMALIZE_VERSION = "audio-normalize-v1";
 export const TARGET_AUDIO_SPEC = {
@@ -12,7 +13,7 @@ export const TARGET_AUDIO_SPEC = {
   bitsPerSample: 16,
   fileName: "normalized-16k-mono-s16.wav",
 };
-export const SUPPORTED_AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]);
+export const SUPPORTED_AUDIO_EXTENSIONS = new Set(CLOUD_ASR_MEDIA_EXTENSIONS);
 const TRANSCODER_TIMEOUT_MS = 20 * 60 * 1000;
 
 function nowIso() {

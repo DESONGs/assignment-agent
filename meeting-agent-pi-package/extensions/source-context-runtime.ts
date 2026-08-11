@@ -31,6 +31,9 @@ type SourceSegment = {
   sheet?: string | null;
   startSec?: number | null;
   endSec?: number | null;
+  speakerId?: string | number | null;
+  speakerLabel?: string | null;
+  channelId?: string | number | null;
   quality: string;
   metadata: Record<string, unknown>;
 };
@@ -815,6 +818,7 @@ function audioRecordsAndSegments(params: any) {
       privacy: source.privacy ?? null,
       transcriptPath: workspaceRelative(params.transcriptPath),
       evidenceIndexPath: workspaceRelative(params.evidenceIndexPath),
+      speakerDiarization: transcript?.transcription?.speakerDiarization ?? summary.speakerDiarization ?? null,
     },
   }));
   const transcriptSegments = (transcript?.transcriptSegments ?? evidence?.transcriptSegments ?? [])
@@ -824,6 +828,9 @@ function audioRecordsAndSegments(params: any) {
     const sourceIndex = Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0;
     const sourceId = records[sourceIndex]?.sourceId ?? records[0]?.sourceId ?? "audio-01";
     const title = records.find((record) => record.sourceId === sourceId)?.title ?? sourceId;
+    const speakerId = segment.speakerId ?? segment.speaker_id ?? null;
+    const channelId = segment.channelId ?? segment.channel_id ?? null;
+    const speakerLabel = segment.speakerLabel ?? (speakerId === null ? null : `speaker_${speakerId}`);
     return {
       segmentId: `${sourceId}:chunk-${String(segment.chunkIndex ?? index).padStart(4, "0")}`,
       sourceId,
@@ -837,16 +844,27 @@ function audioRecordsAndSegments(params: any) {
       sheet: null,
       startSec: Number(segment.startSec ?? 0),
       endSec: Number(segment.endSec ?? 0),
+      speakerId,
+      speakerLabel,
+      channelId,
       quality: "ready",
       metadata: {
         chunkIndex: segment.chunkIndex ?? index,
         sourceFile: segment.sourceFile ?? null,
         sourceHashSha256: segment.sourceHashSha256 ?? null,
         model: segment.model ?? null,
+        speakerId,
+        speakerLabel,
+        channelId,
       },
     };
   });
-  return { records, segments, audioSegmentCount: transcriptSegments.length };
+  return {
+    records,
+    segments,
+    audioSegmentCount: transcriptSegments.length,
+    speakerDiarization: transcript?.transcription?.speakerDiarization ?? summary.speakerDiarization ?? null,
+  };
 }
 
 function reviewRecordsAndSegments(reviewContext: any) {
@@ -952,6 +970,7 @@ function buildModelContext(params: {
   outputContract?: OutputContract;
   retrievalReasons: string[];
   operation?: string;
+  speakerDiarization?: unknown;
 }) {
   const evidenceBlocks: string[] = [];
   let budget = DEFAULT_EVIDENCE_HARD_CAP_CHARS;
@@ -963,6 +982,8 @@ function buildModelContext(params: {
       segment.segmentKind ? `kind=${segment.segmentKind}` : null,
       segment.heading ? `heading=${segment.heading}` : null,
       Number.isFinite(segment.startSec ?? NaN) ? `time=${segment.startSec}-${segment.endSec}` : null,
+      segment.speakerLabel ? `speaker=${segment.speakerLabel}` : null,
+      segment.channelId !== null && segment.channelId !== undefined ? `channel=${segment.channelId}` : null,
     ].filter(Boolean).join(" | ");
     const text = segment.text.slice(0, Math.max(0, budget - header.length - 8));
     if (!text) continue;
@@ -1000,6 +1021,12 @@ function buildModelContext(params: {
     "## Selected Source Evidence",
     "",
     evidenceBlocks.join("\n\n") || "No selected evidence segment is available.",
+    "",
+    "## ASR Speaker Evidence",
+    "",
+    params.speakerDiarization
+      ? JSON.stringify(params.speakerDiarization, null, 2)
+      : "No ASR speaker diarization metadata is available. Do not infer speaker identity or ownership.",
     "",
     "## Selected Source Structure Blocks",
     "",
@@ -1137,6 +1164,7 @@ function buildContextPlane(params: any) {
         outputContract,
         retrievalReasons,
         operation,
+        speakerDiarization: audio.speakerDiarization,
       });
       const contextPack = {
         schemaVersion: "context-pack-v1",
@@ -1153,6 +1181,7 @@ function buildContextPlane(params: any) {
         sourceBlockIds: selectedSourceBlocks.map((block) => block.blockId),
         tableBlockCount: selectedSourceBlocks.filter((block) => block.blockType === "table").length,
         retrievalReasons,
+        speakerDiarization: audio.speakerDiarization,
         documentIdentity: {
           projectName: documentIdentity.projectName,
           subject: documentIdentity.subject,
@@ -1173,6 +1202,9 @@ function buildContextPlane(params: any) {
           heading: segment.heading ?? null,
           startSec: segment.startSec ?? null,
           endSec: segment.endSec ?? null,
+          speakerId: segment.speakerId ?? null,
+          speakerLabel: segment.speakerLabel ?? null,
+          channelId: segment.channelId ?? null,
           text: segment.text,
           textChars: segment.text.length,
           quality: segment.quality,
@@ -1327,6 +1359,7 @@ function buildContextPlane(params: any) {
       sourceCount: sourceRecords.length,
       segmentCount: sourceSegments.length,
       audioSegmentCount: audio.audioSegmentCount,
+      speakerDiarization: audio.speakerDiarization,
       requestedDocuments,
       sourceSummary: sourceRecords.map((record) => ({
         sourceId: record.sourceId,

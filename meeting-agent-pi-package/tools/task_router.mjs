@@ -33,11 +33,11 @@ export function cleanUserPrompt(text) {
 }
 
 function requiresAsr(attachments) {
-  return attachments.some((item) => attachmentKind(item) === "audio");
+  return attachments.some((item) => ["audio", "video"].includes(attachmentKind(item)));
 }
 
 function hasAudioAttachments(attachments) {
-  return attachments.some((item) => attachmentKind(item) === "audio");
+  return attachments.some((item) => ["audio", "video"].includes(attachmentKind(item)));
 }
 
 function hasActionablePrompt(text) {
@@ -307,7 +307,7 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requiresLocalAsr: requiresAudioAsr,
       sourcePreparation,
       responseMode: "ack_file_cached",
-      immediateResponse: hasAudioAttachments(attachments) ? "已收到音频，可继续发送处理要求。" : "已收到文件，可继续发送分析要求。",
+      immediateResponse: hasAudioAttachments(attachments) ? "已收到音视频文件，可继续发送转写或纪要要求。" : "已收到文件，可继续发送分析要求。",
     });
   }
   if (isRevisionRequest && hasFileContexts) {

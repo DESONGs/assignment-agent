@@ -80,6 +80,11 @@ TEXT_EXTENSIONS = {
     ".log",
 }
 RAW_MEDIA_EXTENSIONS = {
+    ".amr",
+    ".opus",
+    ".pcm",
+    ".speex",
+    ".wma",
     ".wav",
     ".mp3",
     ".m4a",
@@ -91,6 +96,9 @@ RAW_MEDIA_EXTENSIONS = {
     ".mkv",
     ".avi",
     ".webm",
+    ".flv",
+    ".mpeg",
+    ".wmv",
     ".png",
     ".jpg",
     ".jpeg",
@@ -98,6 +106,11 @@ RAW_MEDIA_EXTENSIONS = {
     ".heic",
 }
 AUDIO_EXTENSIONS = {
+    ".amr",
+    ".opus",
+    ".pcm",
+    ".speex",
+    ".wma",
     ".wav",
     ".mp3",
     ".m4a",
@@ -368,7 +381,8 @@ def audio_signature_status(path: Path) -> dict[str, Any]:
     if size < AUDIO_MIN_READY_BYTES:
         return {"ok": False, "reason": "audio_file_too_small", "sizeBytes": size, "minBytes": AUDIO_MIN_READY_BYTES}
     try:
-        head = path.read_bytes()[:64]
+        with path.open("rb") as handle:
+            head = handle.read(64)
     except Exception as exc:
         return {"ok": False, "reason": "audio_header_read_failed", "error": str(exc)}
     ok = False
@@ -385,6 +399,14 @@ def audio_signature_status(path: Path) -> dict[str, Any]:
         ok = head.startswith(b"OggS")
     elif suffix == ".aac":
         ok = len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF0) == 0xF0
+    elif suffix == ".amr":
+        ok = head.startswith(b"#!AMR")
+    elif suffix == ".opus":
+        ok = head.startswith(b"OggS") or b"OpusHead" in head[:16]
+    elif suffix == ".wma":
+        ok = head.startswith(bytes((0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11)))
+    elif suffix in {".pcm", ".speex"}:
+        ok = True
     else:
         ok = True
         reason = "non_audio_extension"

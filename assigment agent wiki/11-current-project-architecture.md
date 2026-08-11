@@ -85,7 +85,8 @@ docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-docume
 | `feishu_agent_task_handler.mjs` | 接收 normalized event，解析文本/附件，维护最近附件缓存，生成 `file-context`，写入 run artifact，生成 PI task，执行 mock/execute 模式，读取 QA/Policy 后生成发布和回复结果。 |
 | `feishu_bot_event_gateway.mjs` | 可选 SDK 长连接入口；`http` 模式转发到同一个本地 handler。 |
 | `im_file_context_helpers.mjs` | 共享 file-context helper：按扩展名/MIME 识别音频、文本文件、图片和视频，执行文本抽取与渐进披露计划。 |
-| `audio_normalize_helpers.mjs` | 本地音频归一化：WAV/MP3/M4A/AAC/FLAC/OGG -> `16k mono s16 WAV`，优先 `ffmpeg`，否则 macOS `afconvert`。 |
+| `asr_media_formats.mjs` / `asr_diarization_helpers.mjs` | 云端文件/实时格式边界，以及文件端 diarization 所需的派生单声道准备。 |
+| `audio_normalize_helpers.mjs` | 本地 ASR 或云端降级重试的音频归一化：provider 支持的音视频容器 -> `16k mono s16 WAV`，优先 `ffmpeg`，否则 macOS `afconvert`。 |
 | `wechat_event_adapter.mjs` | WeChat fixture adapter skeleton：把本地 WeChat-shaped input 映射为 `im-event-v1`，并在 mock/dry-run 中调用同一个 handler/runner。 |
 | `task_router.mjs` | Shared Task Router：从用户文本、附件、file context 和 source metadata 输出 `taskIntent.executionProfile`、`reasoningDepth`、`requiredStages`、`skipStages`，不选择模型、prompt 或文档结构。 |
 | `task_execution_runner.mjs` | Profile-driven 薄执行器：按 `executionProfile` 分派；`fast_answer/file_summary` 走轻路径，长文档 profile 才调用 Planner/Model Router/Prompt Registry/Document Worker/QA/Policy。 |
@@ -208,7 +209,7 @@ Rokid：
 - 服务入口：`meeting-agent-pi-package/tools/local_asr_http_service.py`。
 - PI 工具：`meeting_transcribe_local_asr`。
 - 默认服务：`http://127.0.0.1:8765`。
-- 产品入口支持 WAV/MP3/M4A/AAC/FLAC/OGG；服务输入仍是 `16-bit PCM WAV / mono / 16000 Hz` 的 normalized WAV。
+- 产品入口采用云端 provider 的完整文件格式矩阵；文件录音走 `paraformer-v2` HTTP + OSS，实时编码走独立 WebSocket。只有本地 ASR/fallback 或文件端 diarization 媒体条件需要时才派生单声道输入，原文件保持不变。
 - 服务不可用时返回 `local_asr_service_unavailable`，不自动改走 DeepSeek、小米、脚本或 hosted ASR。
 
 ## 7. QA 与最新回归状态

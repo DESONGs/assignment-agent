@@ -3,14 +3,21 @@ import { spawn } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CLOUD_ASR_MEDIA_EXTENSIONS,
+  DASHSCOPE_FILE_AUDIO_EXTENSIONS,
+  DASHSCOPE_FILE_VIDEO_EXTENSIONS,
+  readCloudAsrMediaHeader,
+  validateCloudAsrMediaHeader,
+} from "./asr_media_formats.mjs";
 
 const toolDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(toolDir);
 const workspaceDir = dirname(packageDir);
 const FILE_CONTEXT_SCHEMA_VERSION = "file-context-v1";
-const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"]);
+const AUDIO_EXTENSIONS = new Set([...DASHSCOPE_FILE_AUDIO_EXTENSIONS, ".pcm", ".speex"]);
 const AUDIO_MIN_READY_BYTES = 4096;
-const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".avi", ".webm"]);
+const VIDEO_EXTENSIONS = DASHSCOPE_FILE_VIDEO_EXTENSIONS;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".heic"]);
 const SUPPORTED_TEXT_FILE_EXTENSIONS = new Set([
   ".pdf",
@@ -57,24 +64,18 @@ function audioSignatureStatus(path) {
   const stat = existingNonEmptyFile(path);
   if (!stat) return { ok: false, reason: "audio_file_missing" };
   const ext = extname(String(path ?? "")).toLowerCase();
-  if (!AUDIO_EXTENSIONS.has(ext)) return { ok: true, reason: "non_audio_extension", sizeBytes: stat.size, extension: ext };
+  if (!CLOUD_ASR_MEDIA_EXTENSIONS.has(ext)) return { ok: true, reason: "non_asr_media_extension", sizeBytes: stat.size, extension: ext };
   if (stat.size < AUDIO_MIN_READY_BYTES) {
     return { ok: false, reason: "audio_file_too_small", sizeBytes: stat.size, minBytes: AUDIO_MIN_READY_BYTES, extension: ext };
   }
   let head = Buffer.alloc(0);
   try {
-    head = readFileSync(path).subarray(0, 64);
+    head = readCloudAsrMediaHeader(path);
   } catch (error) {
     return { ok: false, reason: "audio_header_read_failed", error: redactString(error instanceof Error ? error.message : String(error)), extension: ext };
   }
-  let ok = false;
-  if (ext === ".wav") ok = head.length >= 12 && head.subarray(0, 4).equals(Buffer.from("RIFF")) && head.subarray(8, 12).equals(Buffer.from("WAVE"));
-  else if (ext === ".mp3") ok = head.subarray(0, 3).equals(Buffer.from("ID3")) || (head.length >= 2 && head[0] === 0xFF && (head[1] & 0xE0) === 0xE0);
-  else if (ext === ".m4a") ok = head.subarray(0, 16).includes(Buffer.from("ftyp"));
-  else if (ext === ".flac") ok = head.subarray(0, 4).equals(Buffer.from("fLaC"));
-  else if (ext === ".ogg") ok = head.subarray(0, 4).equals(Buffer.from("OggS"));
-  else if (ext === ".aac") ok = head.length >= 2 && head[0] === 0xFF && (head[1] & 0xF0) === 0xF0;
-  return { ok, reason: ok ? null : "invalid_audio_header", sizeBytes: stat.size, extension: ext };
+  const validation = validateCloudAsrMediaHeader(ext, head);
+  return { ...validation, sizeBytes: stat.size };
 }
 
 function redactString(value) {
@@ -358,15 +359,8 @@ export async function buildFileContexts(event, attachments, paths, options = {})
       contexts.push(context);
       continue;
     }
-    if (kind === "video") {
-      context.status = "unsupported";
-      context.unsupportedReason = "video_understanding_not_supported";
-      context.externalLlmAllowed = false;
-      contexts.push(context);
-      continue;
-    }
-    if (kind === "audio") {
-      context.contextMode = "local_asr_only";
+    if (kind === "audio" || kind === "video") {
+      context.contextMode = "asr_transcription";
       context.externalLlmAllowed = false;
     }
     if (attachment.downloadStatus === "skipped") {
@@ -385,7 +379,7 @@ export async function buildFileContexts(event, attachments, paths, options = {})
       continue;
     }
     context.localSourceReady = true;
-    if (kind === "audio") {
+    if (kind === "audio" || kind === "video") {
       const audioValidation = audioSignatureStatus(context.sourcePath);
       context.audioValidation = audioValidation;
       if (!audioValidation.ok) {

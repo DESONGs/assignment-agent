@@ -34,6 +34,10 @@ PYTHON_COMPILE_TARGETS = [
 ]
 
 NODE_CHECK_TARGETS = [
+    "meeting-agent-pi-package/tools/asr_media_formats.mjs",
+    "meeting-agent-pi-package/tools/asr_diarization_helpers.mjs",
+    "meeting-agent-pi-package/tools/audio_normalize_helpers.mjs",
+    "meeting-agent-pi-package/tools/dashscope_asr_client.mjs",
     "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",
     "meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs",
     "meeting-agent-pi-package/tools/feishu_event_runner.mjs",
@@ -48,6 +52,8 @@ NODE_CHECK_TARGETS = [
 ]
 
 TS_CHECK_TARGETS = [
+    "meeting-agent-pi-package/extensions/media-tools.ts",
+    "meeting-agent-pi-package/extensions/rokid-tools.ts",
     "meeting-agent-pi-package/extensions/source-context-runtime.ts",
     "meeting-agent-pi-package/extensions/model-provider.ts",
     "meeting-agent-pi-package/extensions/model-routing.ts",
@@ -64,7 +70,17 @@ def now_iso() -> str:
 
 def redact(value: str) -> str:
     text = str(value)
-    for token_name in ("FEISHU_APP_SECRET", "DEEPSEEK_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY", "LOCAL_ASR_BEARER_TOKEN"):
+    for token_name in (
+        "FEISHU_APP_SECRET",
+        "DEEPSEEK_API_KEY",
+        "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+        "LOCAL_ASR_BEARER_TOKEN",
+        "ALIYUN_DASHSCOPE_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+        "ALIBABA_CLOUD_SECURITY_TOKEN",
+    ):
         token = os.environ.get(token_name)
         if token:
             text = text.replace(token, "[redacted]")
@@ -170,6 +186,7 @@ def checks() -> list[dict[str, Any]]:
         results.append(run_command(f"node-check:{target}", ["node", "--check", target], timeout=90.0))
     for target in TS_CHECK_TARGETS:
         results.append(run_command(f"ts-strip-check:{target}", ["node", "--experimental-strip-types", "--check", target], timeout=120.0))
+    results.append(run_command("npm-test-meeting-agent", ["npm", "test"], cwd=ROOT / "meeting-agent-pi-package", timeout=180.0))
     results.append(parse_json_files())
     docker = docker_cli()
     if docker:

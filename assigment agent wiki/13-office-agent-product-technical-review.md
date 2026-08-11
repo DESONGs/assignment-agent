@@ -51,7 +51,7 @@ WeChat 本轮只做 adapter skeleton：
 - `policy_gate_completed`
 - publish/reply completed、needs_fix、blocked 或 failed 的最终状态
 
-会议纪要模型选择必须通过 Model Router 的 `meeting_minutes` route，默认 `deepseek/deepseek-v4-pro`；ASR 仍是 local-only。飞书上传的 WAV/MP3/M4A/AAC/FLAC/OGG 先由本地 runtime 归一化为 `16k mono s16 WAV`，原始音频不得发给外部 provider。
+会议纪要模型选择必须通过 Model Router 的 `meeting_minutes` route，默认 `deepseek/deepseek-v4-pro`；ASR 是 cloud-first provider layer。录音文件优先走 OSS + `paraformer-v2` 文件端并可启用匿名 speaker diarization，实时流走独立的 `paraformer-realtime-v2` WebSocket；本地 Qwen3-ASR 保留为 fallback。raw media 只允许在已授权的 ASR stage 处理，后续模型只接收 transcript/evidence。
 
 ## 1. 当前产品判断
 

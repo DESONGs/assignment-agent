@@ -3,14 +3,10 @@ import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import { createReadStream, readdirSync, statSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
+import { CLOUD_ASR_MEDIA_EXTENSIONS } from "../tools/asr_media_formats.mjs";
 
 const supportedExts = new Set([
-  ".mp3",
-  ".wav",
-  ".m4a",
-  ".aac",
-  ".mp4",
-  ".mov",
+  ...CLOUD_ASR_MEDIA_EXTENSIONS,
   ".jpg",
   ".jpeg",
   ".png",

@@ -19,6 +19,10 @@
 - 产品类主议题优先展开 MVP 边界、数据安全、部署环境、功能范围、待确认条件；业务类主议题优先展开公司定位、收费方式、交付模式、合作结构、近期策略；组织类主议题优先展开角色分工、知识库/复用资产、前后台协作。
 - 行动项结构要服务执行：简单会议可用表格；复杂会议优先按主议题分组 checklist，确保每个重要主议题都有对应后续动作或明确写出“暂无行动项/待确认”。
 - 所有关键判断必须可回溯到内部 evidence；用户可见 Markdown 只写自然时间点或来源描述，不显示 raw evidence id、chunk id、源音频文件名、`transcriptSegments` 字段名。
+- 起草前必须检查 `ASR Speaker Evidence` 与 segment 的 `speaker` / `channel` 标签。不同 speaker 标签的连续发言不得合并成同一个人的观点；存在分歧时应按“说话人 1/2…”保留各自立场。
+- `speaker_id` 只代表本次录音内的匿名聚类，不等于真实姓名、角色或行动项 owner。只有 transcript 明确自报身份或 `meetingProfile` 有直接映射证据时才能写姓名/角色，否则统一使用匿名说话人标签或 `待确认`。
+- `speakerDiarization.enabled=false`、`speakerLabelsAvailable=false` 或状态为 `unsupported_realtime_endpoint` 时，不得根据语气、上下文或 system prompt 猜测换人位置。实时 Paraformer 不提供文件端说话人分离，需在会后用文件端重跑才能获得该类证据。
+- 说话人分离不是重叠语音的源分离。多人同时讲话、语义跳变或标签频繁切换只能标记为“重叠发言/归属待确认”，不得将鸡尾酒会场景中的残缺内容改写为确定事实。
 - 发布前 QA 必须检查 `unsupportedEntities`、`crossMeetingTerms`、`ambiguousTermExpansions` 和 `omittedMacroTopics`。前三类属于 blocking issue；`omittedMacroTopics` 若遗漏了连续多个 transcript segment 的主议题，必须修订后再发布。
 - QA 结论、Evidence Notes、模型复核说明、`externalAudioUpload` 注释和其他测试字段只写入本地 QA artifact，不得出现在飞书会议纪要正文。
 - 不确定内容标记为 `待确认`。

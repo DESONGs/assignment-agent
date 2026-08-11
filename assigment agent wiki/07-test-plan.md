@@ -53,11 +53,16 @@
 
 ASR：
 
-- `meeting_transcribe_local_asr` 是唯一默认 ASR 路径，调用本地 Qwen3-ASR HTTP 服务。
+- `MEETING_ASR_PROVIDER=auto` 在配置 DashScope Key 时优先云端 ASR；本地 Qwen3-ASR 是独立 fallback/provider option。
+- 录音文件和实时流必须使用两条独立端口：文件使用 `paraformer-v2` HTTP 异步任务与 OSS URL；实时流使用 `paraformer-realtime-v2` WebSocket。
+- 文件端支持 `.aac/.amr/.avi/.flac/.flv/.m4a/.mkv/.mov/.mp3/.mp4/.mpeg/.ogg/.opus/.wav/.webm/.wma/.wmv`；实时端只支持 `pcm/wav/mp3/opus/speex/aac/amr` 且单声道。
+- 文件端默认 `ALIYUN_ASR_DIARIZATION_ENABLED=auto`：单声道直接开启，双/多声道只为说话人分离生成派生单声道输入；原文件 hash 与内容不得改变。可选 `speaker_count` 只接受 2–100，且只作为提示。
+- 文件端 segment 必须保留 `speakerId`、`speakerLabel` 与 `channelId`，并贯通 `transcript.full.json`、`transcript.readable.md`、evidence 与 Source Context；实时端必须显式记录 `unsupported_realtime_endpoint`，不得伪造 speaker 标签。
+- 说话人分离不等于重叠语音源分离；同声道多人同时说话的内容只能按 best-effort 使用，语义跳变或归属不稳必须进入“待确认”。
 - 本地服务不可用时 preflight 阻塞 `local_asr_service_not_running`；旧 run 中的 `local_asr_service_unavailable` 仍可作为历史问题状态识别。
 - ASR cache hit 不访问 `/health`，只复用 transcript/evidence。
 - 本机 lifecycle 入口为 `python3 meeting-agent-pi-package/tools/local_asr_service_ctl.py status|start|stop`，handler 不自动启动 ASR。
-- 不得自动改走脚本、DeepSeek、小米或 hosted ASR。
+- 不得把文件容器伪装成实时编码；M4A 不得映射为 AAC WebSocket 流。
 
 模型路由：
 
@@ -67,7 +72,7 @@ ASR：
 Agent Team 排序：
 
 - Agent Team 运行层使用 dynamic worker pool，不预加载 fixed roles。
-- 会议纪要长会议参考链路为：本地 ASR -> evidence index -> context offload pointer-only -> dynamic worker pool -> model route record -> draft/review -> QA gate -> Feishu action。该链路不是全局固定 workflow。
+- 会议纪要长会议参考链路为：ASR provider -> evidence index -> context offload pointer-only -> dynamic worker pool -> model route record -> draft/review -> QA gate -> Feishu action。该链路不是全局固定 workflow。
 - `agent_team_run` 只返回 JSON；最终整合、artifact 写入、QA gate 和 Feishu 发布由主控串行执行。
 
 ## 2. 本地 MVP 测试
@@ -81,8 +86,9 @@ Agent Team 排序：
 断言：
 
 - 生成 artifact metadata。
-- `meeting_transcribe_local_asr` 通过 `LOCAL_ASR_SERVICE_URL` 调用本地 Qwen3-ASR HTTP 服务。
+- 文件端 smoke 必须证明私有 OSS 上传、短期签名 URL、`paraformer-v2` 异步任务和标准 transcript/evidence 产物；实时端 mock/smoke 必须单独证明 WebSocket 路径。
 - 生成 transcript segments，字段包含 `sourceFile`、`sourceHashSha256`、`chunkIndex`、`startSec`、`endSec`、`text`、`model`、`endpoint`。
+- 文件端启用说话人分离时，至少验证两个匿名 speaker id 能稳定进入可读转录和下游 context pack；不得据此自动映射姓名、角色或 owner。
 - 生成 evidence chunks。
 - 生成会议纪要。
 - 会议纪要输出 `meetingTitle`、`titleBasis`、`feishuFileName`；Markdown H1 与 `meetingTitle` 一致。
@@ -90,7 +96,7 @@ Agent Team 排序：
 - PRD、技术架构、运营方案、客户需求确认表也必须有项目/方向命名：runner 写出 `document-title-plan.json`，最终 Markdown H1 和飞书 `.md` 文件名必须使用同一标题，不得只使用 `prd.md`、`tech-architecture.md`、`customer-requirement-checklist.md` 或模板里的“待确认”泛称。
 - 关键结论带 evidence id。
 - 低置信度片段被标记。
-- `summary.json.externalAudioUpload=false`。
+- 云端文件转录时 `summary.json.externalAudioUpload=true` 且 `inputModes=["file"]`；实时流则为 `inputModes=["realtime"]`。
 - 本地 ASR cache miss 且服务不可用时返回 `local_asr_service_not_running`，带 `status-local-asr` 和本机启动命令；不得自动改走小米、DeepSeek、外部 ASR 或批处理脚本。
 
 QA-RAW 基准：
@@ -98,7 +104,7 @@ QA-RAW 基准：
 - 3 个 WAV，共约 56.62 分钟。
 - 30 秒固定 chunk，预期 114 个 transcript segments。
 - 0 failed chunks。
-- 原始音频只进入本机 ASR 服务。
+- 本组是本地 provider 基准，原始音频只进入本机 ASR 服务；不得用于推翻云端 provider 的独立验收。
 
 会议纪要风格回归：
 
@@ -233,19 +239,19 @@ Fixture file/audio event：
 - PDF/Word/Excel/Markdown/TXT/CSV 文本附件生成 `file-context.json`，包含 `file-context`、`disclosurePlan`、`contextPreview` 或 `extractedTextPath`。
 - 先收到文件、后收到“分析该文件”的 fixture 必须通过最近附件缓存关联；无缓存时提示重新上传或同消息附带文件。
 - 不支持文件类型或未接入能力直接回复 `目前暂不支持该功能`。
-- Profile assertions：普通文本问答 -> `fast_answer`，文件一句话总结 -> `file_summary`，音频会议纪要 -> `audio_minutes`，PRD/架构/checklist -> `document_generation`，批注修订 -> `document_revision`，图片/视频/删除 -> `unsupported`。
+- Profile assertions：普通文本问答 -> `fast_answer`，文件一句话总结 -> `file_summary`，音视频转录/会议纪要 -> `audio_minutes`，PRD/架构/checklist -> `document_generation`，批注修订 -> `document_revision`，图片理解/通用视频理解/删除 -> `unsupported`。
 - `fast_answer` 和 `file_summary` 的 `state.json` 不得出现 `document_workers_planned`、`qa_gate_completed`、`policy_gate_completed`、`audio_downloaded`、`local_asr_started` 或 Wiki publish 阶段；`file_summary` 只能使用 bounded file context preview/extracted slices。
 - `runtime_tool_cli.mjs` 必须读取 `runtime/tool-load-manifest.json`，并在 `--profile fast_answer|file_summary` 时只加载 Model Router / Model Provider 所需 extension；不得回退为仅依赖内置硬编码 extension 列表。
-- `.wav/.mp3/.m4a/.aac/.flac/.ogg` 即使飞书 `resourceType=file` 也必须按音频处理，`file-context` 为 `local_asr_only`，`requiresLocalAsr=true`；音频只代表 source preparation，不得强制把输出文档固定成 `meeting-minutes`。
-- 音频会议纪要 execute path 必须进入 `task_execution_runner`，而不是 ASR 后再交给单体 PI CLI 黑盒。`state.json` 至少出现 `task_execution_runner_started`、`audio_downloaded`、`audio_normalized`、`local_asr_started`、`local_asr_completed`、`model_route_planned`、`meeting_minutes_generated`、`qa_gate_completed`、`policy_gate_completed`。
+- 云端格式矩阵内的扩展名即使飞书 `resourceType=file` 也必须按 ASR media 处理，`file-context` 为 `asr_transcription`，兼容字段 `requiresLocalAsr=true` 只表示需要 ASR preparation，不代表必须选本地 provider。
+- 音视频会议纪要 execute path 必须进入 `task_execution_runner`，而不是 ASR 后再交给单体 PI CLI 黑盒。`state.json` 至少出现 `task_execution_runner_started`、`audio_downloaded`、`asr_provider_resolved`、对应 provider 的 started/completed、`model_route_planned`、`meeting_minutes_generated`、`qa_gate_completed`、`policy_gate_completed`。
 - PRD/技术架构/checklist 等文档写作 execute path 必须进入 `task_execution_runner`，生成 `evidence-pack.json` 和 `documents_generated`，且没有音频 source 时不得出现 `audio_downloaded/local_asr_*`。
 - PRD/技术架构/checklist 等文档写作必须生成 `document-title-plan.json`；fixture 中“工作流 AI 化”类 prompt 的最终 H1/文件名应包含该项目方向。
 - 多音频、多会议纪要文件或多个 Feishu URL 默认合并为一套文档；`evidence-pack.json` 必须保留 source map 和 `conflictPolicy=source_attribution`。
-- audio normalize 必须把 WAV/MP3/M4A/AAC/FLAC/OGG 本地转成 `16-bit PCM WAV / mono / 16000 Hz`，写出 `audio-normalize.json`；没有 `ffmpeg`/`afconvert` 或转码失败时，回复 `目前音频格式暂不支持自动转码。`
-- ASR service payload 的 `paths` 必须是 normalized WAV 路径，不得直接传用户上传原始音频路径。
+- 云端文件端优先保留原容器上传 OSS；若启用文件端说话人分离且源文件不是单声道，允许只为本次 ASR 生成派生单声道 M4A/WAV，原文件保持不变。其他情况下不得先行强制转 WAV；只有文件端不可用或 provider 明确拒绝时才用 audio normalize 提取成 `16-bit PCM WAV / mono / 16000 Hz` 后重试云端实时端或本地 provider。
+- 本地 ASR service payload 的 `paths` 必须是 normalized WAV 路径；云端文件端 payload 必须是短期 OSS HTTPS URL，且 URL 不得写入 artifact。
 - Feishu audio minutes regression 是显式阻断项：上述阶段 marker 缺任意一个，或 ASR 完成后没有可观测进度并长期 pending，均判定回归失败。
 - `model-route.json` 中会议纪要必须显示 `meeting_minutes` route，默认模型为 `deepseek-v4-pro`；ASR cache 命中时不得重跑本地 ASR。
-- 图片和视频素材直接回复 `目前暂不支持该功能`；视频不得进入 local ASR。
+- 图片理解和通用视频理解仍回复 `目前暂不支持该功能`；云端格式矩阵内的视频文件允许进入文件 ASR，fallback 时可提取音轨。
 - handler 不把 raw media、App Secret、Authorization、CLI session、完整 raw transcript 写入 metrics、wiki 或 model output。
 - 两阶段稳态运行：SDK gateway 只回复“已接受任务，正在处理。”；后台 runner 默认不发送中间进度，只在完成后通过 `lark-cli im +messages-reply` 回复最终结果，避免 gateway/handler 双重回复。
 - 文档修订评论读取：`review-context.json` 必须记录 `commentAccess.method=cli|sdk|export_body_detected|unavailable`、`identityTried`、`requiredScopes`、`apiStatus`、`commentThreadCount`、`replyCount`、`unresolvedCount`。缺 `docs:document.comment:read` 或等价 Drive/Docs scope 时必须写 `comment_api_permission_blocked`，不得声称已处理独立评论线程。
@@ -376,7 +382,7 @@ Agent Team Runtime：
 - 能列出候选文件。
 - 支持文件生成 artifact metadata。
 - 未知文件标记为 unsupported。
-- 不上传原始媒体，音频转写仍走本地 ASR HTTP 服务。
+- 本地 provider 模式不上传原始媒体；云端 provider 模式只允许 ASR 阶段上传，后续模块只读取 transcript/evidence。
 - metadata 包含 source、device label、hash、privacy level。
 
 ## 7. Hermes Sidecar 测试

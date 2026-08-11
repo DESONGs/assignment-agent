@@ -3,10 +3,11 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect } from "node:net";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { AUDIO_NORMALIZE_VERSION, TARGET_AUDIO_SPEC, normalizeAudioBatch } from "./audio_normalize_helpers.mjs";
+import { isCloudAsrMedia, mediaExtension } from "./asr_media_formats.mjs";
 import { fetchFeishuDocumentReviewContext } from "./feishu_document_review_context_helpers.mjs";
 
 /**
@@ -31,6 +32,7 @@ const DOCUMENT_WORKER_KILL_MARGIN_MS = 30_000;
 const DEFAULT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS = 30_000;
 const DEFAULT_CLOUD_ASR_TIMEOUT_MS = 1_800_000;
 const DEFAULT_CLOUD_ASR_MODEL = "paraformer-realtime-v2";
+const DEFAULT_CLOUD_ASR_FILE_MODEL = "paraformer-v2";
 const DEFAULT_CLOUD_ASR_LANGUAGE_HINTS = ["yue", "zh", "en"];
 
 const RUNNER_EXECUTION_PROFILES = new Set([
@@ -675,15 +677,15 @@ function asrCacheDir(paths, key) {
 
 function sourceAudioPaths(task) {
   return (task.attachments ?? [])
-    .filter((attachment) => String(attachment.resourceType ?? "").toLowerCase() === "audio")
     .map((attachment) => ({
       path: attachment.localPath ? resolve(attachment.localPath) : null,
       sha256: attachment.sha256 ?? null,
       name: attachment.name ?? null,
       sizeBytes: attachment.sizeBytes ?? null,
-      ext: extname(String(attachment.name ?? "")).toLowerCase() || extname(String(attachment.localPath ?? "")).toLowerCase(),
+      resourceType: String(attachment.resourceType ?? "").toLowerCase(),
+      ext: mediaExtension(attachment.name) || mediaExtension(attachment.localPath),
     }))
-    .filter((item) => item.path && existsSync(item.path));
+    .filter((item) => item.path && existsSync(item.path) && (isCloudAsrMedia(item.ext) || ["audio", "video"].includes(item.resourceType)));
 }
 
 function audioCacheKey(audios, providerConfig = {}) {
@@ -692,6 +694,10 @@ function audioCacheKey(audios, providerConfig = {}) {
     targetSpec: TARGET_AUDIO_SPEC,
     asrProvider: providerConfig.provider ?? "local_qwen3",
     asrModel: providerConfig.model ?? null,
+    asrFileModel: providerConfig.fileModel ?? null,
+    asrInputMode: providerConfig.inputMode ?? null,
+    speakerDiarization: providerConfig.diarizationEnabled ?? null,
+    speakerCount: providerConfig.speakerCount ?? null,
     languageHints: providerConfig.languageHints ?? null,
     vocabularyId: providerConfig.vocabularyId ?? null,
     sources: audios.map((item) => ({
@@ -734,6 +740,7 @@ function resolveAsrProvider(options = {}) {
     : requested;
   const fallback = normalizeAsrProvider(options.asrFallbackProvider ?? process.env.MEETING_ASR_FALLBACK_PROVIDER ?? "local_qwen3");
   const model = options.aliyunAsrModel ?? process.env.ALIYUN_ASR_MODEL ?? DEFAULT_CLOUD_ASR_MODEL;
+  const fileModel = options.aliyunAsrFileModel ?? process.env.ALIYUN_ASR_FILE_MODEL ?? DEFAULT_CLOUD_ASR_FILE_MODEL;
   const languageHints = parseLanguageHints(options.aliyunAsrLanguageHints);
   const vocabularyId = options.aliyunAsrVocabularyId ?? process.env.ALIYUN_ASR_VOCABULARY_ID ?? "";
   return {
@@ -741,9 +748,15 @@ function resolveAsrProvider(options = {}) {
     provider,
     fallbackProvider: fallback === "auto" ? "local_qwen3" : fallback,
     model,
+    fileModel,
+    inputMode: options.aliyunAsrInputMode ?? process.env.ALIYUN_ASR_INPUT_MODE ?? "auto",
+    diarizationEnabled: options.aliyunAsrDiarizationEnabled ?? process.env.ALIYUN_ASR_DIARIZATION_ENABLED ?? "auto",
+    speakerCount: options.aliyunAsrSpeakerCount ?? process.env.ALIYUN_ASR_SPEAKER_COUNT ?? "",
+    timestampAlignmentEnabled: options.aliyunAsrTimestampAlignmentEnabled ?? process.env.ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED ?? "true",
     languageHints,
     vocabularyId,
     endpoint: options.aliyunAsrEndpoint ?? process.env.ALIYUN_ASR_ENDPOINT ?? "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    fileEndpoint: options.aliyunAsrFileEndpoint ?? process.env.ALIYUN_ASR_FILE_ENDPOINT ?? "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
     workspaceId: options.aliyunDashscopeWorkspaceId ?? process.env.ALIYUN_DASHSCOPE_WORKSPACE_ID ?? "",
   };
 }
@@ -757,6 +770,14 @@ function userMessageForAsrFailure(asr) {
     cloud_asr_provider_timeout: "云端 ASR 转写超时，请稍后重试或切换本机 ASR。",
     cloud_asr_model_unavailable: "云端 ASR 模型不可用，请检查百炼模型配置。",
     cloud_asr_audio_format_rejected: "云端 ASR 拒绝当前音频格式，自动转码后仍未完成转写。",
+    cloud_asr_media_format_not_supported: "当前文件不在云端 ASR 支持的音视频格式范围内。",
+    cloud_asr_file_transport_unavailable: "云端文件转录需要可访问的 OSS 文件地址；当前 OSS 传输未配置，自动转码后仍未完成转写。",
+    cloud_asr_file_upload_failed: "音视频上传到 OSS 失败，暂时无法启动云端文件转录。",
+    cloud_asr_file_size_exceeded: "音视频文件超过云端文件转录的 2 GB 上限。",
+    cloud_asr_file_task_failed: "云端录音文件转录任务失败，请稍后重试。",
+    cloud_asr_diarization_preparation_failed: "云端说话人分离要求单声道，但当前文件无法完成单声道准备。",
+    cloud_asr_speaker_count_invalid: "说话人数提示必须是 2 到 100 之间的整数。",
+    cloud_asr_audio_stream_missing: "当前文件中没有可供云端 ASR 转写的音轨。",
     cloud_asr_partial_result: "云端 ASR 只返回了部分转写结果，暂时无法生成可靠会议纪要。",
     local_asr_service_not_running: asr?.userMessage ?? "本机 ASR 服务未运行，暂时无法转写音频。",
     local_asr_service_unavailable: "本机 ASR 服务不可用，暂时无法转写音频。",
@@ -983,6 +1004,10 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
   await hooks.onStep?.("cloud_asr_started", "running", {
     provider: providerConfig.provider,
     model: providerConfig.model,
+    fileModel: providerConfig.fileModel,
+    inputMode: providerConfig.inputMode,
+    diarizationEnabled: providerConfig.diarizationEnabled,
+    speakerCount: providerConfig.speakerCount || null,
     audioCount: inputPaths.length,
     uploadMode,
     rawMediaExternalUpload: true,
@@ -993,6 +1018,12 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
     meetingTitle: `会议录音 ${new Date().toISOString().slice(0, 10)}`,
     outputDir: paths.artifactsDir,
     model: providerConfig.model,
+    fileModel: providerConfig.fileModel,
+    inputMode: providerConfig.inputMode,
+    fileEndpoint: providerConfig.fileEndpoint,
+    diarizationEnabled: providerConfig.diarizationEnabled,
+    speakerCount: providerConfig.speakerCount || undefined,
+    timestampAlignmentEnabled: providerConfig.timestampAlignmentEnabled,
     endpoint: providerConfig.endpoint,
     languageHints: providerConfig.languageHints,
     vocabularyId: providerConfig.vocabularyId,
@@ -1001,6 +1032,8 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
     source: "feishu",
     privacy: "internal",
     timeoutMs: Number(options.cloudAsrTimeoutMs ?? process.env.ALIYUN_ASR_TIMEOUT_MS ?? DEFAULT_CLOUD_ASR_TIMEOUT_MS),
+    audioNormalizeTimeoutMs: Number(options.audioNormalizeTimeoutMs ?? process.env.FEISHU_AGENT_AUDIO_NORMALIZE_TIMEOUT_MS ?? 1_200_000),
+    audioTranscoder: options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER,
   }, paths, options);
   if (result?.status !== "completed") {
     const reason = result?.reason ?? result?.failureClass ?? "cloud_asr_provider_error";
@@ -1043,6 +1076,10 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
   const key = audioCacheKey(audios, {
     provider: providerConfig.provider,
     model: providerConfig.model,
+    fileModel: providerConfig.fileModel,
+    inputMode: providerConfig.inputMode,
+    diarizationEnabled: providerConfig.diarizationEnabled,
+    speakerCount: providerConfig.speakerCount || null,
     languageHints: providerConfig.languageHints,
     vocabularyId: providerConfig.vocabularyId || null,
   });
@@ -1111,7 +1148,7 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
     copyAsrArtifacts(paths.artifactsDir, cacheDir);
     return { ...direct, cacheKey: key };
   }
-  if (direct.reason !== "cloud_asr_audio_format_rejected") return direct;
+  if (!["cloud_asr_audio_format_rejected", "cloud_asr_realtime_format_not_supported", "cloud_asr_file_transport_unavailable"].includes(direct.reason)) return direct;
 
   const normalized = await normalizeAudioBatch(audios, join(paths.artifactsDir, "audio-normalized"), {
     workspaceDir,
@@ -1158,6 +1195,10 @@ async function ensureAsrTranscription(task, paths, options, hooks) {
     provider: providerConfig.provider,
     fallbackProvider: providerConfig.fallbackProvider,
     model: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.model : null,
+    fileModel: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.fileModel : null,
+    inputMode: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.inputMode : null,
+    speakerDiarization: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.diarizationEnabled : null,
+    speakerCountHint: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.speakerCount || null : null,
     languageHints: providerConfig.provider === "aliyun_dashscope_paraformer" ? providerConfig.languageHints : null,
     apiKeyConfigured: providerConfig.provider === "aliyun_dashscope_paraformer" ? cloudAsrApiKeyConfigured() : null,
     rawMediaExternalUpload: providerConfig.provider === "aliyun_dashscope_paraformer",

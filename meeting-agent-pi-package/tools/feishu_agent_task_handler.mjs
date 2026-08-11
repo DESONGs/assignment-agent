@@ -20,6 +20,7 @@ import { spawn } from "node:child_process";
 import { runViaLocalDockerDocumentWorker } from "./local_docker_runtime_queue.mjs";
 import { runTaskExecutionPipeline, shouldUseTaskExecutionRunner } from "./task_execution_runner.mjs";
 import { attachmentKind, buildFileContexts, fileExtension, sha256File } from "./im_file_context_helpers.mjs";
+import { CLOUD_ASR_MEDIA_EXTENSIONS, readCloudAsrMediaHeader, validateCloudAsrMediaHeader } from "./asr_media_formats.mjs";
 import { publishDocumentsToWiki, wikiPlanPath, wikiPublishPath, wikiTargetRegistryPath } from "./feishu_wiki_publish_helpers.mjs";
 import { buildPublishTaxonomy, publishTaxonomyPath } from "./feishu_publish_taxonomy.mjs";
 import {
@@ -45,7 +46,7 @@ const DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES = ["bot", "user"];
 const DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS = 2;
 const DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 900000;
 const AUDIO_MIN_READY_BYTES = 4096;
-const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]);
+const AUDIO_EXTENSIONS = CLOUD_ASR_MEDIA_EXTENSIONS;
 const FEISHU_FILE_URL_PATTERN = /https?:\/\/(?:[\w.-]+\.)?(?:feishu|larksuite)\.cn\/(file|doc|docx|sheets?|wiki|base|mindnotes|slides)\/([A-Za-z0-9_-]{8,})(?:[/?#][^\s<>"']*)?/gi;
 const FEISHU_TOKEN_PATTERN = /(?:file[_\s-]?token|obj[_\s-]?token)\s*[:=：]\s*([A-Za-z0-9_-]{8,})/gi;
 const FEISHU_BRIDGE_CLI_MARKERS = [
@@ -937,24 +938,18 @@ function audioSignatureStatus(path) {
   }
   let head = Buffer.alloc(0);
   try {
-    head = readFileSync(resolved).subarray(0, 64);
+    head = readCloudAsrMediaHeader(resolved);
   } catch (error) {
     return { ok: false, reason: "audio_header_read_failed", error: redactString(error instanceof Error ? error.message : String(error)), extension: ext };
   }
-  let ok = false;
-  if (ext === ".wav") ok = head.length >= 12 && head.subarray(0, 4).equals(Buffer.from("RIFF")) && head.subarray(8, 12).equals(Buffer.from("WAVE"));
-  else if (ext === ".mp3") ok = head.subarray(0, 3).equals(Buffer.from("ID3")) || (head.length >= 2 && head[0] === 0xFF && (head[1] & 0xE0) === 0xE0);
-  else if (ext === ".m4a") ok = head.subarray(0, 16).includes(Buffer.from("ftyp"));
-  else if (ext === ".flac") ok = head.subarray(0, 4).equals(Buffer.from("fLaC"));
-  else if (ext === ".ogg") ok = head.subarray(0, 4).equals(Buffer.from("OggS"));
-  else if (ext === ".aac") ok = head.length >= 2 && head[0] === 0xFF && (head[1] & 0xF0) === 0xF0;
-  return { ok, reason: ok ? null : "invalid_audio_header", sizeBytes: stat.size, extension: ext };
+  const validation = validateCloudAsrMediaHeader(ext, head);
+  return { ...validation, sizeBytes: stat.size };
 }
 
 function reusableLocalSourceReady(path, kind) {
   const stat = existingNonEmptyFile(path);
   if (!stat) return { ok: false, reason: "local_source_file_missing" };
-  if (kind !== "audio") return { ok: true, stat };
+  if (kind !== "audio" && kind !== "video") return { ok: true, stat };
   const validation = audioSignatureStatus(path);
   return validation.ok ? { ok: true, stat, audioValidation: validation } : { ok: false, reason: validation.reason, audioValidation: validation };
 }
@@ -1607,7 +1602,7 @@ function buildAgentTaskMarkdown(task, paths) {
     "",
     "1. 调用 Planner Envelope，基于 Feishu inbound 事件、附件和用户文本选择 capability。",
     "2. 通过 Capability Registry 选择 `feishu-agent-bridge`、`local-asr`、`meeting-minutes`、`doc-writer`、`document-worker-runtime`、`model-fallback` 等需要的能力。",
-    "3. 若附件是音频，只能使用 local ASR；不得外发 raw media/base64 media。图片和视频素材当前不支持，必须直接回复：目前暂不支持该功能。",
+    "3. 若附件是云端 ASR 支持的音频或视频容器，优先使用受 Policy Gate 约束的 cloud ASR；只有 ASR provider 阶段可上传 raw media。后续 LLM、Docker、Hermes 和 document worker 只能读取 transcript/evidence。图片理解仍不支持。",
     "4. 若附件是 PDF/Word/Excel/Markdown/TXT/CSV 等文本型文件，可作为 file-context 发送给 LLM；若 provider 不支持原生文件输入，使用 file-context 的 extractedTextPath/contextPreview 做渐进披露。",
     "5. 短任务（如一句话总结）只需要返回 `summary`，`documents` 可为空；不要启动长文档 worker pool。",
     "6. 长文档结构必须走 document router -> document-prompt-registry -> document_prompt_render_batch -> document_workers_run sectionBatching；不得硬编码 PRD/Ops/Architecture/Checklist 章节。",
@@ -1731,23 +1726,23 @@ function sourceAcquisitionFailureSummary(reason, attachments = []) {
         ? classifyFeishuImResourceDownloadFailure({ stderr: failed.stderrTail, exitCode: failed.exitCode })
         : { userMessage: "Feishu 下载超时或网络异常" };
     const detail = String(classified.userMessage ?? "Feishu 下载超时或网络异常").replace(/[。.\s]+$/u, "");
-    return `音频附件下载失败，暂时无法转写。已尝试复用本地缓存但未命中。失败原因：${detail}。`;
+    return `音视频附件下载失败，暂时无法转写。已尝试复用本地缓存但未命中。失败原因：${detail}。`;
   }
   if (reason === "local_source_file_missing") {
-    return "音频本地文件不可读，暂时无法转写。请重新上传音频或稍后重试。";
+    return "音视频本地文件不可读，暂时无法转写。请重新上传文件或稍后重试。";
   }
-  return "音频 source acquisition 未通过，暂时无法转写。";
+  return "音视频 source acquisition 未通过，暂时无法转写。";
 }
 
 function sourceAcquisitionGate(task, attachments, fileContexts) {
   if (task.taskIntent?.executionProfile !== "audio_minutes" && task.taskIntent?.requiresLocalAsr !== true) {
     return { status: "pass", reason: "not_audio_minutes" };
   }
-  const audioAttachments = (attachments ?? []).filter((item) => attachmentKind(item) === "audio");
+  const audioAttachments = (attachments ?? []).filter((item) => ["audio", "video"].includes(attachmentKind(item)));
   if (audioAttachments.length === 0) return { status: "blocked", reason: "local_source_file_missing", audioAttachmentCount: 0 };
   const sourceChecks = audioAttachments.map((item) => {
     const localPath = item.localPath ? resolve(item.localPath) : null;
-    const ready = localPath ? reusableLocalSourceReady(localPath, "audio") : { ok: false, reason: "local_source_file_missing" };
+    const ready = localPath ? reusableLocalSourceReady(localPath, attachmentKind(item)) : { ok: false, reason: "local_source_file_missing" };
     return { attachment: item, localPath, ready };
   });
   const readable = sourceChecks.filter((item) => item.ready.ok);

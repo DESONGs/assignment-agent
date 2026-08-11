@@ -565,7 +565,7 @@ def validate_skills() -> None:
         "section-batched document workers",
         "QA Gate",
         "Policy Gate",
-        "raw audio/video/base64 media stays local",
+        "Raw audio/video may be uploaded only by the cloud ASR provider stage",
         "file-context",
         "task_execution_runner",
         "office-task-state",
@@ -675,7 +675,7 @@ def validate_required_behavior_docs() -> None:
     test_plan = docs["wiki/07-test-plan.md"].read_text(encoding="utf-8")
     for marker in (
         "路径 / 上下文 / 飞书 / ASR / 模型路由 / Agent Team 排序回归",
-        "本地 ASR -> evidence index -> context offload pointer-only -> dynamic worker pool -> model route record -> draft/review -> QA gate -> Feishu action",
+        "ASR provider -> evidence index -> context offload pointer-only -> dynamic worker pool -> model route record -> draft/review -> QA gate -> Feishu action",
         "fixed roles",
         "qa-runs/**/*.json|jsonl|txt|wav",
         "local_asr_service_unavailable",
@@ -839,6 +839,8 @@ def validate_extensions() -> None:
     feishu_task_handler = ROOT / "meeting-agent-pi-package" / "tools" / "feishu_agent_task_handler.mjs"
     feishu_bot_gateway = ROOT / "meeting-agent-pi-package" / "tools" / "feishu_bot_event_gateway.mjs"
     im_file_context_helpers = ROOT / "meeting-agent-pi-package" / "tools" / "im_file_context_helpers.mjs"
+    asr_media_formats = ROOT / "meeting-agent-pi-package" / "tools" / "asr_media_formats.mjs"
+    asr_diarization_helpers = ROOT / "meeting-agent-pi-package" / "tools" / "asr_diarization_helpers.mjs"
     audio_normalize_helpers = ROOT / "meeting-agent-pi-package" / "tools" / "audio_normalize_helpers.mjs"
     wechat_event_adapter = ROOT / "meeting-agent-pi-package" / "tools" / "wechat_event_adapter.mjs"
     task_execution_runner = ROOT / "meeting-agent-pi-package" / "tools" / "task_execution_runner.mjs"
@@ -855,7 +857,7 @@ def validate_extensions() -> None:
     for path in (feishu_event_runner, feishu_task_handler, feishu_bot_gateway):
         if not path.exists():
             fail(f"missing Feishu bridge tool: {path.relative_to(ROOT)}")
-    for path in (im_file_context_helpers, audio_normalize_helpers, wechat_event_adapter):
+    for path in (im_file_context_helpers, asr_media_formats, asr_diarization_helpers, audio_normalize_helpers, wechat_event_adapter):
         if not path.exists():
             fail(f"missing shared IM/file-context tool: {path.relative_to(ROOT)}")
     for path in (task_execution_runner, runtime_tool_cli):
@@ -894,12 +896,23 @@ def validate_extensions() -> None:
             fail(f"feishu_event_runner.mjs missing marker: {marker}")
     handler_text = feishu_task_handler.read_text(encoding="utf-8")
     file_context_helper_text = im_file_context_helpers.read_text(encoding="utf-8")
+    asr_media_formats_text = asr_media_formats.read_text(encoding="utf-8")
+    asr_diarization_text = asr_diarization_helpers.read_text(encoding="utf-8")
+    for marker in (
+        "prepareFileDiarization",
+        "DIARIZATION_RECOMMENDED_MAX_DURATION_SECONDS",
+        "cloud_asr_speaker_count_invalid",
+        "enabled_mono_prepared",
+        "best_effort_diarization_not_source_separation",
+    ):
+        if marker not in asr_diarization_text:
+            fail(f"asr_diarization_helpers.mjs missing file diarization marker: {marker}")
     wiki_publish_text = feishu_wiki_publish.read_text(encoding="utf-8")
     publish_taxonomy_text = feishu_publish_taxonomy.read_text(encoding="utf-8")
     publish_organize_text = feishu_publish_organize.read_text(encoding="utf-8")
     review_context_text = feishu_document_review_context.read_text(encoding="utf-8")
     task_router_text = task_router.read_text(encoding="utf-8")
-    handler_context_text = f"{handler_text}\n{task_router_text}\n{file_context_helper_text}\n{wiki_publish_text}\n{publish_taxonomy_text}\n{publish_organize_text}\n{review_context_text}"
+    handler_context_text = f"{handler_text}\n{task_router_text}\n{file_context_helper_text}\n{asr_media_formats_text}\n{wiki_publish_text}\n{publish_taxonomy_text}\n{publish_organize_text}\n{review_context_text}"
     for marker in (
         "feishu_agent_task_handler",
         "feishu-run-state-v1",
@@ -927,7 +940,7 @@ def validate_extensions() -> None:
         "rawMediaExternalUpload: false",
         "file-context-v1",
         "AUDIO_EXTENSIONS",
-        "local_asr_only",
+        "asr_transcription",
         "feishu-publish-target-registry-v2",
         "publish-taxonomy.json",
         "project_workspace",
@@ -978,7 +991,7 @@ def validate_extensions() -> None:
         "FEISHU_AGENT_INDEX_FIXTURES",
         "runtime_store_fixture_mock_dry_run_index_skipped",
         "audio_file_too_small",
-        "invalid_audio_header",
+        "invalid_asr_media_header",
     ):
         if marker not in handler_context_text:
             fail(f"feishu_agent_task_handler.mjs missing marker: {marker}")
@@ -990,8 +1003,8 @@ def validate_extensions() -> None:
         "rawAudioVideoExternalUploadAllowed",
         "image_understanding_not_supported",
         "audio_file_too_small",
-        "invalid_audio_header",
-        "video_understanding_not_supported",
+        "invalid_asr_media_header",
+        "CLOUD_ASR_MEDIA_EXTENSIONS",
         "local_source_file_missing",
     ):
         if marker not in handler_context_text:
@@ -1014,11 +1027,7 @@ def validate_extensions() -> None:
     for marker in (
         "audio-normalize-v1",
         "SUPPORTED_AUDIO_EXTENSIONS",
-        ".mp3",
-        ".m4a",
-        ".aac",
-        ".flac",
-        ".ogg",
+        "CLOUD_ASR_MEDIA_EXTENSIONS",
         "ffmpeg",
         "afconvert",
         "LEI16@16000",
@@ -1066,6 +1075,9 @@ def validate_extensions() -> None:
         "ensureAsrTranscription",
         "aliyun_dashscope_paraformer",
         "dashscope_asr_client.mjs",
+        "ALIYUN_ASR_DIARIZATION_ENABLED",
+        "ALIYUN_ASR_SPEAKER_COUNT",
+        "ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED",
         "cloud_asr_completed",
         "MEETING_ASR_PROVIDER",
         "local_asr_preflight",
@@ -1532,6 +1544,9 @@ def validate_extensions() -> None:
         "vectorStoreUsed: false",
         "htmlTableToMarkdown",
         "segmentKind",
+        "speakerDiarization",
+        "speakerLabel",
+        "channelId",
     ):
         if marker not in source_context:
             fail(f"source-context-runtime.ts missing context plane marker: {marker}")

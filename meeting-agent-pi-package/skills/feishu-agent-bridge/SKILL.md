@@ -41,12 +41,14 @@ Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_age
   the user prompt. If native provider file input is unavailable, use bounded
   text fallback and progressive disclosure rather than loading the full file
   into every prompt.
-- Audio files such as `.wav`, `.mp3`, `.m4a`, `.aac`, `.flac`, and `.ogg`
-  are accepted only for local ASR meeting-minutes tasks. If a user replies to
-  an audio file with "形成会议纪要", "录音", "音频", "转写", or "minutes", resolve
+- Cloud-supported recorded audio and video containers are accepted for ASR.
+  File inputs use private OSS plus the Paraformer HTTP file-transcription endpoint;
+  realtime streams use the distinct Paraformer WebSocket endpoint. If a user replies to
+  a media file with "形成会议纪要", "录音", "音频", "转写", or "minutes", resolve
   the parent/root message or recent attachment cache before starting PI.
-- Image and video素材 are not accepted in this bridge. Reply exactly
-  `目前暂不支持该功能` instead of trying image/video understanding.
+- Video transcription is supported for the provider's documented file containers;
+  general image/video understanding remains unsupported and must reply exactly
+  `目前暂不支持该功能`.
 - The PI Agent owns planning and generation. It must use Planner Envelope,
   Capability Registry, `document-prompt-registry`, section-batched document
   workers, QA Gate, and Policy Gate.
@@ -71,8 +73,9 @@ Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_age
 - Marker: section-batched document workers.
 - The handler must not hardcode PRD, ops, architecture, checklist, or meeting
   minutes section structures.
-- raw audio/video/base64 media stays local. Use local ASR for audio only;
-  external model calls may receive text transcript/evidence only when allowed.
+- Raw audio/video may be uploaded only by the cloud ASR provider stage after
+  Policy Gate approval. Other external model calls may receive transcript/evidence
+  text only; they never receive raw media, OSS credentials, or signed URLs.
 - Unsupported file types or unsupported requested actions must reply exactly:
   `目前暂不支持该功能`.
 - Live Feishu publish requires QA publishable output. For Feishu inbound tasks,
@@ -80,7 +83,8 @@ Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_age
   a non-deletion document is treated as publish/write authorization; destructive
   actions such as delete/remove/clear/destroy remain blocked.
 - Feishu audio minutes regression requires inspectable state/metrics markers:
-  `task_execution_runner_started`, `local_asr_completed`,
+  `task_execution_runner_started`, `asr_provider_resolved`, and either
+  `cloud_asr_completed` or `local_asr_completed`,
   `model_route_planned`, `meeting_minutes_generated`, `qa_gate_completed`,
   `policy_gate_completed`, plus a final publish/reply status.
 - Publish targets are chat/thread scoped. Reuse the local publish target registry

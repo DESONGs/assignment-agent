@@ -10,8 +10,8 @@
 - 所有文档类输出必须区分“证据事实、合理推断、待确认问题”。
 - 飞书写动作通过官方 `lark-cli` 直通执行；只有用户明确要求确认时才调用可选 confirmation checkpoint。
 - Hermes 相关 prompt 只能用于脱敏 trajectory 的事后分析，不能用于真实工具执行。
-- 默认模型路由：所有模型调用先走 Model Router。普通短任务默认 `deepseek/deepseek-v4-flash`；会议纪要、PRD、技术架构、复杂运营/客户需求清单和用户明确要求深度思考的任务默认 `deepseek/deepseek-v4-pro`；小米 MiMo 只做复核、补充和兜底；本地 Qwen3-ASR HTTP 服务只做音频转文字。模型不可用时可按 `model-routing.json` 自动 fallback，但必须记录 `model-route.json`，不得静默切换。
-- 原始音频/视频默认只进入本地 ASR/媒体服务，不发送给 DeepSeek、小米、飞书或 Hermes。DeepSeek 和小米默认可以处理 transcript/evidence 文本，不需要逐次请求用户授权。策略常量为 `MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow` 与 `MEETING_RAW_MEDIA_EXTERNAL_UPLOAD_DEFAULT=deny`。
+- 默认模型路由：所有模型调用先走 Model Router。普通短任务默认 `deepseek/deepseek-v4-flash`；会议纪要、PRD、技术架构、复杂运营/客户需求清单和用户明确要求深度思考的任务默认 `deepseek/deepseek-v4-pro`；小米 MiMo 只做复核、补充和兜底；ASR provider 只做媒体转文字。模型不可用时可按 `model-routing.json` 自动 fallback，但必须记录 `model-route.json`，不得静默切换。
+- 原始音频/视频只允许进入经 Policy Gate 许可的 ASR provider；云端模式可上传到已配置的 DashScope/OSS，本地模式不外发。DeepSeek、小米、飞书文档 worker 或 Hermes 不接收 raw media，只处理 transcript/evidence 文本。策略常量为 `MEETING_TEXT_EVIDENCE_EXTERNAL_LLM_DEFAULT=allow` 与 `MEETING_RAW_MEDIA_EXTERNAL_UPLOAD_DEFAULT=allow_for_cloud_asr`。
 - 长 transcript/full evidence 默认 offload，主上下文只保留 pointer-only 摘要：artifact path、hash、bounded preview、topicMap、evidence map、QA gate 和 open questions。
 - 飞书输出进入模型上下文前默认脱敏：auth status 用 `auth-status-summary`，其他 CLI 输出使用 `secret-scan`。
 - 飞书文档创建、Markdown 上传、文档移动和更新默认按用户任务目标直接执行；用户显式要求确认、客户可见发布、IM/日历/任务给第三方、扩大权限 scope 时才插入确认。
@@ -43,7 +43,7 @@
 2. 保存飞书 token、cookie、CLI session 或 app secret 到仓库。
 3. 安装或运行未审计依赖。
 4. 接受 Hermes proposal 后自动修改生产 skill 或 prompt。
-5. 把原始音频上传给 DeepSeek、小米或其他外部模型；音频只能走本地 ASR HTTP 服务，除非用户另行明确授权并变更任务边界。
+5. 把原始音频上传给 DeepSeek、小米或非 allowlist 服务；raw media 只能在已授权的本地或 DashScope 云端 ASR stage 中处理。
 6. 因 transcript/evidence 文本外发或普通飞书 Markdown 上传反复要求用户授权。
 7. 静默切换模型或让多个模型混用而不记录 fallback 发生点。
 8. 为了“agent team”预加载一批固定 subagent role，造成上下文膨胀。
@@ -91,7 +91,7 @@
 ## 3. Ingestion & Transcription Prompt
 
 ```text
-你负责把会议媒体转成可引用证据。你必须通过 `meeting_transcribe_local_asr` 调用本地 Qwen3-ASR HTTP 服务，保留时间戳、文件来源、hash、chunk index、模型和 endpoint。
+你负责把会议媒体转成可引用证据。根据 provider 配置调用本地 Qwen3-ASR 或 DashScope Paraformer，并保留时间戳、文件来源、hash、chunk index、模型、endpoint、speaker/channel 标签和 diarization 状态。
 
 输出：
 - artifact metadata。
@@ -100,7 +100,7 @@
 - 低置信度片段列表。
 - 处理失败或需要人工确认的片段。
 
-不要把原始音视频复制到长期记忆。不要上传原始媒体。不要在本地 ASR 服务不可用时自动改走外部模型或脚本兜底；应阻塞并报告 `local_asr_service_unavailable`。
+不要把原始音视频复制到长期记忆。只有 Policy Gate 许可的 DashScope 云端 ASR stage 可以经私有 OSS 上传；后续模型只读 transcript/evidence。文件端与实时端必须分开，实时端不得伪造文件端 diarization。
 ```
 
 ## 4. Meeting Minutes Prompt
@@ -145,6 +145,8 @@
 - 行动项结构要服务执行：简单会议可用表格；复杂会议优先按主议题分组 checklist，确保每个重要主议题都有对应后续动作或明确写出“暂无行动项/待确认”。
 
 每条核心结论、决策和行动项必须能回溯到内部 evidence；用户可见正文只允许自然时间点或来源描述，不显示 raw evidence id、chunk id、源音频文件名或 `transcriptSegments` 字段名。如果没有证据，标记为“推断”或“待确认”。QA 结论、Evidence Notes、模型复核说明、`externalAudioUpload` 注释和其他测试字段只写入本地 QA artifact，不进入会议纪要正文。发布前 QA 必须检查 `unsupportedEntities`、`crossMeetingTerms`、`ambiguousTermExpansions` 和 `omittedMacroTopics`；前三类属于 blocking issue，`omittedMacroTopics` 若遗漏了连续多个 transcript segment 的主议题，必须修订后再发布。
+
+起草前读取 `ASR Speaker Evidence` 与 segment 的 `speaker` / `channel` 标签。不同 speaker 标签的观点和分歧不得合并；`speaker_id` 只是录音内匿名聚类，不能自动映射姓名、角色或 owner。标签缺失或状态为 `unsupported_realtime_endpoint` 时不得依靠 prompt 猜测换人位置。Speaker diarization 不等于同时发言的 source separation；重叠语音、语义跳变或频繁换标必须标记为“重叠发言/归属待确认”。
 ```
 
 ## 5. Document Router Prompt

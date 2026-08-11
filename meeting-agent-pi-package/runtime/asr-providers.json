@@ -25,8 +25,26 @@
       "providerId": "aliyun_dashscope_paraformer",
       "mode": "cloud",
       "defaultModel": "paraformer-realtime-v2",
+      "defaultFileModel": "paraformer-v2",
+      "inputMode": "auto",
       "endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+      "fileEndpoint": "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
       "languageHints": ["yue", "zh", "en"],
+      "supportedRealtimeFormats": ["pcm", "wav", "mp3", "opus", "speex", "aac", "amr"],
+      "supportedFileExtensions": [".aac", ".amr", ".avi", ".flac", ".flv", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".mpeg", ".ogg", ".opus", ".wav", ".webm", ".wma", ".wmv"],
+      "speakerDiarization": {
+        "file": {
+          "supported": true,
+          "default": "auto",
+          "requiresMono": true,
+          "speakerCountRange": [2, 100],
+          "recommendedMaxDurationSeconds": 7200
+        },
+        "realtime": {
+          "supported": false
+        },
+        "overlapSpeechSeparationSupported": false
+      },
       "rawMediaExternalUpload": true,
       "requiredEnv": [
         "ALIYUN_DASHSCOPE_API_KEY"
@@ -35,13 +53,27 @@
         "DASHSCOPE_API_KEY",
         "ALIYUN_DASHSCOPE_WORKSPACE_ID",
         "ALIYUN_ASR_MODEL",
+        "ALIYUN_ASR_FILE_MODEL",
+        "ALIYUN_ASR_INPUT_MODE",
         "ALIYUN_ASR_ENDPOINT",
+        "ALIYUN_ASR_FILE_ENDPOINT",
+        "ALIYUN_ASR_DIARIZATION_ENABLED",
+        "ALIYUN_ASR_SPEAKER_COUNT",
+        "ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED",
         "ALIYUN_ASR_LANGUAGE_HINTS",
-        "ALIYUN_ASR_VOCABULARY_ID"
+        "ALIYUN_ASR_VOCABULARY_ID",
+        "ALIYUN_OSS_BUCKET",
+        "ALIYUN_OSS_REGION",
+        "ALIYUN_OSS_ENDPOINT",
+        "ALIYUN_OSS_BUCKET_ENDPOINT",
+        "ALIYUN_OSS_ASR_PREFIX",
+        "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET"
       ],
       "artifactContract": [
         "summary.json",
         "transcripts/transcript.full.json",
+        "transcripts/transcript.readable.md",
         "evidence/evidence-index.json",
         "evidence/sources.json",
         "asr/cloud-asr-run.json",

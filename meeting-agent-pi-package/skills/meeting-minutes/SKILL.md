@@ -104,6 +104,20 @@ heading density, and expression style.
 
 - Every important conclusion should reference a timestamp, source document, or
   explicit user-provided fact.
+- Inspect `ASR Speaker Evidence` and each transcript segment's `speaker` and
+  `channel` labels before attribution. Preserve materially different positions
+  under stable anonymous labels such as `说话人 1` and `说话人 2`; never merge
+  evidence from different labels into one person's view.
+- A provider `speaker_id` is an anonymous within-recording cluster, not a name,
+  role, or action-item owner. Map it to identity only when the current transcript
+  explicitly self-identifies the speaker or the `meetingProfile` contains a
+  direct evidence-backed mapping.
+- When diarization is disabled, labels are unavailable, or status is
+  `unsupported_realtime_endpoint`, do not infer speaker turns from tone or
+  context. Keep attribution and owners as `待确认`.
+- Speaker diarization is not source separation. Simultaneous same-channel
+  speech, semantic jumps, or unstable speaker labels are best-effort evidence;
+  mark them as `重叠发言/归属待确认` instead of repairing them into certain facts.
 - Reject unsupported entities: if a role, organization, table name, project
   name, or owner is not supported by the current `meetingProfile` or transcript,
   mark it as `待确认` or block publication.

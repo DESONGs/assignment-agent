@@ -98,8 +98,9 @@ Phase：
 - 服务入口：`meeting-agent-pi-package/tools/local_asr_http_service.py`。
 - 运行时：`mlx-qwen3-asr` / MLX Metal，常驻加载模型。
 - 默认 30 秒固定非重叠 chunk，保证断点续跑和 evidence 引用稳定。
-- 不启用 forced aligner、diarization、外部 ASR 或脚本兜底，除非未来任务明确变更架构。
-- ASR 是 local-only 路径：PI 只调用本地 HTTP 服务，不直接运行批处理脚本，也不把原始音频交给 hosted LLM/ASR。
+- 本地 Qwen3-ASR 路径不启用 forced aligner 或 diarization；云端录音文件路径可使用 Paraformer 文件端匿名说话人分离，并把 speaker/channel 标签作为 evidence 传给纪要 skill。
+- 实时 Paraformer 与文件 Paraformer 是独立端口；只有文件端声明说话人分离能力。system prompt 不得在标签缺失时推断说话人。
+- 云端 speaker diarization 不等于重叠语音源分离；同声道同时发言仍需标记为归属待确认。
 
 Phase：
 
