@@ -1,54 +1,25 @@
-# P0 Acceptance Evidence
+# AgentWorkbench P0 验收状态
 
-Status: implemented and locally verified on 2026-05-24.
+更新时间：2026-08-12。
 
-## Evidence Map
+状态：P0 只读观测能力已实现。当前文档不复用 2026-05 的固定 run/stream 数量作为持续有效证据；每次发布以当次 build 与 executable smoke 输出为准。
 
-1. Required run files are read from `runtime-runs/feishu-agent/runs/*`.
-   - Code: `Sources/AgentWorkbenchCore/WorkbenchRunLoader.swift`
-   - UI: `Run Files` detail tab
-   - Smoke evidence: `AgentWorkbenchSmokeTest passed: runs=47`
+## 验收范围
 
-2. Model stream NDJSON is parsed and surfaced.
-   - Code: `loadStreamEvents(...)`
-   - UI: `Model Stream` tab
-   - Smoke evidence: selected fixture parsed `streams=1610`
+- 能从自定义或默认 runs root 列出运行。
+- 能读取 run files、model stream、source context、tool timeline 和 bounded preview。
+- 能识别常见失败类别，并显示可恢复原因。
+- 不包含 `lark-cli`、URLSession 写调用、Docker/ASR lifecycle、retry、publish、delete 或 move 执行能力。
+- 所有 credential-like fields 在 UI 层 redacted。
 
-3. Source context artifacts are surfaced with bounded previews and references.
-   - Code: `loadSourceContext(...)`, `loadSourceSegments(...)`, `loadContextPacks(...)`
-   - UI: `Context` tab
-   - Smoke evidence: selected fixture parsed `contextPacks=3`; source segment previews are capped.
+当前 Meeting Intelligence 与 Agentic artifacts 已进入运行 manifest；Workbench 后续视图应优先展示 participant/topic/decision/action、delegation attempts 和 evidence reconciliation，而不是扩大写权限。
 
-4. Tool call timeline is surfaced.
-   - Code: `loadToolCalls(...)`
-   - UI: `Tools` tab and merged `Stage Timeline`
-   - Smoke evidence: selected fixture parsed `tools=32`
+## 验证命令
 
-5. Failure reason classes are recognized.
-   - Code: `FailureReason`, `classifyFailures(...)`
-   - Smoke evidence: synthetic fixture asserts all P0 failure classes:
-     `local_asr_service_not_running`, `document_worker_deadline_exhausted`,
-     `context_gate_failed`, `qa_blocked`, `publish_failed`.
+```bash
+env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift build
+env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift test --disable-xctest --disable-swift-testing
+env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift run AgentWorkbenchSmokeTest
+```
 
-6. P0 has no write actions.
-   - Runtime app/core contain no `lark-cli`, `Process`, `URLSession`, Docker,
-     ASR lifecycle, retry, publish, delete, or move execution code.
-   - The only write path is the smoke executable creating a temporary synthetic
-     fixture under `FileManager.default.temporaryDirectory`.
-
-7. Build/test/smoke commands pass.
-   - `env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift build`
-   - `env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift test --disable-xctest --disable-swift-testing`
-   - `env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift run AgentWorkbenchSmokeTest`
-
-## Local Toolchain Note
-
-This CommandLineTools install does not expose XCTest or Swift Testing modules.
-The package therefore keeps `swift test` as a package test graph compile check
-and uses the executable `AgentWorkbenchSmokeTest` for real fixture assertions.
-
-## Boundary
-
-Agent Workbench is a read-only observability package. It does not modify PI
-runtime planner, runner, profiles, capability registry, Feishu publish, ASR,
-Docker worker, or Hermes worker boundaries.
+已知环境限制：某些 CommandLineTools 不提供 XCTest/Swift Testing modules，因此 executable smoke 才是 fixture assertion 的完成证据。

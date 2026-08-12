@@ -1,48 +1,36 @@
 # Agent Workbench
 
-macOS SwiftUI read-only observability workbench for PI Agent runtime artifacts.
+更新时间：2026-08-12。
 
-## Scope
+AgentWorkbench 是 macOS SwiftUI 只读运行观测界面。它读取 `runtime-runs/feishu-agent/runs/*`，不执行 retry、ASR、Agent、发布、删除、移动、飞书写入或 Docker 写入。
 
-P0 is an observability layer only. It reads `runtime-runs/feishu-agent/runs/*`
-and does not execute retry, publish, delete, move, Feishu write, Docker write,
-or ASR lifecycle actions.
+## 当前读取范围
 
-## What It Reads
-
-- `task.json`, `state.json`, `run.metrics.json`, `agent-output.json`, `publish.json`
+- `task.json`、`state.json`、`run.metrics.json`、`run-manifest.json`
+- `agent-output.json`、`publish.json`、`reply.json`
 - `artifacts/model-streams/**/*.ndjson`
-- `artifacts/source-context/context-manifest.json`
-- `artifacts/source-context/source-records.json`
-- `artifacts/source-context/source-segments.jsonl`
-- `artifacts/source-context/context-packs/*.json`
-- `runtime-tool-results/*.json`
-- bounded artifact previews
+- source context manifests、records、segments 和 context packs
+- ASR summary、speaker/quality 摘要与 transcript artifact metadata
+- Meeting Intelligence、participant/topic/evidence/agent plan
+- agentic orchestration plan/result/events
+- runtime tool results、QA/Policy 和 bounded artifact preview
 
-## Safety
+Workbench 的 preview 有长度上限，这是界面性能和防误操作设计，不代表 Agent 不能读取完整会议内容。敏感 key（token、cookie、session、authorization、API key、secret、credential）始终 redacted；默认界面不会内嵌播放 raw media 或一次性渲染完整长 transcript。
 
-The UI renders bounded and redacted previews only. Sensitive keys such as
-token, cookie, session, authorization, API key, secret, and credential are
-redacted. Raw media, full transcript, full generated markdown, and full source
-documents are suppressed from artifact previews.
+## 运行
 
-## Commands
-
-The local CommandLineTools install in this workspace does not expose XCTest or
-Swift Testing modules, so `swift test` is used as a package test graph compile
-check, and the executable smoke target performs the real fixture assertions.
-
-```sh
-cd AgentWorkbench
+```bash
 env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift build
 env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift test --disable-xctest --disable-swift-testing
 env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift run AgentWorkbenchSmokeTest
 env CLANG_MODULE_CACHE_PATH=.build/module-cache SWIFTPM_DISABLE_USER_CACHE=1 swift run AgentWorkbench
 ```
 
-Pass a custom runs root to the app or smoke test when needed:
+指定 runs root：
 
-```sh
+```bash
 swift run AgentWorkbench /path/to/runtime-runs/feishu-agent/runs
 swift run AgentWorkbenchSmokeTest /path/to/runtime-runs/feishu-agent/runs
 ```
+
+部分 CommandLineTools 环境不暴露 XCTest/Swift Testing modules；此时 `swift test` 只证明 package test graph 可编译，真实 fixture assertion 由 `AgentWorkbenchSmokeTest` 提供。

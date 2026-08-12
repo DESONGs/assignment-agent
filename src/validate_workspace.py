@@ -12,10 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def project_wiki_root() -> Path:
-    wiki_root = ROOT / "wiki"
-    if (wiki_root / "00-plan.md").exists():
-        return wiki_root
-    return ROOT / "assigment agent wiki"
+    return ROOT / "wiki"
 
 
 REQUIRED_SKILLS = [
@@ -681,8 +678,13 @@ def validate_required_behavior_docs() -> None:
     wiki_root = project_wiki_root()
     docs = {
         "README.md": ROOT / "README.md",
+        "agent.md": ROOT / "agent.md",
         "meeting-agent-pi-package/README.md": ROOT / "meeting-agent-pi-package" / "README.md",
+        "hermes-learning-sidecar/README.md": ROOT / "hermes-learning-sidecar" / "README.md",
+        "AgentWorkbench/README.md": ROOT / "AgentWorkbench" / "README.md",
+        "wiki/README.md": wiki_root / "README.md",
         "wiki/00-plan.md": wiki_root / "00-plan.md",
+        "wiki/01-prd.md": wiki_root / "01-prd.md",
         "wiki/02-agent-architecture.md": wiki_root / "02-agent-architecture.md",
         "wiki/03-system-prompts.md": wiki_root / "03-system-prompts.md",
         "wiki/04-skill-design.md": wiki_root / "04-skill-design.md",
@@ -691,24 +693,27 @@ def validate_required_behavior_docs() -> None:
         "wiki/07-test-plan.md": wiki_root / "07-test-plan.md",
         "wiki/11-current-project-architecture.md": wiki_root / "11-current-project-architecture.md",
         "wiki/12-feishu-agent-bidirectional-integration-plan.md": wiki_root / "12-feishu-agent-bidirectional-integration-plan.md",
+        "wiki/13-office-agent-product-technical-review.md": wiki_root / "13-office-agent-product-technical-review.md",
+        "wiki/14-local-data-storage-cache-backend.md": wiki_root / "14-local-data-storage-cache-backend.md",
         "wiki/issues/README.md": wiki_root / "issues" / "README.md",
-        "skills/context-offload": ROOT / "meeting-agent-pi-package" / "skills" / "context-offload" / "SKILL.md",
-        "skills/feishu-workflow": ROOT / "meeting-agent-pi-package" / "skills" / "feishu-workflow" / "SKILL.md",
-        "skills/agent-team-runtime": ROOT / "meeting-agent-pi-package" / "skills" / "agent-team-runtime" / "SKILL.md",
-        "skills/qa-safety-review": ROOT / "meeting-agent-pi-package" / "skills" / "qa-safety-review" / "SKILL.md",
     }
+
+    for name, path in docs.items():
+        if not path.exists():
+            fail(f"missing current documentation file: {name}")
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
     for marker in (
-        "pointer-only",
+        "2026-08-12",
         "auth-status-summary",
         "secret-scan",
         "Meeting Intelligence",
-        "pi-subagents",
-        "pi-dynamic-workflows",
-        "dynamic worker pool",
+        "pi-subagents@0.46.0",
+        "pi-dynamic-workflows@3.5.1",
+        "tool_execution_end",
+        "evidenceSegmentIds",
+        "rawMediaExternalUpload",
         "model-route.json",
-        "legacy `qa-runs/`",
         "Agentic Planner",
         "Policy Gate",
         "Capability Registry",
@@ -721,52 +726,70 @@ def validate_required_behavior_docs() -> None:
         "workerDecisions",
         "capabilitySelections",
         "packageAudits",
-        "scenario playbook",
-        "fixed workflow",
         "document-prompt-registry.json",
         "document_prompt_render_batch",
         "document_workers_run",
-        "model_provider",
-        "XIAOMI_BASE_URL",
-        "feishu-agent-bridge",
         "feishu_event_runner.mjs",
         "feishu_agent_task_handler.mjs",
-        "feishu-event.schema.json",
-        "file-context",
         "目前暂不支持该功能",
+        "Host-owned SQLite",
+        "Docker worker 不直接写 SQLite",
+        "Hermes",
     ):
         if marker not in combined:
             fail(f"required behavior docs missing marker: {marker}")
 
-    test_plan = docs["wiki/07-test-plan.md"].read_text(encoding="utf-8")
+    architecture = docs["wiki/02-agent-architecture.md"].read_text(encoding="utf-8")
     for marker in (
-        "路径 / 上下文 / 飞书 / ASR / 模型路由 / Agent Team 排序回归",
-        "ASR provider -> evidence index -> context offload pointer-only -> dynamic worker pool -> model route record -> draft/review -> QA gate -> Feishu action",
-        "fixed roles",
-        "qa-runs/**/*.json|jsonl|txt|wav",
-        "local_asr_service_unavailable",
-        "model_route_record",
-        "planner-envelope.schema.json",
-        "policy-gate.schema.json",
-        "planner-runtime.ts",
-        "policy-gate.ts",
-        "install_dependency",
-        "packageAudits",
+        "系统上下文",
+        "Agent 角色关系",
+        "运行控制面",
+        "会议黄金流程",
+        "委派决策",
+        "Sub-agent / Workflow 执行时序",
+        "证据、状态与产物关系",
+        "飞书闭环",
+        "失败与降级",
+        "flowchart",
+        "sequenceDiagram",
+        "erDiagram",
     ):
-        if marker not in test_plan:
-            fail(f"test plan missing path/context/Feishu/ASR/model-route/agent-team ordering marker: {marker}")
+        if marker not in architecture:
+            fail(f"agent architecture doc missing marker: {marker}")
+    if architecture.count("```mermaid") < 8:
+        fail("agent architecture doc must include at least eight Mermaid architecture/relationship/flow diagrams")
 
-    agent_index = docs["wiki/06-agent-team-index.md"].read_text(encoding="utf-8")
-    for marker in (
-        "动态 worker 组件",
-        "pointer-only offload",
-        "model-route.json",
-        "QA gate",
-        "planner-selectable capability descriptions",
-        "workerDecisions",
-    ):
-        if marker not in agent_index:
-            fail(f"agent-team index missing ordering marker: {marker}")
+    for directory in ("issues", "plan", "problem", "retrospective", "thinking"):
+        if not (wiki_root / directory / "README.md").exists():
+            fail(f"historical wiki directory missing archive README: wiki/{directory}/README.md")
+
+    if (ROOT / "assigment agent wiki").exists():
+        fail("obsolete misspelled wiki directory must not exist")
+
+    markdown_paths = [
+        ROOT / "README.md",
+        ROOT / "agent.md",
+        ROOT / "meeting-agent-pi-package" / "README.md",
+        ROOT / "hermes-learning-sidecar" / "README.md",
+        ROOT / "AgentWorkbench" / "README.md",
+        ROOT / "AgentWorkbench" / "P0_ACCEPTANCE.md",
+        *sorted(wiki_root.rglob("*.md")),
+    ]
+    link_pattern = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+    for path in markdown_paths:
+        text = path.read_text(encoding="utf-8")
+        if text.count("```") % 2 != 0:
+            fail(f"unbalanced Markdown code fence: {path.relative_to(ROOT)}")
+        for target in link_pattern.findall(text):
+            target = target.strip().split(" ", 1)[0].strip("<>")
+            if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            local_target = target.split("#", 1)[0].split("?", 1)[0].replace("%20", " ")
+            if not local_target:
+                continue
+            resolved = (path.parent / local_target).resolve()
+            if not resolved.exists():
+                fail(f"broken Markdown link in {path.relative_to(ROOT)}: {target}")
 
 
 def validate_prompts() -> None:

@@ -1,247 +1,109 @@
-# Meeting Document Agent 开发执行规则
+# Meeting Agent 开发与运行规则
+
+更新时间：2026-08-12。
+
+本文只记录当前有效的项目级约束。历史方案、故障记录和过往取舍保存在 `wiki/` 的日期化目录中，但不覆盖本文、代码或当前架构文档。
 
 ## 读取顺序
 
-任何接手本项目的 agent 或开发者必须先按顺序读取：
+任何接手本项目的 Agent 或开发者先读：
 
-1. `wiki/00-plan.md`
-2. `wiki/01-prd.md`
+1. `README.md`
+2. `wiki/README.md`
 3. `wiki/02-agent-architecture.md`
-4. `wiki/05-feishu-rokid-permissions.md`
-5. `wiki/06-agent-team-index.md`
-6. `wiki/11-current-project-architecture.md`
+4. `wiki/11-current-project-architecture.md`
+5. `wiki/01-prd.md`
 
-如果任务涉及 prompt 或 skill，再读取：
+按任务补充读取：
 
-- `wiki/03-system-prompts.md`
-- `wiki/04-skill-design.md`
+- Prompt：`wiki/03-system-prompts.md`
+- Skill/tool：`wiki/04-skill-design.md`
+- 飞书、Rokid、凭证：`wiki/05-feishu-rokid-permissions.md`
+- Sub-agent/workflow：`wiki/06-agent-team-index.md`
+- 测试：`wiki/07-test-plan.md`
+- 运行存储：`wiki/14-local-data-storage-cache-backend.md`
 
-如果任务涉及复盘、自优化或 Hermes，再读取：
+## 当前运行基线
 
-- `wiki/11-current-project-architecture.md`
-- `hermes-learning-sidecar/dependency-policy.json`
+- Node `>=22.19.0`，项目 `.nvmrc` 为 `22.23.1`。
+- Pi 开发依赖锁定 `0.84.1`。
+- `pi-subagents@0.46.0`，调用使用 `workflowScript` + `runs.run(...)`，不得恢复已移除的顶层 `{agent, task}` 启动方式。
+- `@quintinshaw/pi-dynamic-workflows@3.5.1`。
+- 项目 Pi package 通过 `.pi/settings.json` 的 `../meeting-agent-pi-package` 加载；路径相对 `.pi/` 解析。
+- `.env.local` 是本地模型与 ASR/OSS 配置入口，不得提交。
 
-## 项目目标
+## 产品黄金路径
 
-本项目要实现一个用于日常会议终结和文档撰写的 Agent。它从录音、视频、Rokid 智能眼镜导出文件和飞书上下文中建立证据链，生成会议纪要，并根据会议内容继续生成 PRD、技术架构文档、运营文档、客户需求确认表或复盘文档。
+1. 识别用户目标、输入类型和预期交付物。
+2. 音视频先选择 ASR provider：文件和实时流使用不同端口。
+3. 生成完整 transcript、readable transcript、speaker/quality 元数据和 evidence index。
+4. Meeting Intelligence 建立参会人、议题、决策状态、行动项、风险、开放问题和证据映射。
+5. 根据当前会议复杂度选择父 Agent、一个 fresh sub-agent 或 Dynamic Workflow。
+6. 父 Agent 对委派结果做 segment id 集合校验；越界证据必须隔离。
+7. Prompt Registry 与 Document Workers 生成文档，QA Gate 检查证据与交付质量，Policy Gate 检查外部动作。
+8. 按用户要求交付本地文件或发布飞书，再由 Hermes 生成可选复盘建议。
 
-## 框架路线
+这是一条产品黄金路径，不是所有任务都必须执行的固定 DAG。`fast_answer`、`file_summary`、文档修订和多源综合会按 execution profile 选择所需阶段。
 
-- PI Agent 是主动执行框架。
-- Hermes Agent 是只读学习侧车。
-- PI 是一个 agentic office assistant：它必须具备多种办公协助能力，并允许后续不断增加、替换和迭代能力。
-- PI 必须由 Agentic Planner 根据用户目标动态拆任务、选择 capability、组合工具、决定是否启用 dynamic worker pool；不得把全局运行时固化为固定 workflow、固定 DAG、固定状态机或会议专用 pipeline。
-- Capability Registry 是能力扩展边界：Feishu、Rokid、ASR、Docs、Calendar、Tasks、Search、Writer、QA、MCP/Subagent 等能力应按任务选择，不得因为能力存在就机械执行。
-- Policy Gate 只拦截越界动作，例如客户可见发布、通知他人、日历/任务变更、安装依赖、长期记忆写入、删除和权限 scope 扩大；它不规定业务流程，也不以普通会议内容为由阻断模型或工具。
-- PI 可以处理真实会议、调用工具、生成文档，并通过官方 `lark-cli` 直接执行当前登录态允许的飞书读写动作。
-- Hermes 只能读取任务 trajectory 并输出 proposal。
-- Hermes proposal 必须经过人工 review 和回归测试后才能合入生产 skill/prompt。
+## Agent 决策边界
 
-## 本地运行配置
+- 父 Agent 是最终责任主体：理解目标、决定是否委派、整合冲突、验证证据、生成最终交付和执行外部动作。
+- Meeting Intelligence 是会议语义状态源，不是另一个聊天 Agent。
+- Sub-agent 是一次性、任务型、fresh context 的只读核验者，不拥有发布或生产写权限。
+- Dynamic Workflow 只在存在多个独立核验轴时使用；并行度、Agent 数量和 retry 必须有界。
+- `agent-team-runtime` 仅为本地兼容 fallback，不再是会议 Agent 的主编排架构。
+- Tool 完成事件只证明调用发生；只有父级 reconciliation 通过，子 Agent 结果才能进入写作与 QA。
 
-- 当前 Agentic 运行基线为 Node `>=22.19.0`、Pi `>=0.80.8`；项目开发依赖锁定 Pi `0.84.1`、`pi-subagents@0.46.0` 和 `@quintinshaw/pi-dynamic-workflows@3.5.1`。
-- 会议简单时父 Agent 直接完成；单一独立核验轴使用 fresh subagent；多个独立核验轴使用 Dynamic Workflow。子 Agent 是任务型临时组件，不是常驻组织架构。
+## 会议证据规则
 
-本项目唯一人工运行配置入口是 `.env.local`：
+- 默认使用 `参会人 A/B/...`，不要根据声纹猜姓名。
+- 用户给出 `参会人 A=张三` 时采用显式映射；未给实名不阻塞。
+- 区分 proposed、discussion、objection、agreed、rejected、unresolved。
+- `quality=needs_review` 可形成风险或待确认，不能单独确定决策、owner、日期、金额或承诺。
+- 单录混音 diarization 是 speaker 聚类，不是声源分离；高重叠同时发言不得承诺完整恢复。
+- 任何 sub-agent/workflow 返回的 segment id 都必须属于当前 transcript。跨会议 id、缺少 evidenceSegmentIds 的事实性发现进入 QA blocking finding。
 
-- 从 `.env.example` 复制生成 `.env.local`，只在 `.env.local` 填真实 LLM API key。
-- 默认主控/文档生成 LLM 是 DeepSeek V4：`PI_PROVIDER=deepseek`、`PI_MODEL=deepseek-v4-pro`。
-- 复核/兜底 LLM 是小米 MiMo Token Plan SGP：`PI_REVIEW_PROVIDER=xiaomi-token-plan-sgp`、`PI_REVIEW_MODEL=mimo-v2.5-pro`。
-- 会议录音、转录、纪要和相关文件可被当前任务选中的 ASR、模型、子 Agent、文档与 QA 能力使用。长内容进入 Source Context 做检索和预算控制，这是质量/性能机制，不是会议内容禁用规则。
-- `.pi/settings.json` 只用于加载 `meeting-agent-pi-package`，不得写 provider、model、endpoint 或 API key。
-- 飞书凭证不进入 `.env.local`；飞书登录态、token 和 session 交给官方 `lark-cli` 管理。
-- `lark-cli auth status --verify` 中的 token、cookie、session、Authorization 和 App Secret 不得进入模型上下文；如需验证登录态，使用 `feishu_cli(["auth","status","--verify"], redactionPolicy="auth-status-summary")` 生成凭证安全摘要。
-- 优先使用项目锁定的 `meeting-agent-pi-package/node_modules/.bin/pi`。若需更新全局 PI，使用已验证的 `npm install -g @earendil-works/pi-coding-agent@0.84.1`；不要新增 `~/.pi/agent/models.json` 作为默认兜底。
+## ASR 规则
 
-默认启动 DeepSeek 主控：
+- 默认 `MEETING_ASR_PROVIDER=auto`：DashScope/OSS 配置完整时优先云端文件 ASR；本地 `local_qwen3` 是显式 fallback/provider option。
+- 文件端使用 DashScope HTTP transcription + OSS，支持完整文件格式矩阵；实时流使用独立 WebSocket endpoint。
+- 只有 provider 拒绝容器或本地模型需要时才重封装/转码；不得把模型输入约束暴露为产品格式限制。
+- 云端与本地 cache key 必须包含 provider/model/mode/diarization 等配置，不能相互污染。
+- 云端失败必须区分鉴权、网络、模型、格式、超时和 partial；不得把 partial transcript 当完整会议生成纪要。
 
-```bash
-set -a
-source .env.local
-set +a
+## 内容与凭证边界
 
-pi --provider "$PI_PROVIDER" --model "$PI_MODEL"
-```
+- 会议内容可以进入选定的 ASR、模型、sub-agent、workflow、文档、QA 和 Hermes。
+- 分段、检索、offload 与 bounded preview 是上下文质量和性能机制，不是内容隐私阻断。
+- API Key、Token、Cookie、Authorization、App Secret、签名 URL 和登录会话永远不得进入 prompt、普通日志、会议产物或长期记忆。
+- `lark-cli auth status --verify` 只通过 `auth-status-summary` 暴露安全摘要；其他可能含凭证的 CLI 输出使用 `secret-scan`。
+- 删除、通知他人、日历/任务变更、客户可见发布、权限扩大和依赖安装由 Policy Gate 处理。
 
-切换小米 MiMo 复核模型：
+## 文档维护
 
-```bash
-set -a
-source .env.local
-set +a
+- 当前事实只在 `README.md`、本文和 `wiki/` 根层专题文档维护。
+- `wiki/issues/`、`plan/`、`problem/`、`retrospective/`、`thinking/` 是历史证据；新增内容必须带日期与状态，不得自称当前规范。
+- 架构变化必须同步更新 `wiki/02-agent-architecture.md`、`wiki/11-current-project-architecture.md` 和必要的 Mermaid 图。
+- 不在多个文档复制长命令、完整环境变量列表或组件表；以代码/runtime JSON 为真相源，文档提供语义解释和链接。
 
-pi --provider "$PI_REVIEW_PROVIDER" --model "$PI_REVIEW_MODEL"
-```
+## 完成与验证
 
-## ASR Provider 默认策略
-
-会议音频转文字采用 provider abstraction：`MEETING_ASR_PROVIDER=auto|local_qwen3|aliyun_dashscope_paraformer`。默认 `auto`：存在百炼/DashScope 与 OSS 配置时优先云端文件 ASR；本地 `local_qwen3` 是显式离线 fallback，不得静默切换。
-
-- 本地 ASR 模型：`mlx-community/Qwen3-ASR-1.7B-4bit`。
-- 本地模型目录：`models/Qwen3-ASR-1.7B-MLX-4bit`。
-- 本地服务入口：`meeting-agent-pi-package/tools/local_asr_http_service.py`，默认 `http://127.0.0.1:8765`。
-- 云端 ASR provider：`aliyun_dashscope_paraformer`。录音文件主模型为 `fun-asr` 异步文件端点，可用 `paraformer-v2` 做单录混音独立复核；实时流使用独立的 `paraformer-realtime-v2` WebSocket 端点。默认语言提示 `yue,zh,en`。
-- 运行时：Apple Silicon 上的 `mlx-qwen3-asr` / MLX Metal，服务常驻加载模型。
-- 云端文件 ASR 使用 provider 时间戳；本地 fallback 可切片并保留 evidence 引用。
-- 输出：`transcriptSegments` 必须包含 `sourceFile`、`sourceHashSha256`、`chunkIndex`、`startSec`、`endSec`、`text`、`model`、`endpoint`。
-- 媒体由任务选中的能力按其输入契约使用；文档与 QA 默认消费 transcript/evidence，因为文本证据更适合语义任务。
-- 故障策略：云端 ASR 需区分鉴权、网络、模型、格式、超时和 partial；本地 ASR 服务不可用时报告 `local_asr_service_unavailable`。不得自动改走小米、DeepSeek 或脚本兜底。
-
-启动本地 ASR 服务：
+修改完成前至少运行：
 
 ```bash
-.venv-qwen3-asr/bin/python meeting-agent-pi-package/tools/local_asr_http_service.py \
-  --host 127.0.0.1 \
-  --port 8765 \
-  --model-dir models/Qwen3-ASR-1.7B-MLX-4bit \
-  --preload
+python3 src/validate_workspace.py
+cd meeting-agent-pi-package && npm test
+python3 meeting-agent-pi-package/tools/local_ci_check.py
+git diff --check
 ```
 
-已验证 QA-RAW 运行结果：
+声明完成必须说明：用户可见结果、真实运行证据、未验证项和残余风险。不要用文件数量或测试数量代替产品完成度。
 
-- 3 个 WAV，共 56.62 分钟音频。
-- 114 个 transcript segments。
-- 0 个失败 chunk。
-- 总 ASR 耗时约 17.94 分钟，RTF 约 0.317，约 3.15x realtime。
+## 禁止事项
 
-会议 Agent 的黄金路径是：ASR provider -> evidence index -> Meeting Intelligence -> Agentic Planner -> 直接推理 / 单个 fresh 子 Agent / Dynamic Workflow -> 文档生成 -> 证据 QA -> 可选飞书发布。复杂度由当前会议决定，不是 PI 全局固定 workflow。执行 Agent 使用 Pi provider、现有 prompt/skill、已审计的 subagent/workflow 能力和 Feishu CLI 直通能力。
-
-## Phase 顺序
-
-### Phase 0：文档与凭证基线
-
-先完成文档、凭证不入库规则和依赖策略。没有完成凭证基线前，不允许把飞书/Rokid token 或模型服务密钥写入仓库。
-
-### Phase 1：本地会议文件 MVP
-
-实现本地音频/视频/图片导入、转写、evidence index、会议纪要、文档路由和 PRD/架构/运营文档草稿。
-
-### Phase 2：飞书集成
-
-直接采用官方 `lark-cli`。飞书 Docs、Drive、IM、Calendar、Tasks、Meetings、Sheets、Base 等能力都通过 `feishu_cli(args, stdin?, timeoutMs?, parseJson?)` 透传到 `lark-cli`。不维护自定义 Feishu Adapter、action enum、approval-store 或默认 dry-run。
-
-### Phase 3：Rokid 文件导入
-
-只处理用户指定的 Rokid 导出目录。实时采集、手机端 companion app、眼镜端 app 都不属于 MVP。
-
-### Phase 4：复盘与自优化
-
-PI 输出可审计 trajectory。Hermes sidecar 输出 proposal。人工 review 后小步合入。
-
-### Phase 5：生产增强
-
-增加多会议知识库、飞书状态同步、模板版本管理、可观测性和可选实时设备链路。
-
-## 安全与动作红线
-
-禁止：
-
-- 在仓库写入任何飞书、Rokid、模型服务 token。
-- 在 `.pi/settings.json`、wiki、trajectory、sidecar output 中写入 LLM API key、飞书 token 或 CLI session。
-- 将未脱敏的飞书登录态验证输出送入外部模型。
-- 让 Hermes 持有飞书/Rokid token。
-- 让 Hermes 直接修改生产 skill/prompt。
+- 提交 `.env.local`、模型/OSS/飞书凭证、录音、转录或 `runtime-runs/`。
+- 将文件端 ASR 与实时流 ASR 混为同一 endpoint。
+- 用 mock、fallback 或计划文件冒充真实 sub-agent/workflow 执行。
+- 用多数投票创造会议事实，或让子 Agent 绕过父级证据回收。
+- 让 Hermes 直接修改生产 prompt/skill，或让 Docker worker 执行飞书发布。
 - 安装或运行 `mistralai==2.4.6`。
-
-个人自用默认：
-
-- 飞书动作按当前官方 CLI 登录态和权限直接读写。
-- ASR 后的 transcript/evidence 文本可默认发送给 DeepSeek 和小米用于会议纪要、文档生成和复核。
-- 这个默认策略不需要逐次人工确认，也不应被 QA safety review 标记为 blocking issue。
-- 飞书文件夹创建、Markdown/文档创建、移动和更新默认按用户任务目标直接执行，不因普通会议内容再次请求授权。
-- 需要预览或确认时，可以显式调用可选 `approval_request`，但它不是飞书执行前置条件。
-- dry-run 只作为用户明确要求的预览策略，不是默认规则。
-- 只有发送 IM/日历/任务给第三方、客户可见发布、安装依赖、扩大飞书/Rokid 权限 scope 或删除时，才需要按动作边界单独确认。
-
-## 文档输出规则
-
-所有会议产物必须区分：
-
-- 已有证据支持的事实。
-- 合理推断。
-- 待确认问题。
-
-关键结论、决策和行动项必须尽量引用 evidence id。证据不足时，不要编造；列入待确认问题。
-
-会议纪要必须生成并传播统一标题：
-
-- `meetingTitle` 由会议内容生成，主要参考与会人员/角色、会议内容、会议安排和会议结论。
-- Markdown H1 必须等于 `meetingTitle`。
-- 飞书 Markdown/文档文件名必须由 `meetingTitle` 派生，格式为 `{meetingTitle}.md`。
-- 如果与会人员、安排或结论证据不足，用角色称谓或 `待确认`，不得编造姓名、日期或承诺。
-
-文档生成、文档修订和多源 synthesis 必须遵守 Runtime Context Plane 的 Document Output Contract：
-
-- 文档标题必须来自 `source-context-runtime` 产出的 `documentIdentity`，并记录 `basis/confidence`；不得从 Feishu 附件 token、generic upload filename 或运行时文件名推断用户可见标题。
-- 源文件中的 heading、table、comment anchor 必须进入 `source-structure.json`；HTML table 只能以 Markdown preview、columns、rowCount 和 source block id 进入 context pack。
-- 发布前 QA 必须检查 `bad_document_title`、`document_identity_missing`、`raw_html_table_in_markdown`、`table_source_unreadable_in_output`；失败时不得发布，只能返回可解释失败原因。
-- runner 只消费 `documentIdentity/sourceStructure/outputContract` 并连接 artifact，不得重新成为标题或表格语义 owner。
-
-## Agentic 分工
-
-以下是可动态选择的能力责任，不是每次会议都必须启动的固定角色：
-
-- PI Planner：目标识别、能力选择、工具组合，并按 Meeting Intelligence 在父 Agent 直做、单个 fresh 子 Agent 和 Dynamic Workflow 之间选择。
-- Ingestion & Transcription：文件导入、转写、证据索引。
-- Minutes & Router：会议纪要和文档类型判断。
-- Document Writers：PRD、架构、运营、需求确认表、复盘文档。
-- Feishu Integration：官方 `lark-cli` 全能力透传，覆盖读取、写入、移动、IM、任务、日历等当前 CLI 支持的能力。
-- Rokid MCP Bridge：Rokid 导出目录扫描和 artifact 导入。
-- Evidence & Security QA Retro：事实、证据覆盖、凭证安全、权限、供应链、复盘和 proposal review。
-
-## Handoff 要求
-
-agent 之间交接必须包含：
-
-```json
-{
-  "from_agent": "agent name",
-  "to_agent": "agent name",
-  "meeting_id": "meeting id",
-  "phase": "Phase N",
-  "outputs": [],
-  "evidence_ids": [],
-  "open_questions": [],
-  "risks": [],
-  "approval_required": false
-}
-```
-
-## 开发核实清单
-
-提交任何实现前必须核实：
-
-- 是否符合当前 Phase。
-- 是否读过对应 wiki 文档。
-- 是否新增或扩大了权限。
-- 是否引入了 file/audio/video/image/document 输入；如果有，必须先定义 extraction、normalization、segmentation、context budget、cache/store、failure UX，并确认是否需要进入 `source-context-runtime`。
-- 是否引入客户可见文档输出；如果有，必须定义 Document Output Contract，包括 title policy、Markdown table policy、source structure provenance 和 publish-blocking QA rules。
-- 是否把文件、ASR、批注或多源证据直接拼进 prompt；长内容必须先进入 Source Context，模型只消费 bounded context pack 和 source segment 引用。
-- 是否会触发 Rokid/外部 API 高风险动作，或把飞书凭证写入仓库。
-- 是否引入未审计依赖。
-- 是否影响 Hermes 与 PI 的执行边界。
-- 是否有测试或验收说明。
-
-## 供应链策略
-
-Hermes 或任何 Python/Node 依赖进入执行环境前必须检查：
-
-- lockfile。
-- package cache。
-- container image。
-- dependency policy。
-- 已知恶意版本。
-
-`mistralai==2.4.6` 必须被阻断。若发现该版本曾在环境中安装或 import，必须停止运行、检查 IoC、轮换可能暴露的凭证，并重建干净环境。
-
-## 默认交付标准
-
-一个模块完成的标准：
-
-- 文档和实现一致。
-- 输入输出明确。
-- 错误状态明确。
-- 飞书能力通过官方 `lark-cli` 直通，缺少 CLI 时有清晰错误。
-- 凭证和认证状态不外泄。
-- 有最小测试或手动验收路径。
-- 复盘允许使用会议内容和证据；写入前只移除凭证、token、cookie、session 与 Authorization。
