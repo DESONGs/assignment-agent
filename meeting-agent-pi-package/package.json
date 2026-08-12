@@ -2,7 +2,7 @@
   "name": "meeting-agent-pi-package",
   "version": "0.2.0",
   "private": true,
-  "description": "PI package for meeting conclusion, document writing, official lark-cli Feishu workflows, Rokid Lingzhu ingestion, and Hermes sidecar learning.",
+  "description": "PI package for meeting intelligence, evidence-grounded documents, persistent memory curation, Feishu workflows, and Rokid ingestion.",
   "keywords": [
     "pi-package",
     "meeting-agent",
@@ -10,7 +10,7 @@
     "dynamic-workflows",
     "feishu",
     "rokid",
-    "hermes-sidecar"
+    "persistent-memory"
   ],
   "type": "module",
   "scripts": {

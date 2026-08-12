@@ -18,6 +18,7 @@ def project_wiki_root() -> Path:
 REQUIRED_SKILLS = [
     "meeting-minutes",
     "meeting-agentic-orchestration",
+    "meeting-memory-curation",
     "document-router",
     "document-generation",
     "document-worker-runtime",
@@ -94,7 +95,6 @@ REQUIRED_RUNTIME_FILES = [
     "source-context.schema.json",
     "wiki-publish-plan.schema.json",
     "feishu-wiki-target-registry.schema.json",
-    "hermes-wiki-candidate.schema.json",
     "execution-profiles.json",
     "execution-profiles.schema.json",
     "asr-providers.json",
@@ -471,6 +471,12 @@ def validate_package() -> None:
     project_pi_settings = load_json(ROOT / ".pi" / "settings.json")
     if project_pi_settings.get("packages") != ["../meeting-agent-pi-package"]:
         fail(".pi/settings.json package paths resolve from .pi and must load ../meeting-agent-pi-package")
+    compaction = project_pi_settings.get("compaction", {})
+    if compaction != {"enabled": True, "reserveTokens": 16384, "keepRecentTokens": 20000}:
+        fail(".pi/settings.json must use Pi native compaction with the tested budgets")
+    subagents = project_pi_settings.get("subagents", {})
+    if subagents.get("projectRootResolution") != "git-root":
+        fail(".pi/settings.json must anchor project subagents at git root")
 
     if package.get("engines", {}).get("node") != ">=22.19.0":
         fail("meeting-agent-pi-package must declare the Pi 0.84-compatible Node baseline")
@@ -544,6 +550,40 @@ def validate_package() -> None:
     ):
         if marker not in pi_orchestration:
             fail(f"Pi meeting orchestration helper missing execution marker: {marker}")
+
+    memory_agent = (ROOT / ".pi" / "agents" / "meeting-memory-curator.md").read_text(encoding="utf-8")
+    for marker in (
+        "name: meeting-memory-curator",
+        "tools: read",
+        "scope: project",
+        "path: meeting-memory",
+        "defaultContext: fresh",
+        "只返回结构化候选",
+    ):
+        if marker not in memory_agent:
+            fail(f"meeting memory curator agent missing marker: {marker}")
+
+    memory_helper = (ROOT / "meeting-agent-pi-package" / "tools" / "meeting_memory_helpers.mjs").read_text(encoding="utf-8")
+    for marker in (
+        "meeting-memory-candidates-v1",
+        "meeting-memory-curation-result-v1",
+        "buildMeetingMemoryCuratorPlan",
+        'mode: "single_subagent"',
+        'tool: "subagent"',
+        '"read,subagent"',
+        'structuredOutputMode: "parent_validated_json"',
+        'acceptance: { level: "none"',
+        "reconcileMeetingMemoryCandidates",
+        "meetingMemoryPayloadShapeValid",
+        "segment_outside_current_meeting",
+        "memory_key_conflict_requires_review",
+        "memory_content_not_grounded_in_source_claim",
+        "persistMeetingMemory",
+        "meeting_memory_write_lock_timeout",
+        ".pi/agent-memory/meeting-memory",
+    ):
+        if marker not in memory_helper:
+            fail(f"meeting memory helper missing marker: {marker}")
 
 
 def validate_skills() -> None:
@@ -680,7 +720,6 @@ def validate_required_behavior_docs() -> None:
         "README.md": ROOT / "README.md",
         "agent.md": ROOT / "agent.md",
         "meeting-agent-pi-package/README.md": ROOT / "meeting-agent-pi-package" / "README.md",
-        "hermes-learning-sidecar/README.md": ROOT / "hermes-learning-sidecar" / "README.md",
         "AgentWorkbench/README.md": ROOT / "AgentWorkbench" / "README.md",
         "wiki/README.md": wiki_root / "README.md",
         "wiki/00-plan.md": wiki_root / "00-plan.md",
@@ -734,7 +773,8 @@ def validate_required_behavior_docs() -> None:
         "目前暂不支持该功能",
         "Host-owned SQLite",
         "Docker worker 不直接写 SQLite",
-        "Hermes",
+        "meeting-memory-curator",
+        "Pi 原生 Compaction",
     ):
         if marker not in combined:
             fail(f"required behavior docs missing marker: {marker}")
@@ -765,12 +805,33 @@ def validate_required_behavior_docs() -> None:
 
     if (ROOT / "assigment agent wiki").exists():
         fail("obsolete misspelled wiki directory must not exist")
+    if (ROOT / "hermes-learning-sidecar").exists():
+        fail("removed Hermes sidecar directory must not exist")
+
+    current_runtime_files = [
+        ROOT / "docker-compose.local-runtime.yml",
+        ROOT / "meeting-agent-pi-package" / "package.json",
+        ROOT / "meeting-agent-pi-package" / "runtime" / "wiki-publish-plan.schema.json",
+        ROOT / "meeting-agent-pi-package" / "tools" / "feishu_agent_task_handler.mjs",
+        ROOT / "meeting-agent-pi-package" / "tools" / "local_ci_check.py",
+    ]
+    forbidden_current_markers = (
+        "hermes-worker",
+        "HERMES_WIKI",
+        "pi:hermes-worker:jobs",
+        "sanitized-trajectory.json",
+        "hermes-thinking",
+    )
+    for path in current_runtime_files:
+        text = path.read_text(encoding="utf-8")
+        for marker in forbidden_current_markers:
+            if marker in text:
+                fail(f"removed Hermes production marker remains in {path.relative_to(ROOT)}: {marker}")
 
     markdown_paths = [
         ROOT / "README.md",
         ROOT / "agent.md",
         ROOT / "meeting-agent-pi-package" / "README.md",
-        ROOT / "hermes-learning-sidecar" / "README.md",
         ROOT / "AgentWorkbench" / "README.md",
         ROOT / "AgentWorkbench" / "P0_ACCEPTANCE.md",
         *sorted(wiki_root.rglob("*.md")),
@@ -1040,7 +1101,7 @@ def validate_extensions() -> None:
         "recent_attachment_cache",
         "parent_message_resource",
         "run-manifest.json",
-        "sanitized-trajectory.json",
+        "meetingMemoryCuration",
         "run.metrics.json",
         "PI_CLI_BIN",
         "direct_answer_no_document_publish",
@@ -1177,6 +1238,8 @@ def validate_extensions() -> None:
         "local_asr_service_ctl.py",
         "local_asr_completed",
         "meeting_minutes_generated",
+        "meeting-memory",
+        "runMeetingMemoryCurationSafely",
         "rawMediaExternalUpload: false",
         "task_execution_runner_started",
         "matchApiCommentToBody",
@@ -1188,6 +1251,8 @@ def validate_extensions() -> None:
     ):
         if marker not in task_runner_text:
             fail(f"task_execution_runner.mjs missing marker: {marker}")
+    if 'kind: "meeting-memory-curation"' in task_runner_text or 'kind: "meeting-memory-events"' in task_runner_text:
+        fail("meeting memory internal artifacts must not enter the Feishu upload artifact list")
     if 'AUDIO_SUPPORTED_BY_LOCAL_ASR = new Set([".wav"])' in task_runner_text:
         fail("task_execution_runner.mjs must not expose .wav-only ASR input as product limitation")
     if 'task?.taskIntent?.taskType === "meeting_minutes" && task?.taskIntent?.requiresLocalAsr === true' in task_runner_text:
@@ -1544,7 +1609,6 @@ def validate_extensions() -> None:
         "assign_task",
         "external_web",
         "install_dependency",
-        "persist_memory",
         "delete",
         "rawTranscriptIncluded: Boolean(params.rawTranscriptIncluded)",
     ):
@@ -1699,11 +1763,9 @@ def validate_extensions() -> None:
         "office_object_write",
         "retrieval_index_write",
         "retrieval_index_search",
-        "memory_proposal_write",
         "destructive_document_action_blocked",
         "retrieval_index_secret_payload_blocked",
         "pointerOnly: true",
-        "autoPersisted: false",
         "office_runtime_output_root_outside_workspace_blocked",
     ):
         if marker not in office_runtime:
@@ -1778,6 +1840,7 @@ def validate_runtime_configs() -> None:
         "wechat-adapter",
         "file-context-service",
         "office-runtime",
+        "meeting-memory-curation",
     ):
         if capability_id not in capability_ids:
             fail(f"capability registry missing required capability: {capability_id}")
@@ -1909,7 +1972,6 @@ def validate_runtime_configs() -> None:
         "wechat_adapter",
         "document_lifecycle",
         "retrieval",
-        "memory",
     ):
         if marker not in planner_text:
             fail(f"planner envelope schema missing marker: {marker}")
@@ -1929,7 +1991,6 @@ def validate_runtime_configs() -> None:
         "assign_task",
         "external_web",
         "install_dependency",
-        "persist_memory",
         "channel",
         "modifyExistingDocument",
         "targetSpecified",
@@ -2021,12 +2082,7 @@ def validate_runtime_configs() -> None:
             fail(f"metrics schema missing marker: {marker}")
 
 
-def validate_sidecar_policy() -> None:
-    policy = load_json(ROOT / "hermes-learning-sidecar" / "dependency-policy.json")
-    blocked = policy.get("blockedPythonPackages", [])
-    if not any(pkg.get("name") == "mistralai" and pkg.get("version") == "2.4.6" for pkg in blocked):
-        fail("dependency policy must block mistralai==2.4.6")
-
+def validate_dependency_policy() -> None:
     package = load_json(ROOT / "meeting-agent-pi-package" / "package.json")
     bundled_pi_peers = {
         "@earendil-works/pi-agent-core",
@@ -2041,55 +2097,13 @@ def validate_sidecar_policy() -> None:
                 fail(f"wildcard runtime dependency is not allowed: {section}.{name}")
 
 
-def validate_sidecar_safety() -> None:
-    sidecar = (ROOT / "hermes-learning-sidecar" / "sidecar.py").read_text(encoding="utf-8")
-    for marker in (
-        "SECRET_PATTERNS",
-        "scan_for_sensitive_content",
-        "sanitization-issues.json",
-        "--run-dir",
-        "build_trajectory_from_run_dir",
-        "hermes-wiki-candidate-v1",
-        "hermes-wiki-reflection-gate-v1",
-        "hermes-wiki-publish-v1",
-        "HERMES_WIKI_AUTO_PUBLISH",
-        "HERMES_WIKI_SPACE_ID",
-        "HERMES_WIKI_ROOT_NODE_TOKEN",
-        "hermes_wiki_publish_blocked_missing_target",
-        "first_principles",
-        "occams_razor",
-        "return 2",
-    ):
-        if marker not in sidecar:
-            fail(f"sidecar missing fail-closed sanitization marker: {marker}")
-    for forbidden_marker in ("forbidden = [\"rawTranscript\"", "rawMeetingContent\", \"fullTranscript"):
-        if forbidden_marker in sidecar:
-            fail(f"sidecar still blocks meeting content: {forbidden_marker}")
-    gate = ROOT / "hermes-learning-sidecar" / "hermes-wiki-reflection-gate.md"
-    if not gate.exists():
-        fail("missing Hermes Wiki reflection gate")
-    gate_text = gate.read_text(encoding="utf-8")
-    for marker in ("First principles", "Occam", "Evidence constraint", "Implicit knowledge", "Transferability", "Safety boundary"):
-        if marker not in gate_text:
-            fail(f"Hermes Wiki reflection gate missing marker: {marker}")
-
-    proposal_schema = ROOT / "src" / "schemas" / "proposal.schema.json"
-    if not proposal_schema.exists():
-        fail("missing proposal schema")
-    proposal = load_json(proposal_schema)
-    required = set(proposal.get("required", []))
-    if {"type", "content", "rationale", "sourceRunId", "requiresHumanReview"} - required:
-        fail("proposal schema missing required review fields")
-
-
 def validate_local_docker_runtime() -> None:
     queue = ROOT / "meeting-agent-pi-package" / "tools" / "local_docker_runtime_queue.mjs"
     worker = ROOT / "meeting-agent-pi-package" / "tools" / "local_docker_document_worker.mjs"
     handler = ROOT / "meeting-agent-pi-package" / "tools" / "feishu_agent_task_handler.mjs"
     compose = ROOT / "docker-compose.local-runtime.yml"
     dockerfile = ROOT / "docker" / "local-runtime" / "Dockerfile.document-worker"
-    hermes_worker = ROOT / "hermes-learning-sidecar" / "hermes_queue_worker.py"
-    for path in (queue, worker, compose, dockerfile, hermes_worker):
+    for path in (queue, worker, compose, dockerfile):
         if not path.exists():
             fail(f"missing local Docker runtime file: {path.relative_to(ROOT)}")
 
@@ -2146,7 +2160,6 @@ def validate_local_docker_runtime() -> None:
     for marker in (
         "runtime-queue",
         "pi-document-worker",
-        "hermes-worker",
         "redis:7-alpine",
         'cpus: "4.0"',
         "mem_limit: 8g",
@@ -2154,7 +2167,6 @@ def validate_local_docker_runtime() -> None:
         "FEISHU_AGENT_DOCUMENT_WORKER_TIMEOUT_MS",
         "FEISHU_AGENT_LONG_DOCUMENT_JOB_TIMEOUT_MS",
         "FEISHU_AGENT_DOCUMENT_WORKER_MAX_ATTEMPTS_PER_UNIT",
-        "HERMES_WIKI_AUTO_PUBLISH: \"0\"",
         "mem_limit: 256m",
     ):
         if marker not in compose_text:
@@ -2168,17 +2180,9 @@ def validate_local_docker_runtime() -> None:
         if marker not in dockerfile_text:
             fail(f"Dockerfile.document-worker missing marker: {marker}")
 
-    hermes_worker_text = hermes_worker.read_text(encoding="utf-8")
-    for marker in (
-        "hermes-local-queue-job-v1",
-        "pi:hermes-worker:jobs",
-        "HERMES_WIKI_AUTO_PUBLISH",
-        "\"0\"",
-        "sidecar.py",
-        "autoPublish\": False",
-    ):
-        if marker not in hermes_worker_text:
-            fail(f"Hermes queue worker missing marker: {marker}")
+    for forbidden in ("hermes-worker", "HERMES_WIKI", "pi:hermes-worker:jobs"):
+        if forbidden in compose_text:
+            fail(f"docker compose must not contain removed Hermes production service marker: {forbidden}")
 
     readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
     package_readme_text = (ROOT / "meeting-agent-pi-package" / "README.md").read_text(encoding="utf-8")
@@ -2193,7 +2197,7 @@ def validate_local_docker_runtime() -> None:
         "document_generation/multi_source_synthesis 默认进 Docker worker",
         "raw audio 不进容器",
         "4 CPU / 8GB / 长文档并发 2",
-        "docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker hermes-worker",
+        "docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker",
     ):
         if marker not in docs_text:
             fail(f"local Docker runtime docs missing marker: {marker}")
@@ -2210,7 +2214,7 @@ def validate_runtime_store_backend() -> None:
     for marker in (
         "runtime-store-v1",
         "Host-owned SQLite metadata",
-        "Docker worker and Hermes worker do not write DB",
+        "Docker workers do not write DB",
         "PRAGMA journal_mode = WAL;",
         "PRAGMA foreign_keys = ON;",
         "PRAGMA busy_timeout = 5000;",
@@ -2287,22 +2291,6 @@ def validate_runtime_store_backend() -> None:
             fail(f"runtime store wiki doc missing marker: {marker}")
 
 
-def validate_trajectory_example() -> None:
-    trajectory = load_json(ROOT / "src" / "examples" / "sanitized-trajectory.example.json")
-    privacy = trajectory.get("privacy", {})
-    if privacy.get("tokensIncluded") is not False:
-        fail("trajectory example must not include tokens")
-    for removed_field in ("approvalLog", "feishuActionLog"):
-        if removed_field in trajectory:
-            fail(f"trajectory example should not include Feishu-specific audit field: {removed_field}")
-
-    schema = load_json(ROOT / "src" / "schemas" / "trajectory.schema.json")
-    schema_text = json.dumps(schema)
-    for field in ("approvalLog", "feishuActionLog", "send_im", "move_doc", "messagePreviewHash"):
-        if field in schema_text:
-            fail(f"trajectory schema still contains removed Feishu-specific field: {field}")
-
-
 def main() -> int:
     validate_package()
     validate_skills()
@@ -2311,11 +2299,9 @@ def main() -> int:
     validate_prompts()
     validate_extensions()
     validate_runtime_configs()
-    validate_sidecar_policy()
-    validate_sidecar_safety()
+    validate_dependency_policy()
     validate_local_docker_runtime()
     validate_runtime_store_backend()
-    validate_trajectory_example()
     print("workspace validation passed")
     return 0
 

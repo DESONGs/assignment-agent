@@ -13,6 +13,7 @@ AgentWorkbench 是 macOS SwiftUI 只读运行观测界面。它读取 `runtime-r
 - ASR summary、speaker/quality 摘要与 transcript artifact metadata
 - Meeting Intelligence、participant/topic/evidence/agent plan
 - agentic orchestration plan/result/events
+- meeting-memory curation plan/result/events（只读；不读取或修改项目长期 `MEMORY.md`）
 - runtime tool results、QA/Policy 和 bounded artifact preview
 
 Workbench 的 preview 有长度上限，这是界面性能和防误操作设计，不代表 Agent 不能读取完整会议内容。敏感 key（token、cookie、session、authorization、API key、secret、credential）始终 redacted；默认界面不会内嵌播放 raw media 或一次性渲染完整长 transcript。

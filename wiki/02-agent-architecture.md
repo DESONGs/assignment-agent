@@ -29,7 +29,8 @@ flowchart TB
     Parent --> Store["Host-owned Runtime Store"]
     Parent --> QA["QA Gate / Policy Gate"]
     QA --> Delivery["本地 Markdown / 飞书文档"]
-    Delivery --> Hermes["Hermes 学习侧车"]
+    QA --> Curator["Meeting Memory Curator\n按需单 Sub-agent"]
+    Curator --> Memory["父级校验后的项目长期记忆"]
     Store --> Workbench["AgentWorkbench 只读观测"]
 ```
 
@@ -46,7 +47,7 @@ graph TD
     AR["Action Reviewer\n行动项与 owner/due 证据核验"]
     ES["Evidence Synthesizer\n仅综合已验证发现"]
     DW["Document Worker\n按 section 写作"]
-    HG["Hermes\n事后学习建议"]
+    MC["Memory Curator\n长期记忆候选"]
 
     P --> MI
     MI --> P
@@ -59,10 +60,11 @@ graph TD
     ES --> P
     P --> DW
     DW --> P
-    P --> HG
+    P -."QA 通过后按需唤醒".-> MC
+    MC --> P
 ```
 
-`.pi/agents/*.md` 定义会议专用角色。它们都是 fresh context、任务型、只读核验者；不能发布飞书、修改生产配置、写入长期记忆或取代父 Agent。`agent-team-runtime` 仍保留为兼容 fallback，但不是主编排架构。
+`.pi/agents/*.md` 定义会议专用角色。核验者是 fresh context、任务型、只读角色；不能发布飞书、修改生产配置或取代父 Agent。`meeting-memory-curator` 同样 fresh、只读，但通过固定 project memory scope 形成可重复唤醒的持久角色：它可以读取父级已经接受的 `MEMORY.md` 识别重复或冲突，却不能自行写记忆。`agent-team-runtime` 仍保留为兼容 fallback，但不是主编排架构。
 
 ## 4. 运行控制面
 
@@ -127,6 +129,8 @@ flowchart TD
     Direct --> Draft["标题与文档生成"]
     Reconcile --> Draft
     Draft --> QA["证据覆盖与完整性 QA"]
+    QA --> Curator["按需长期记忆提炼"]
+    Curator --> ParentMemory["父级证据校验 / 去重 / 冲突隔离"]
     QA --> Policy["外部动作 Policy Gate"]
     Policy --> Deliver["本地交付或飞书发布"]
 ```
@@ -214,6 +218,10 @@ erDiagram
 | `agentic-orchestration-result.json` | 真实工具事件、模型 attempts 和父级回收结果 |
 | `model-route.json` | 主模型、审阅模型、fallback 和调用状态 |
 | `qa-gate.json` / `policy-gate.json` | 内容质量与外部动作边界 |
+| `meeting-memory/curation-plan.json` | 单一 Memory Curator 的可信输入与 schema |
+| `meeting-memory/curation-result.json` | 模型 attempts、父级 rejection、去重和冲突结果 |
+| `.pi/agent-memory/meeting-memory/MEMORY.md` | 最多 200 行的当前项目长期记忆视图 |
+| `.pi/agent-memory/meeting-memory/ledger.jsonl` | 父级接受的 append-only 记忆审计账本 |
 
 完整 transcript 可由工具按任务读取；offload、检索和 bounded preview 用于控制上下文质量与成本，不是会议内容隐私禁令。运行指标仍不保存 raw transcript 或凭证。
 
@@ -240,22 +248,24 @@ sequenceDiagram
 
 Inbound 的明确非删除写作请求可进入执行；删除、清空、通知他人、日历/任务变更、权限扩大与依赖安装仍按动作影响处理。飞书 handler 编排运行和发布，不硬编码会议内容结构。
 
-## 10. Host、Docker 与学习侧车
+## 10. Host、Docker 与双层记忆
 
 ```mermaid
-flowchart LR
+flowchart TB
+    Session["父 Agent 当前会话"] --> Compact["Pi 原生 Compaction\n短期上下文压缩"]
     Host["Host 原生控制面\n凭证、飞书、ASR、父 Agent、SQLite"] --> Queue["Redis Queue"]
-    Queue --> Docker["Local Docker 受限执行面\nDocument Worker / Hermes Worker"]
+    Queue --> Docker["Local Docker 受限执行面\nDocument Worker"]
     Docker --> Artifacts["有界产物"]
     Artifacts --> Host
-    Host --> Hermes["Hermes proposals"]
-    Hermes --> Review["人工/回归审阅"]
-    Review -."通过后另行合入".-> Production["生产 Prompt / Skill"]
+    QA["完整会议 + QA pass"] --> Curator["meeting-memory-curator\nfresh / read-only / on-demand"]
+    Curator --> Validate["父 Agent\nclaim + segment 校验"]
+    Validate -->|新事实| Ledger["MEMORY.md + ledger.jsonl"]
+    Validate -->|同 key 不同值| Conflict["conflicts.jsonl\n待审，不覆盖"]
 ```
 
 本地 Docker 不能减少本机总计算消耗，只用于隔离、资源上限、队列和后台常驻。`fast_answer/file_summary 不进 Docker`；`document_generation/multi_source_synthesis 默认进 Docker worker`（仅在 queue 模式开启时）；`raw audio 不进容器`。默认资源档位为 `4 CPU / 8GB / 长文档并发 2`。
 
-Hermes 可以读取任务所需的会议 trajectory 与证据，生成复盘、记忆、prompt/skill 和 eval 建议；它不持有高权限凭证，也不直接修改生产能力。
+双层记忆不引入第二套 Agent runtime。短期上下文直接使用 Pi 原生 Compaction；长期记忆只在完整音频会议通过 QA 后运行一个 `meeting-memory-curator` 子任务。该角色的定义与 memory scope 持久存在，但每次执行都是 fresh 子进程。父 Agent 才是唯一写入者，并用 Meeting Intelligence claim、当前 transcript segment、用户显式姓名映射、credential scan、去重和冲突检查守住边界。记忆失败不阻塞纪要，飞书发布也不是记忆提炼的前置条件；curation plan/result/events 只进入本地 run manifest 和 Workbench 观测，不作为飞书交付附件上传。
 
 ## 11. 失败与降级
 
@@ -268,6 +278,8 @@ Hermes 可以读取任务所需的会议 trajectory 与证据，生成复盘、�
 | 审阅模型 401/失败 | 记录 attempt，尝试主模型 | 可 |
 | Sub-agent/workflow 未产生工具完成事件 | 回到父级 review，并记录未委派 | 可，不能声称委派成功 |
 | 子 Agent 引用跨会议 segment id | 隔离整个委派结果并加入 QA blocker | 否，直到重新核验或去除依赖 |
+| Memory Curator 失败或输出无效 | 记录 blocked/rejected artifact，不更新长期记忆 | 是，记忆是非阻塞增强能力 |
+| 长期记忆同 key 出现不同值 | 写入 `conflicts.jsonl` 待审，不覆盖当前记忆 | 是 |
 | 飞书发布失败 | 本地产物保留，返回可恢复错误 | 本地可交付，云端未完成 |
 
 ## 12. 代码落点
@@ -282,6 +294,7 @@ Hermes 可以读取任务所需的会议 trajectory 与证据，生成复盘、�
 | ASR 文件与实时流 | `tools/dashscope_asr_client.mjs`、`asr_media_formats.mjs` |
 | 单录混音复核 | `tools/single_mix_asr_helpers.mjs` |
 | Meeting Intelligence | `tools/meeting_intelligence_helpers.mjs` |
+| 双层记忆 | `.pi/settings.json`、`.pi/agents/meeting-memory-curator.md`、`tools/meeting_memory_helpers.mjs` |
 | 文档生成 | `extensions/document-generation.ts`、`document-worker-runtime.ts`、`prompts/*.md` |
 | 飞书入口 | `tools/feishu_bot_event_gateway.mjs`、`feishu_agent_task_handler.mjs` |
 | QA / 可观测 | `extensions/qa-gate.ts`、`runtime-observability.ts` |
@@ -296,4 +309,6 @@ Hermes 可以读取任务所需的会议 trajectory 与证据，生成复盘、�
 - 文件 ASR 与实时流 ASR 不共用端口契约。
 - speaker diarization 不等于声源分离。
 - QA Gate 判断内容是否可交付；Policy Gate 判断动作是否可执行。
-- Hermes 只能提出建议，不能直接改生产。
+- Pi 原生 Compaction 是短期上下文机制，不是长期事实库。
+- Memory Curator 只能提出候选；父 Agent 是长期记忆唯一校验与写入者。
+- 同 key 冲突不得自动覆盖，记忆失败不得阻塞会议交付。

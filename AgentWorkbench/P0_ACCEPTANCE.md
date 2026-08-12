@@ -12,7 +12,7 @@
 - 不包含 `lark-cli`、URLSession 写调用、Docker/ASR lifecycle、retry、publish、delete 或 move 执行能力。
 - 所有 credential-like fields 在 UI 层 redacted。
 
-当前 Meeting Intelligence 与 Agentic artifacts 已进入运行 manifest；Workbench 后续视图应优先展示 participant/topic/decision/action、delegation attempts 和 evidence reconciliation，而不是扩大写权限。
+当前 Meeting Intelligence、Agentic 与 meeting-memory curation artifacts 已进入运行 manifest；Workbench 后续视图应优先展示 participant/topic/decision/action、delegation attempts、evidence reconciliation 和记忆 rejection/conflict，而不是扩大写权限或直接编辑长期记忆。
 
 ## 验证命令
 

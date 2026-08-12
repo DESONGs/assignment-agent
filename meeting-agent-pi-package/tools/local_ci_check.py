@@ -30,7 +30,6 @@ PYTHON_COMPILE_TARGETS = [
     "meeting-agent-pi-package/tools/local_runtime_ctl.py",
     "meeting-agent-pi-package/tools/local_ci_check.py",
     "meeting-agent-pi-package/tools/runtime_store_cli.py",
-    "hermes-learning-sidecar/hermes_queue_worker.py",
 ]
 
 NODE_CHECK_TARGETS = [
@@ -40,6 +39,7 @@ NODE_CHECK_TARGETS = [
     "meeting-agent-pi-package/tools/meeting_intelligence_helpers.mjs",
     "meeting-agent-pi-package/tools/meeting_workflow_helpers.mjs",
     "meeting-agent-pi-package/tools/pi_meeting_orchestration_helpers.mjs",
+    "meeting-agent-pi-package/tools/meeting_memory_helpers.mjs",
     "meeting-agent-pi-package/tools/audio_normalize_helpers.mjs",
     "meeting-agent-pi-package/tools/dashscope_asr_client.mjs",
     "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",

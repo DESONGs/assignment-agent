@@ -6,7 +6,7 @@ Meeting Agent 已具备 Office Agent 的核心底座，但当前产品中心仍�
 
 ## 1. 当前判断
 
-- 已可用：会议转录、Meeting Intelligence、纪要、多类型文档、飞书收发、文档修订、QA/Policy、运行观测与学习 proposal。
+- 已可用：会议转录、Meeting Intelligence、纪要、多类型文档、飞书收发、文档修订、QA/Policy、运行观测、Pi 原生 Compaction 与证据约束的项目长期记忆。
 - 正在产品化：任务进度、失败恢复、真实飞书权限体验、多人长会议质量、智能眼镜单路实时输入。
 - 尚未形成完整产品：日历/任务双向生命周期、跨项目知识检索、正式 WeChat 接入、多人协作管理后台。
 
@@ -21,6 +21,7 @@ graph TD
     Minutes --> Docs["PRD / 架构 / 运营 / Checklist"]
     Docs --> Revision["评论 / 修订 / 版本"]
     Actions --> Future["任务 / 日历\n按需扩展"]
+    Intelligence --> Memory["父级验证的长期记忆"]
     Docs --> Knowledge["项目知识与检索"]
 ```
 
@@ -64,6 +65,7 @@ Agentic 能力对用户的价值应表现为：系统主动发现主要议题、
 - 任务/日历：先从明确 action item 的草稿和确认开始，再扩展双向状态同步。
 - 项目知识：通过 source/run/document reference 检索，保持证据来源和版本可见。
 - Workbench：补充 Meeting Intelligence、agentic reconciliation 和 provider attempts 的只读视图。
+- 项目长期记忆：先稳定 claim/segment 证据、去重与冲突审阅，再考虑跨项目检索；不建立常驻 LLM 服务。
 
 ## 7. 不扩展的方向
 
@@ -71,7 +73,7 @@ Agentic 能力对用户的价值应表现为：系统主动发现主要议题、
 - 为每个渠道建立独立会议 pipeline。
 - 自动从声纹猜测真实身份。
 - 在单路混音上承诺声源分离级恢复。
-- Hermes 自动修改生产 prompt、skill 或策略。
+- 常驻记忆 LLM、Memory Curator 自行写入、或根据记忆自动修改生产 prompt、skill 和策略。
 - 在真实需求出现前预建多租户权限平台。
 
 ## 8. 成功标准

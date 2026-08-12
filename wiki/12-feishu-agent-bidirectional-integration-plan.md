@@ -15,8 +15,10 @@ flowchart LR
     Handler --> Files["附件 / 文档 / 评论上下文"]
     Handler --> Runner["Task Router + Execution Runner"]
     Runner --> Agent["ASR + Meeting Intelligence + Pi Agent"]
-    Agent --> Gates["QA Gate + Policy Gate"]
-    Gates --> Publisher["Wiki / Drive Publisher"]
+    Agent --> QA["QA Gate"]
+    QA --> Memory["On-demand Memory Curator"]
+    QA --> Policy["Policy Gate"]
+    Policy --> Publisher["Wiki / Drive Publisher"]
     Publisher --> Reply["IM Reply"]
     Reply --> User
 ```
@@ -71,6 +73,8 @@ sequenceDiagram
     O-->>H: transcript / speaker / quality / evidence
     H->>A: Meeting Intelligence + Agentic plan
     A-->>H: minutes + QA/Policy result
+    H->>A: QA 通过后按需提炼长期记忆
+    A-->>H: 父级校验后的 memory status
     H->>P: 创建 Wiki/Drive 文档
     P-->>F: 文档链接与未确认项
 ```
@@ -117,6 +121,7 @@ ASR partial、零 segment 或所有 provider 失败时阻止完整纪要，不�
 | 模型失败 | 显式 fallback；全部失败则保留 evidence | model-route attempts |
 | Agentic 委派失败 | 父级 review，注明未完成委派 | agentic result/events |
 | QA blocked | 返回待确认或修复项，不发布 | qa-gate artifact |
+| Memory Curator 失败/冲突 | 不阻塞纪要；记录 blocked 或待审冲突 | meeting-memory artifact |
 | Wiki 权限不足 | 显式 Drive fallback 或本地交付 | publish artifact |
 | 回复失败 | 文档仍保留，提供可重试状态 | reply artifact |
 

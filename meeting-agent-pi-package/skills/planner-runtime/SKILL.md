@@ -14,7 +14,7 @@ Use this skill before a non-trivial office task selects integrations, workers, o
 - Planner is one of the six runtime decision layers, alongside Model Router,
   Prompt Registry, Document Worker, QA Gate, and Policy Gate. Capability
   Registry provides catalog/readiness metadata; adapters, handlers, runners,
-  publishers, File Context, ASR, Observability, Hermes, and `runtime_tool_cli`
+  publishers, File Context, ASR, Observability, Meeting Memory, and `runtime_tool_cli`
   do not make Planner decisions.
 - Short private drafting tasks should recommend only the minimal core plus `doc-writer`; do not automatically enable Feishu bot, Rokid, ASR, WebAccess/MCP, or worker pools.
 - Long meeting or multi-document tasks may recommend `meeting-minutes`, `local-asr`, `context-offload`, `agent-team-runtime`, `model-fallback`, and `qa-safety-review` when the task evidence calls for them.

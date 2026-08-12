@@ -339,7 +339,6 @@ function runPaths(root, runId) {
     statePath: join(runDir, "state.json"),
     metricsPath: join(runDir, "run.metrics.json"),
     manifestPath: join(runDir, "run-manifest.json"),
-    trajectoryPath: join(runDir, "sanitized-trajectory.json"),
     agentTaskPath: join(runDir, "agent-task.md"),
     agentOutputPath: join(runDir, "agent-output.json"),
     publishPath: join(runDir, "publish.json"),
@@ -2620,8 +2619,10 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
       publishTaxonomy: workspaceRelative(publishTaxonomyPath(paths)),
       wikiPublish: workspaceRelative(wikiPublishPath(paths)),
       wikiPublishPlan: workspaceRelative(wikiPlanPath(paths)),
+      meetingMemoryCuration: existsSync(join(paths.artifactsDir, "meeting-memory", "curation-result.json"))
+        ? workspaceRelative(join(paths.artifactsDir, "meeting-memory", "curation-result.json"))
+        : null,
       reply: workspaceRelative(paths.replyPath),
-      trajectory: workspaceRelative(paths.trajectoryPath),
     },
     metrics: {
       status: metrics.status,
@@ -2640,89 +2641,7 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
   };
 }
 
-function buildSanitizedTrajectoryFromManifest(manifest, task, state, agentOutput, publish) {
-  const requested = task.taskIntent?.requestedDocuments?.length
-    ? task.taskIntent.requestedDocuments
-    : [task.taskIntent?.responseMode ?? task.taskIntent?.taskType ?? "feishu-agent-task"];
-  const missingInputs = [];
-  if (task.taskIntent?.responseMode === "needs_file") missingInputs.push("referenced file attachment was not found");
-  for (const context of task.fileContexts?.contexts ?? []) {
-    if (context.status === "unsupported") missingInputs.push(`unsupported file context: ${context.unsupportedReason ?? context.fileName}`);
-  }
-  if (publish?.reason) missingInputs.push(`publish not completed: ${publish.reason}`);
-
-  return {
-    schemaVersion: "0.1.0",
-    runId: task.runId,
-    createdAt: nowIso(),
-    privacy: {
-      rawMeetingContentIncluded: task.taskIntent?.taskType === "meeting_minutes",
-      tokensIncluded: false,
-      redactionLevel: "credentials-only",
-    },
-    task: {
-      title: `${manifest.task.taskType} / ${manifest.task.responseMode}`,
-      requestedOutputs: requested,
-    },
-    inputs: [
-      {
-        kind: "feishu_event",
-        source: manifest.artifacts.event,
-        privacy: "meeting-content-available",
-        hashSha256: manifest.source.textHash ?? undefined,
-      },
-      ...(manifest.inputs.attachments ?? []).map((attachment) => ({
-        kind: attachment.resourceType ?? "attachment",
-        source: attachment.name ?? "attachment",
-        privacy: "meeting-content-available",
-        hashSha256: attachment.sha256 ?? undefined,
-      })),
-      ...(manifest.inputs.fileContexts ?? []).map((context) => ({
-        kind: "file-context",
-        source: context.fileName ?? "file-context",
-        privacy: "meeting-content-available",
-        hashSha256: context.extractedTextPath ? hashText(context.extractedTextPath) : undefined,
-      })),
-    ],
-    outputs: [
-      {
-        kind: manifest.task.responseMode ?? "agent-output",
-        status: agentOutput?.status ?? state.status,
-        qualityNotes: safeShortText(agentOutput?.summary || publish?.reason || state.status, 500),
-      },
-      ...((manifest.outputs.documents ?? []).map((doc) => ({
-        kind: doc.docType,
-        status: "generated",
-        qualityNotes: `${doc.title}; chars=${doc.markdownChars}`,
-      }))),
-    ],
-    decisions: [
-      {
-        decision: `Classified Feishu task as ${manifest.task.taskType}`,
-        reason: `responseMode=${manifest.task.responseMode}; requestedDocuments=${manifest.task.requestedDocuments.join(",") || "none"}`,
-        evidence: manifest.artifacts.task,
-      },
-      {
-        decision: `Resolved attachments with status ${manifest.source.attachmentResolution?.status ?? "unknown"}`,
-        reason: manifest.source.attachmentResolution?.reason ?? "no attachment resolution reason recorded",
-        evidence: manifest.artifacts.fileContext,
-      },
-      {
-        decision: `Publish status ${manifest.publish.status ?? "unknown"}`,
-        reason: manifest.publish.reason ?? "no publish blocking reason",
-        evidence: manifest.artifacts.publish,
-      },
-    ],
-    qualitySignals: {
-      evidenceCoverage: manifest.inputs.fileContexts?.length > 0 || manifest.inputs.attachments?.length > 0 ? "file-context-recorded" : "metadata-only",
-      credentialFindings: [],
-      missingInputs,
-      runSummary: safeShortText(manifest.outputs.summary || state.status, 800),
-    },
-  };
-}
-
-function writeRunLearningArtifacts({ event, task, state, agentOutput, publish, reply, paths, metrics }) {
+function writeRunArtifacts({ event, task, state, agentOutput, publish, reply, paths, metrics }) {
   metrics.status = metricsStatusFromState(state.status);
   metrics.finishedAt = nowIso();
   metrics.summary = safeShortText(agentOutput?.summary || publish?.reason || state.status, 500);
@@ -2730,15 +2649,12 @@ function writeRunLearningArtifacts({ event, task, state, agentOutput, publish, r
   writeRunMetrics(paths, metrics);
   const manifest = buildRunManifest({ event, task, state, agentOutput, publish, reply, paths, metrics });
   writeJson(paths.manifestPath, manifest);
-  const trajectory = buildSanitizedTrajectoryFromManifest(manifest, task, state, agentOutput, publish);
-  writeJson(paths.trajectoryPath, trajectory);
   state.manifestPath = paths.manifestPath;
   state.metricsPath = paths.metricsPath;
-  state.trajectoryPath = paths.trajectoryPath;
   state.rawSecretsReturned = false;
   state.rawMediaExternalUpload = false;
   writeState(paths, state);
-  return { manifest, trajectory };
+  return { manifest };
 }
 
 function runtimeStoreModeEnabled(mode) {
@@ -2866,7 +2782,6 @@ export async function handleEvent(input, options) {
     agentOutputPath: paths.agentOutputPath,
     metricsPath: paths.metricsPath,
     manifestPath: paths.manifestPath,
-    trajectoryPath: paths.trajectoryPath,
     publishPath: paths.publishPath,
     replyPath: paths.replyPath,
     rawSecretsReturned: false,
@@ -3085,7 +3000,7 @@ export async function handleEvent(input, options) {
       : publish.status === "blocked"
         ? "blocked"
         : "needs_fix";
-  writeRunLearningArtifacts({ event, task, state, agentOutput: agent.output, publish, reply, paths, metrics });
+  writeRunArtifacts({ event, task, state, agentOutput: agent.output, publish, reply, paths, metrics });
   await indexRuntimeStoreRun(paths, options, state, metrics);
   writeState(paths, state);
 

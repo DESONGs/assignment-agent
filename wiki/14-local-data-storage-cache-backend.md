@@ -2,7 +2,7 @@
 
 更新时间：2026-08-12。
 
-当前后端是文件 artifact + **Host-owned SQLite** metadata + 混合 CAS。它治理 `runtime-runs/` 中的会议输入、ASR、文档、worker、发布和学习产物，不引入外部数据库或对象存储作为本地真相源。
+当前后端是文件 artifact + **Host-owned SQLite** metadata + 混合 CAS。它治理 `runtime-runs/` 中的会议输入、ASR、文档、worker 和发布产物；项目长期记忆另存在已忽略的 `.pi/agent-memory/`，不引入外部数据库作为本地真相源。
 
 ## 1. 架构
 
@@ -13,13 +13,13 @@ flowchart LR
     CLI --> DB["Host-owned SQLite\nWAL metadata"]
     CLI --> CAS["objects/sha256 混合 CAS"]
     Worker["Docker Document Worker"] --> Result["worker artifacts"]
-    Hermes["Hermes Worker"] --> Proposal["proposal artifacts"]
+    Curator["On-demand Memory Curator"] --> Validate["Parent validation"]
+    Validate --> Memory[".pi/agent-memory\nMEMORY + ledgers"]
     Result --> Handler
-    Proposal --> Handler
     Handler --> CLI
 ```
 
-Host 是唯一数据库写入者。**Docker worker 不直接写 SQLite**，Hermes worker 也不直接写 SQLite；它们写文件结果，由 Host 拉回后登记。
+Host 是唯一数据库写入者。**Docker worker 不直接写 SQLite**；它只写文件结果，由 Host 拉回后登记。Memory Curator 不写任何存储，父 Agent 在校验后写项目记忆。
 
 ## 2. 存储组成
 
@@ -29,6 +29,7 @@ Host 是唯一数据库写入者。**Docker worker 不直接写 SQLite**，Herme
 | SQLite | run/artifact/source/cache/job/publish/retention metadata | 索引、查询、生命周期 |
 | CAS | 按 SHA-256 去重的大文件对象 | 本地内容去重 |
 | Recent source/cache | 同会话附件复用、文本提取和 ASR 命中 | 性能优化，可重建 |
+| Project memory | `MEMORY.md`、accepted ledger、conflict ledger | 跨会议复用的已验证少量事实；不是完整会议档案 |
 
 SQLite 启用 WAL、foreign keys 与 busy timeout。主要表包括 runs、artifacts、source_refs、recent_sources、file_text_cache、asr_cache、worker_jobs、publish_records、retention_policies 和 `retention_actions`。
 
@@ -94,7 +95,7 @@ Handler 通过 `FEISHU_AGENT_RUNTIME_STORE_MODE`、`FEISHU_AGENT_RUNTIME_STORE_C
 - SQLite 主要保存 metadata、状态、路径、hash、TTL 和 bounded preview，不复制大正文。
 - 凭证、Authorization、Cookie、App Secret、OSS 签名和 CLI session 不进入数据库或 artifact。
 - `raw audio 不进 Docker`，但云端 ASR 可按配置把媒体上传到 DashScope/OSS。
-- Workbench 只读；Hermes 只写 proposal；远端发布由 Host 执行。
+- Workbench 只读；Memory Curator 只提候选，父 Agent 写记忆；远端发布由 Host 执行。
 
 ## 9. 恢复与审计
 

@@ -21,9 +21,9 @@ flowchart LR
     Reconcile --> Prompt["Prompt Registry"]
     Prompt --> Worker["Document Workers"]
     Worker --> QA["QA Gate"]
+    QA --> Memory["On-demand Memory Curator\n+ Parent Validation"]
     QA --> Policy["Policy Gate"]
     Policy --> Delivery["Local / Feishu Delivery"]
-    Delivery --> Hermes["Hermes Sidecar"]
 ```
 
 这是一组可组合能力，不是所有任务都执行的固定 DAG。`fast_answer`、`file_summary`、`audio_minutes`、`document_generation`、`document_revision`、`multi_source_synthesis` 和 `publish_only` 由 `runtime/execution-profiles.json` 决定最小所需阶段。
@@ -34,12 +34,12 @@ flowchart LR
 | --- | --- |
 | `.pi/SYSTEM.md` | 父 Agent 全局工作方式与不变量 |
 | `.pi/agents/` | Meeting specialist 的 fresh context 角色定义 |
+| `.pi/agent-memory/` | 父级校验后的项目长期记忆；运行数据，已忽略 |
 | `meeting-agent-pi-package/extensions/` | Pi callable tools 与运行控制接口 |
 | `meeting-agent-pi-package/skills/` | 能力触发、操作协议和边界 |
 | `meeting-agent-pi-package/prompts/` | 正式文档 prompt 与修订 overlay |
 | `meeting-agent-pi-package/runtime/` | registry、schema、provider、profile、model route、package audit |
 | `meeting-agent-pi-package/tools/` | ASR、飞书、runner、runtime store、Docker 与 helper 实现 |
-| `hermes-learning-sidecar/` | 事后复盘和改进 proposal |
 | `AgentWorkbench/` | macOS 只读运行观测 |
 | `wiki/` | 当前规范与历史证据 |
 | `runtime-runs/` | 已忽略的真实运行产物、cache 和服务状态 |
@@ -56,7 +56,8 @@ flowchart LR
 | QA Gate | 证据、实体、结构和可交付质量 | 外部动作授权 |
 | Policy Gate | 凭证与外部动作边界 | 会议业务流程和内容结构 |
 | Handler / Adapter / Publisher | 转换、执行、记录和回复 | 不重新做 Planner 判断 |
-| Hermes | 事后 proposal | 不直接改生产能力 |
+| Memory Curator | QA 后长期记忆候选 | 不写文件、不发布、不绕过父级证据校验 |
+| Parent Memory Governance | claim/segment 校验、去重、冲突隔离与写入 | 不自动覆盖冲突，不把低置信内容升级为事实 |
 
 ## 4. Pi 与 Agentic 运行
 
@@ -68,6 +69,9 @@ flowchart LR
 - `tools/meeting_workflow_helpers.mjs` 根据 Meeting Intelligence 生成 direct/single/dynamic 计划。
 - `tools/pi_meeting_orchestration_helpers.mjs` 启动受限非交互 Pi，解析 `tool_execution_end`，并执行父级 segment id reconciliation。
 - `.pi/agents/*.md` 定义 evidence、decision、action 和 synthesis 角色。
+- `.pi/agents/meeting-memory-curator.md` 定义唯一的 project-scoped 持久记忆角色；每次运行仍是 fresh、只读的单次子 Agent。
+- `.pi/settings.json` 启用 Pi 原生 Compaction，并让 sub-agent 从 Git root 解析项目角色。
+- `tools/meeting_memory_helpers.mjs` 构造单 sub-agent 计划，执行父级证据 reconciliation、去重、冲突记录与项目记忆写入。
 - `extensions/agent-team-runtime.ts` 是旧动态 worker 兼容路径，不是主编排器。
 
 审阅模型优先，失败后显式尝试主模型；每个 attempt 可审计。工具执行完成与证据接受分开记录。
@@ -98,7 +102,20 @@ flowchart LR
 
 participant map 使用稳定 `参会人 A/B/...`，显式姓名映射覆盖显示名。模型生成的 topic/decision/action 先经过当前 segment id、participant alias 和 quality 规则校验，再进入写作。
 
-## 7. 文档链路
+## 7. 双层记忆
+
+```mermaid
+flowchart LR
+    Parent["父 Agent 会话"] --> Compact["Pi 原生 Compaction\n短期上下文"]
+    QA["Meeting Intelligence + Minutes + QA pass"] --> Curator["meeting-memory-curator\nfresh / read-only"]
+    Curator --> Validate["父级 claim + segment 校验"]
+    Validate --> Ledger["MEMORY.md / ledger.jsonl"]
+    Validate --> Conflict["conflicts.jsonl\n待审"]
+```
+
+Curator 不运行在 Docker，也不使用 Dynamic Workflow。它只读取父 Agent 指定的文字 artifact，结构化返回项目事实、决定、用户确认身份、术语与开放问题候选。父 Agent 是唯一写入者；记忆失败不阻塞会议交付。
+
+## 8. 文档链路
 
 ```mermaid
 flowchart LR
@@ -112,7 +129,7 @@ flowchart LR
 
 文档结构只在 `prompts/*.md` 和 registry 中维护。Runner 同步生成 `document-title-plan.json`，使 Markdown H1、文件名和飞书标题一致。`document_revision` 复用原 docType prompt，并追加 `document-revision-overlay.md` 与 source-scoped review context。
 
-## 8. 飞书入口与交付
+## 9. 飞书入口与交付
 
 - `feishu_event_runner.mjs`：推荐的 CLI event consume 入口，标准化并转发事件。
 - `feishu_bot_event_gateway.mjs`：可选 SDK 长连接入口，转发到同一 handler。
@@ -123,13 +140,13 @@ flowchart LR
 
 用户可见回复不暴露 runId、凭证、内部 stack 或 raw provider response。失败回复提供可理解原因和恢复方向。
 
-## 9. Source Context 与 Office Runtime
+## 10. Source Context 与 Office Runtime
 
 `im_file_context_helpers.mjs` 处理附件识别、提取和 preview；`source-context-runtime.ts` 建立 source record、segment、retrieval plan、context pack 和 generation gate。完整内容可按任务读取，bounded context 用于相关性和模型预算。
 
-`office-runtime.ts` 管理 document lifecycle、office object reference、retrieval index 和 memory proposal。检索索引保存 hash、摘要、preview 和 artifact pointer，不复制完整正文；这属于索引设计，不是会议内容调用禁令。
+`office-runtime.ts` 管理 document lifecycle、office object reference 和 retrieval index。检索索引保存 hash、摘要、preview 和 artifact pointer，不复制完整正文；这属于索引设计，不是会议内容调用禁令。长期记忆只走 Memory Curator 与父级治理路径，不再由 office-runtime 提供第二套 proposal 入口。
 
-## 10. Host、Docker 与 Store
+## 11. Host、Docker 与 Store
 
 运行边界是 **Host 原生控制面 + Local Docker 受限执行面**。本地 Docker 不能减少本机总计算消耗。
 
@@ -141,12 +158,12 @@ flowchart LR
 - 默认资源档位为 `4 CPU / 8GB / 长文档并发 2`。
 
 ```bash
-docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker hermes-worker
+docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker
 ```
 
 Store 细节见 [14-local-data-storage-cache-backend.md](14-local-data-storage-cache-backend.md)。
 
-## 11. 运行产物
+## 12. 运行产物
 
 一次完整任务通常包含：
 
@@ -154,12 +171,13 @@ Store 细节见 [14-local-data-storage-cache-backend.md](14-local-data-storage-c
 - source：`file-context.json`、source records/segments/context packs。
 - ASR：`summary.json`、完整/可读 transcript、evidence index、cloud events、single-mix analysis。
 - intelligence：participant/topic/evidence/agent plan 与 agentic result。
+- memory：curation plan/result/events；长期视图与 ledger 位于忽略的 `.pi/agent-memory/meeting-memory/`。
 - model/document：`model-route.json`、title plan、Markdown、worker results。
 - gate/delivery：QA、Policy、publish、manifest、metrics。
 
-`runtime-runs/` 不进入 Git。AgentWorkbench 只读这些产物；Hermes 读取完成学习任务所需的 trajectory，但不会接触凭证。
+`runtime-runs/` 与 `.pi/agent-memory/` 不进入 Git。AgentWorkbench 只读 run 产物；Memory Curator 只读取父 Agent 指定的已通过 QA 的文字证据，不接触凭证或原始媒体。
 
-## 12. 当前已知限制
+## 13. 当前已知限制
 
 - 单路混音无法保证恢复完全重叠的多人语音。
 - 实时 WebSocket 路径目前不声明 speaker diarization。

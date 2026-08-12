@@ -11,7 +11,7 @@ Use this skill before actions that cross a boundary: publishing, notifying peopl
 
 - Call `policy_gate_check(...)` for the action boundary. The gate only decides boundary status; it does not generate the business workflow.
 - `read`, `draft`, normal `write_private`, meeting-content transfer, and media transfer pass unless they include credentials or another protected authentication state.
-- `publish_customer_visible`, `notify_people`, `mutate_calendar`, `assign_task`, `install_dependency`, and `persist_memory` require explicit user confirmation.
+- `publish_customer_visible`, `notify_people`, `mutate_calendar`, `assign_task`, and `install_dependency` require explicit user confirmation.
 - Feishu inbound is a scoped exception for non-destructive document writes: when
   the triggering user explicitly asks to create, write, save, publish, archive,
   or overwrite a document in the same chat/thread context, `write_private` and

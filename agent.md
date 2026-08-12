@@ -41,7 +41,8 @@
 5. 根据当前会议复杂度选择父 Agent、一个 fresh sub-agent 或 Dynamic Workflow。
 6. 父 Agent 对委派结果做 segment id 集合校验；越界证据必须隔离。
 7. Prompt Registry 与 Document Workers 生成文档，QA Gate 检查证据与交付质量，Policy Gate 检查外部动作。
-8. 按用户要求交付本地文件或发布飞书，再由 Hermes 生成可选复盘建议。
+8. 已通过 QA 的完整音频会议按需唤醒一次 `meeting-memory-curator`；父 Agent 校验 claim/segment、去重、隔离冲突并更新项目长期记忆。
+9. 按用户要求交付本地文件或发布飞书。记忆提炼失败不得阻塞已通过 QA 的会议交付。
 
 这是一条产品黄金路径，不是所有任务都必须执行的固定 DAG。`fast_answer`、`file_summary`、文档修订和多源综合会按 execution profile 选择所需阶段。
 
@@ -51,6 +52,8 @@
 - Meeting Intelligence 是会议语义状态源，不是另一个聊天 Agent。
 - Sub-agent 是一次性、任务型、fresh context 的只读核验者，不拥有发布或生产写权限。
 - Dynamic Workflow 只在存在多个独立核验轴时使用；并行度、Agent 数量和 retry 必须有界。
+- `meeting-memory-curator` 是持久角色、fresh 单次子进程，不是常驻 LLM，也不是 Dynamic Workflow；它只提出结构化候选，无写入和发布权限。
+- Pi 原生 Compaction 负责当前父会话的短期压缩；项目长期记忆只接受父 Agent 验证并持久化的候选，两者不能混为一个状态源。
 - `agent-team-runtime` 仅为本地兼容 fallback，不再是会议 Agent 的主编排架构。
 - Tool 完成事件只证明调用发生；只有父级 reconciliation 通过，子 Agent 结果才能进入写作与 QA。
 
@@ -73,7 +76,7 @@
 
 ## 内容与凭证边界
 
-- 会议内容可以进入选定的 ASR、模型、sub-agent、workflow、文档、QA 和 Hermes。
+- 会议内容可以进入选定的 ASR、模型、sub-agent、workflow、文档、QA 和记忆整理能力。
 - 分段、检索、offload 与 bounded preview 是上下文质量和性能机制，不是内容隐私阻断。
 - API Key、Token、Cookie、Authorization、App Secret、签名 URL 和登录会话永远不得进入 prompt、普通日志、会议产物或长期记忆。
 - `lark-cli auth status --verify` 只通过 `auth-status-summary` 暴露安全摘要；其他可能含凭证的 CLI 输出使用 `secret-scan`。
@@ -105,5 +108,4 @@ git diff --check
 - 将文件端 ASR 与实时流 ASR 混为同一 endpoint。
 - 用 mock、fallback 或计划文件冒充真实 sub-agent/workflow 执行。
 - 用多数投票创造会议事实，或让子 Agent 绕过父级证据回收。
-- 让 Hermes 直接修改生产 prompt/skill，或让 Docker worker 执行飞书发布。
-- 安装或运行 `mistralai==2.4.6`。
+- 让记忆子 Agent 自行写文件、修改生产 prompt/skill，或让 Docker worker 执行飞书发布。

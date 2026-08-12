@@ -77,7 +77,7 @@ contextBudget checks. Write publish gates with `qa_gate_write` when a run has a
   raw transcript/response JSON must not be rehydrated into main context.
 - Reference PDF: style only; facts, owners, dates, and decisions from the PDF
   are not treated as current-meeting evidence.
-- Learning: Hermes proposals do not auto-apply production changes.
+- Memory: only QA-passed, evidence-backed candidates may be proposed; the parent validates and persists them, and the curator cannot auto-apply production changes.
 - Supply chain: dependency policy blocks known bad versions.
 
 ## Output

@@ -20,7 +20,6 @@ const ACTION_INTENT = Type.Union([
   Type.Literal("external_web"),
   Type.Literal("audio_transcription"),
   Type.Literal("install_dependency"),
-  Type.Literal("persist_memory"),
   Type.Literal("delete"),
 ]);
 
@@ -35,7 +34,6 @@ type ActionIntent =
   | "external_web"
   | "audio_transcription"
   | "install_dependency"
-  | "persist_memory"
   | "delete";
 
 const CONFIRMATION_REQUIRED = new Set<ActionIntent>([
@@ -44,7 +42,6 @@ const CONFIRMATION_REQUIRED = new Set<ActionIntent>([
   "mutate_calendar",
   "assign_task",
   "install_dependency",
-  "persist_memory",
 ]);
 
 const DOCS_RESEARCH_CLASSES = new Set(["docs_or_sdk_research", "sdk_docs", "official_docs", "api_docs"]);

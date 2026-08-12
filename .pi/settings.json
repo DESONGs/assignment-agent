@@ -1,5 +1,13 @@
 {
   "packages": [
     "../meeting-agent-pi-package"
-  ]
+  ],
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
+  "subagents": {
+    "projectRootResolution": "git-root"
+  }
 }

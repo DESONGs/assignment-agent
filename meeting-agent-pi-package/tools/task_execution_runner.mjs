@@ -25,6 +25,13 @@ import {
   reconcilePiMeetingOrchestrationResult,
   shouldRunPiMeetingOrchestration,
 } from "./pi_meeting_orchestration_helpers.mjs";
+import {
+  buildMeetingMemoryCuratorPlan,
+  buildPiMeetingMemoryInvocation,
+  extractMeetingMemoryPayload,
+  persistMeetingMemory,
+  reconcileMeetingMemoryCandidates,
+} from "./meeting_memory_helpers.mjs";
 
 /**
  * Thin task execution runner.
@@ -53,6 +60,7 @@ const DEFAULT_CLOUD_ASR_SINGLE_MIX_REVIEW_MODEL = "paraformer-v2";
 const DEFAULT_CLOUD_ASR_LANGUAGE_HINTS = ["yue", "zh", "en"];
 const DEFAULT_MEETING_AGENTIC_DELEGATION_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEETING_AGENTIC_EVENT_MAX_CHARS = 25_000_000;
+const DEFAULT_MEETING_MEMORY_TIMEOUT_MS = 900_000;
 
 const RUNNER_EXECUTION_PROFILES = new Set([
   "fast_answer",
@@ -710,6 +718,22 @@ function agenticOrchestrationResultPath(outputDir) {
 
 function agenticOrchestrationEventsPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "agentic-orchestration-events.ndjson");
+}
+
+function meetingMemoryDir(outputDir) {
+  return join(outputDir, "meeting-memory");
+}
+
+function meetingMemoryPlanPath(outputDir) {
+  return join(meetingMemoryDir(outputDir), "curation-plan.json");
+}
+
+function meetingMemoryResultPath(outputDir) {
+  return join(meetingMemoryDir(outputDir), "curation-result.json");
+}
+
+function meetingMemoryEventsPath(outputDir) {
+  return join(meetingMemoryDir(outputDir), "curation-events.ndjson");
 }
 
 function completeAsrSummary(outputDir) {
@@ -2013,6 +2037,204 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
   return result;
 }
 
+function meetingMemorySetting(options = {}) {
+  return String(options.meetingMemoryCuration ?? process.env.MEETING_MEMORY_CURATION ?? "auto").trim().toLowerCase();
+}
+
+function meetingMemoryEnabled(options = {}) {
+  return !["0", "false", "off", "disabled"].includes(meetingMemorySetting(options));
+}
+
+async function runMeetingMemoryCuration({ task, paths, options, hooks, meetingAnalysis, documents, qaGate }) {
+  const skip = async (reason) => {
+    const result = {
+      schemaVersion: "meeting-memory-curation-result-v1",
+      status: "skipped",
+      reason,
+      persistedCount: 0,
+      rawSecretsReturned: false,
+    };
+    writeJson(meetingMemoryResultPath(paths.artifactsDir), result);
+    await hooks.onStep?.("meeting_memory_curation_completed", "skipped", {
+      reason,
+      artifact: workspaceRelative(meetingMemoryResultPath(paths.artifactsDir)),
+    });
+    return result;
+  };
+
+  if (!meetingMemoryEnabled(options)) return skip("meeting_memory_curation_disabled");
+  if (executionProfileForTask(task)?.id !== "audio_minutes") return skip("meeting_memory_only_runs_for_audio_minutes");
+  if (pipelineMockModelEnabled(options)) return skip("pipeline_mock_model");
+  if (!meetingAnalysis || meetingAnalysis.status !== "complete" || meetingAnalysis.analysisMode !== "model_reasoned_validated") {
+    return skip("meeting_intelligence_not_model_validated");
+  }
+  if (qaGate?.status !== "pass") return skip("meeting_qa_not_passed");
+  const minutes = (Array.isArray(documents) ? documents : []).find((document) => document?.docType === "meeting-minutes" && document?.localPath);
+  if (!minutes) return skip("final_meeting_minutes_missing");
+  if (!existsSync(transcriptPath(paths.artifactsDir)) || !existsSync(participantMapPath(paths.artifactsDir))) {
+    return skip("meeting_memory_sources_incomplete");
+  }
+
+  const plan = buildMeetingMemoryCuratorPlan({
+    runId: task.runId,
+    meetingAnalysisPath: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
+    meetingMinutesPath: workspaceRelative(minutes.localPath),
+    qaGatePath: workspaceRelative(join(paths.runDir, "qa-gate.json")),
+    transcriptPath: workspaceRelative(transcriptPath(paths.artifactsDir)),
+    participantMapPath: workspaceRelative(participantMapPath(paths.artifactsDir)),
+  });
+  writeJson(meetingMemoryPlanPath(paths.artifactsDir), plan);
+  const envConfig = loadPiMeetingOrchestrationEnv(workspaceDir);
+  const piCodingAgentDir = join(paths.runDir, ".pi-memory-curator");
+  await hooks.onStep?.("meeting_memory_curation_started", "running", {
+    mode: "single_subagent",
+    agent: "meeting-memory-curator",
+    modelCandidates: envConfig.candidates.map((candidate) => ({ provider: candidate.provider, model: candidate.model, role: candidate.role })),
+    artifact: workspaceRelative(meetingMemoryPlanPath(paths.artifactsDir)),
+  });
+  const startedAt = Date.now();
+  const attempts = [];
+  const eventStreams = [];
+  let completedAttempt = null;
+  const timeoutMs = Number(options.meetingMemoryTimeoutMs ?? process.env.MEETING_MEMORY_TIMEOUT_MS ?? DEFAULT_MEETING_MEMORY_TIMEOUT_MS);
+  for (const [index, candidate] of envConfig.candidates.entries()) {
+    const invocation = buildPiMeetingMemoryInvocation({
+      workspaceDir,
+      packageDir,
+      planPath: meetingMemoryPlanPath(paths.artifactsDir),
+      provider: candidate.provider,
+      model: candidate.model,
+      piCodingAgentDir: join(piCodingAgentDir, `attempt-${index + 1}`),
+    });
+    const commandResult = await runCommand(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: { ...envConfig.env, ...invocation.env },
+      timeoutMs,
+      maxOutputChars: Number(options.meetingAgenticEventMaxChars ?? process.env.MEETING_AGENTIC_EVENT_MAX_CHARS ?? DEFAULT_MEETING_AGENTIC_EVENT_MAX_CHARS),
+    });
+    eventStreams.push(commandResult.stdout);
+    const parsed = parsePiMeetingOrchestrationOutput(commandResult.stdout, "subagent");
+    const payload = extractMeetingMemoryPayload(parsed.result);
+    const completed = commandResult.exitCode === 0 && parsed.status === "completed" && payload !== null;
+    const attempt = {
+      provider: candidate.provider,
+      model: candidate.model,
+      role: candidate.role,
+      status: completed ? "completed" : "blocked",
+      reason: completed
+        ? null
+        : commandResult.timedOut
+          ? "pi_meeting_memory_timeout"
+          : commandResult.exitCode !== 0
+            ? "pi_meeting_memory_process_failed"
+            : parsed.status !== "completed"
+              ? parsed.reason
+              : "meeting_memory_structured_payload_missing",
+      exitCode: commandResult.exitCode,
+      timedOut: commandResult.timedOut,
+      observedTools: parsed.observedTools ?? [],
+      errorMessages: parsed.errorMessages ?? [],
+      eventCount: parsed.eventCount ?? 0,
+      parseErrors: parsed.parseErrors ?? [],
+      payload,
+      stderrTail: redactString(commandResult.stderr).slice(-2000),
+    };
+    attempts.push(attempt);
+    if (completed) {
+      completedAttempt = attempt;
+      break;
+    }
+  }
+  writeText(meetingMemoryEventsPath(paths.artifactsDir), eventStreams.filter(Boolean).join("\n"));
+  const finalAttempt = completedAttempt ?? attempts.at(-1) ?? {};
+  if (!completedAttempt) {
+    const result = {
+      schemaVersion: "meeting-memory-curation-result-v1",
+      status: "blocked",
+      reason: finalAttempt.reason ?? "meeting_memory_subagent_failed",
+      durationMs: Date.now() - startedAt,
+      attempts: attempts.map(({ payload, stderrTail, parseErrors, ...attempt }) => attempt),
+      persistedCount: 0,
+      eventsArtifact: workspaceRelative(meetingMemoryEventsPath(paths.artifactsDir)),
+      stderrTail: finalAttempt.stderrTail ?? "",
+      rawSecretsReturned: false,
+    };
+    writeJson(meetingMemoryResultPath(paths.artifactsDir), result);
+    await hooks.onStep?.("meeting_memory_curation_completed", "blocked", {
+      reason: result.reason,
+      artifact: workspaceRelative(meetingMemoryResultPath(paths.artifactsDir)),
+    });
+    return result;
+  }
+
+  const transcript = loadJson(transcriptPath(paths.artifactsDir));
+  const knownSegmentIds = normalizeMeetingSegments(transcript?.transcriptSegments ?? []).map((segment) => segment.segmentId);
+  const reconciliation = reconcileMeetingMemoryCandidates(completedAttempt.payload, {
+    meetingAnalysis,
+    knownSegmentIds,
+    runId: task.runId,
+  });
+  const persistence = persistMeetingMemory(reconciliation, { workspaceDir });
+  const status = persistence.conflicts.length > 0 || reconciliation.status === "needs_review" ? "needs_review" : "completed";
+  const result = {
+    schemaVersion: "meeting-memory-curation-result-v1",
+    status,
+    reason: persistence.conflicts.length > 0
+      ? "memory_conflict_requires_review"
+      : reconciliation.status === "needs_review"
+        ? "some_memory_candidates_rejected"
+        : null,
+    mode: "single_subagent",
+    agent: "meeting-memory-curator",
+    provider: completedAttempt.provider,
+    model: completedAttempt.model,
+    durationMs: Date.now() - startedAt,
+    attempts: attempts.map(({ payload, stderrTail, parseErrors, ...attempt }) => attempt),
+    reconciliation,
+    persistence: {
+      status: persistence.status,
+      persistedCount: persistence.persisted.length,
+      duplicateCount: persistence.duplicates.length,
+      conflictCount: persistence.conflicts.length,
+      conflicts: persistence.conflicts,
+      memoryPath: workspaceRelative(persistence.memoryPath),
+      ledgerPath: workspaceRelative(persistence.ledgerPath),
+    },
+    eventsArtifact: workspaceRelative(meetingMemoryEventsPath(paths.artifactsDir)),
+    rawSecretsReturned: false,
+  };
+  writeJson(meetingMemoryResultPath(paths.artifactsDir), result);
+  await hooks.onStep?.("meeting_memory_curation_completed", status, {
+    reason: result.reason,
+    persistedCount: persistence.persisted.length,
+    rejectedCount: reconciliation.rejected.length,
+    conflictCount: persistence.conflicts.length,
+    artifact: workspaceRelative(meetingMemoryResultPath(paths.artifactsDir)),
+  });
+  return result;
+}
+
+async function runMeetingMemoryCurationSafely(input) {
+  try {
+    return await runMeetingMemoryCuration(input);
+  } catch (error) {
+    const result = {
+      schemaVersion: "meeting-memory-curation-result-v1",
+      status: "blocked",
+      reason: "meeting_memory_curation_failed",
+      error: redactString(error instanceof Error ? error.message : String(error)).slice(0, 1200),
+      persistedCount: 0,
+      rawSecretsReturned: false,
+    };
+    writeJson(meetingMemoryResultPath(input.paths.artifactsDir), result);
+    await input.hooks.onStep?.("meeting_memory_curation_completed", "blocked", {
+      reason: result.reason,
+      artifact: workspaceRelative(meetingMemoryResultPath(input.paths.artifactsDir)),
+    });
+    return result;
+  }
+}
+
 async function ensureMeetingIntelligence(task, paths, options, hooks) {
   if (!existsSync(transcriptPath(paths.artifactsDir))) {
     return { status: "skipped", reason: "transcript_not_available", analysis: null };
@@ -3070,6 +3292,17 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         action: "revised",
       });
     }
+    const meetingMemory = requestedDocuments.includes("meeting-minutes")
+      ? await runMeetingMemoryCurationSafely({
+          task,
+          paths,
+          options,
+          hooks,
+          meetingAnalysis: meetingIntelligence.analysis,
+          documents,
+          qaGate,
+        })
+      : null;
     const artifacts = [
       { kind: "evidence-pack", name: "evidence-pack.json", localPath: evidencePackPath(paths.artifactsDir) },
       meetingIntelligence.analysis ? { kind: "meeting-analysis", name: "meeting-analysis.json", localPath: meetingAnalysisPath(paths.artifactsDir) } : null,
@@ -3132,6 +3365,15 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
               specialistCount: meetingIntelligence.analysis?.agentPlan?.specialistCount ?? 0,
               suggestedFollowUpDocuments: meetingIntelligence.analysis?.agentPlan?.suggestedFollowUpDocuments ?? [],
             },
+            meetingMemory: meetingMemory
+              ? {
+                  status: meetingMemory.status,
+                  reason: meetingMemory.reason ?? null,
+                  persistedCount: meetingMemory.persistence?.persistedCount ?? 0,
+                  conflictCount: meetingMemory.persistence?.conflictCount ?? 0,
+                  artifact: workspaceRelative(meetingMemoryResultPath(paths.artifactsDir)),
+                }
+              : null,
           }
         : { finalFailureReport: gateFailureReport },
       rawSecretsReturned: false,

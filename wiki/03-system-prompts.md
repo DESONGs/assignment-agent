@@ -14,6 +14,7 @@ flowchart TD
     R --> O["可选 Overlay\n修订评论 / 渠道 / 交付要求"]
     O --> W["Document Worker Section Prompt"]
     W --> Q["QA Gate Prompt / 机器规则"]
+    Q --> M["Memory Curator Prompt\n长期记忆候选"]
 ```
 
 | 层 | 真相源 | 职责 |
@@ -24,6 +25,7 @@ flowchart TD
 | Document | `runtime/document-prompt-registry.json` + `prompts/*.md` | 会议纪要、PRD、架构、运营、确认清单的写作契约 |
 | Revision | `prompts/document-revision-overlay.md` | 在基准 prompt 上叠加 review context，不另建流程 |
 | QA | `qa-gate.schema.json` 与规则 | 证据覆盖、无证据实体、结构、发布阻断 |
+| Memory | `.pi/agents/meeting-memory-curator.md` | 只从 QA 通过的证据中提炼长期记忆候选 |
 
 ## 2. System Prompt 当前原则
 
@@ -36,6 +38,7 @@ flowchart TD
 - 子 Agent 只核验，父 Agent 校验 segment id 并承担最终交付。
 - 会议内容可供当前任务能力使用；凭证不能进入模型或产物。
 - QA Gate 与 Policy Gate 分工，不用策略门替代业务推理。
+- 当前会话由 Pi 原生 Compaction 压缩；长期记忆由 fresh、只读的 `meeting-memory-curator` 按需提出候选，父 Agent 负责校验和写入。
 
 ## 3. 会议纪要 Prompt
 
@@ -68,12 +71,15 @@ flowchart TD
 - `meeting-decision-reviewer.md`：核验决定状态、异议与未决项。
 - `meeting-action-reviewer.md`：核验行动内容、owner、due date 与证据。
 - `meeting-evidence-synthesizer.md`：综合已经过 schema 约束的发现。
+- `meeting-memory-curator.md`：从最终 Meeting Intelligence、纪要、QA、participant map 与完整转录中提炼少量长期记忆候选。
 
 每个角色都必须收到明确任务、允许读取的 artifact、当前 segment id 范围和输出 schema。禁止让 child 自己决定发布、扩展工具或把常识写成会议事实。
 
+Memory Curator 额外要求每个事实性候选同时给出 `sourceClaimIds` 和 `evidenceSegmentIds`；参会人身份只能来自 `user_confirmed` 映射。它不能写文件、运行 workflow 或把普通行动项、低置信 ASR、未经确认提议、凭证写入记忆。父 Agent 将同 key 不同值写入冲突账本，不自动覆盖。
+
 ## 6. 上下文管理
 
-长 transcript 和完整 evidence 可以写入 offload artifact，并由 read/search 工具按需取回。主上下文保留任务相关片段、artifact path、hash、bounded preview、topic/evidence map、QA 状态和开放问题；这是容量与质量优化，不是内容不能被 Agent 使用。
+长 transcript 和完整 evidence 可以写入 offload artifact，并由 read/search 工具按需取回。主上下文保留任务相关片段、artifact path、hash、bounded preview、topic/evidence map、QA 状态和开放问题；Pi 原生 Compaction 在接近上下文上限时压缩旧对话。这些都是容量与质量优化，不是内容不能被 Agent 使用，也不替代项目长期记忆。
 
 以下内容必须在进入 prompt 前剔除：API Key、Token、Cookie、Authorization、App Secret、签名 URL、登录会话和可能包含它们的原始命令输出。`auth-status-summary` 只返回认证状态摘要；`secret-scan` 处理其他外部输出。
 
@@ -95,4 +101,4 @@ flowchart TD
 - 文档类型结构只在 `prompts/*.md` 与 registry 维护。
 - 角色只在 `.pi/agents/*.md` 维护。
 - 代码中的提示词只允许用于工具调用说明、schema 约束和短运行指令，不复制整份文档 prompt。
-- Hermes 只能生成 prompt/skill proposal；必须经过人工审阅和回归测试后才能合入。
+- Memory Curator 只能提出候选；父 Agent 是长期记忆唯一校验与写入者，且记忆不得自动修改生产 prompt/skill。

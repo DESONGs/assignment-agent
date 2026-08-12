@@ -36,7 +36,7 @@
       "defaultLoad": true,
       "contextCost": "low",
       "toolPackage": "local-extension",
-      "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency", "persist_memory"],
+      "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency"],
       "policy": ["credential leak blocked", "meeting content transfer allowed", "confirmation required for irreversible actions"],
       "observability": ["policyDecisions"],
       "installState": "local",
@@ -332,21 +332,41 @@
     {
       "capabilityId": "office-runtime",
       "status": "available",
-      "description": "Local office object runtime for document lifecycle metadata, pointer-only retrieval index, and reviewable memory proposals.",
+      "description": "Local office object runtime for document lifecycle metadata and pointer-only retrieval indexes.",
       "defaultLoad": false,
       "contextCost": "low",
       "toolPackage": "local-extension",
-      "toolIntents": ["read", "draft", "write_private", "persist_memory"],
-      "policy": ["delete/clear/remove/destroy blocked", "existing document modification requires explicit target", "memory writes are proposals until confirmed"],
+      "toolIntents": ["read", "draft", "write_private"],
+      "policy": ["delete/clear/remove/destroy blocked", "existing document modification requires explicit target"],
       "observability": ["plannerDecisions", "policyDecisions", "generatedArtifacts", "capabilitySelections"],
       "installState": "local",
       "securityReview": {
         "status": "passed",
         "summary": "Workspace-bounded local metadata tools; stores references, hashes, bounded previews, sourceRun and version metadata, never raw transcripts or full file text."
       },
-      "triggers": ["document lifecycle", "overwrite", "rewrite section", "diff", "retrieval", "memory", "偏好", "检索", "覆盖修改", "版本"],
+      "triggers": ["document lifecycle", "overwrite", "rewrite section", "diff", "retrieval", "检索", "覆盖修改", "版本"],
       "runtimeSchemas": ["office-context.schema.json", "office-object.schema.json", "document-lifecycle.schema.json", "retrieval-index.schema.json"],
-      "guardrails": ["pointer-only retrieval", "sourceRun required for generated docs", "delete actions blocked", "no automatic memory persistence"]
+      "guardrails": ["pointer-only retrieval", "sourceRun required for generated docs", "delete actions blocked"]
+    },
+    {
+      "capabilityId": "meeting-memory-curation",
+      "status": "available",
+      "description": "On-demand, evidence-grounded project memory curation after a complete audio meeting passes QA.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "pi-subagents",
+      "skillSource": "skills/meeting-memory-curation/SKILL.md",
+      "toolIntents": ["read", "draft", "write_private"],
+      "policy": ["single fresh read-only child", "parent-only persistence", "memory failure never blocks delivery"],
+      "observability": ["tool_execution_end", "providerAttempts", "candidateRejections", "dedupeResults", "memoryConflicts"],
+      "installState": "audited",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Reads only parent-selected text artifacts; parent validates sourceClaimIds, current evidenceSegmentIds, participant mapping and credential-like content before writing ignored local memory."
+      },
+      "triggers": ["QA-passed audio meeting", "meeting memory", "长期记忆", "会议记忆"],
+      "runtimeSchemas": ["planner-envelope.schema.json", "qa-gate.schema.json"],
+      "guardrails": ["not a dynamic workflow", "no raw media", "no child writes", "same-key conflicts require review", "no production prompt mutation"]
     },
     {
       "capabilityId": "calendar-task",

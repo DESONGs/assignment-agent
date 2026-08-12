@@ -420,7 +420,6 @@ export function pathsForRunDir(runDir) {
     statePath: join(resolved, "state.json"),
     metricsPath: join(resolved, "run.metrics.json"),
     manifestPath: join(resolved, "run-manifest.json"),
-    trajectoryPath: join(resolved, "sanitized-trajectory.json"),
     agentTaskPath: join(resolved, "agent-task.md"),
     agentOutputPath: join(resolved, "agent-output.json"),
     publishPath: join(resolved, "publish.json"),

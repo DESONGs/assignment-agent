@@ -21,6 +21,7 @@ git diff --check
 | Agentic | direct/single/dynamic 计划、Pi 0.46 API、workflow 生成、模型 fallback |
 | Tool event | `tool_execution_end` 解析、未调用/失败状态、真实执行证明 |
 | Reconciliation | 当前 segment id 集合、跨会议 id、缺失 evidenceSegmentIds、payload quarantine |
+| Memory | Pi 原生 Compaction 配置、单 Curator 调用、sourceClaimIds、去重、冲突账本与非阻塞失败 |
 | Document | prompt registry、section ordering、model route、QA gate |
 | Channel | 飞书 event/task/file context/publish contract 与 secret scan |
 | Runtime | Host-owned store、cache/CAS/retention、Docker job boundary |
@@ -72,6 +73,14 @@ git diff --check
 - 飞书发布成功必须有 token/link 和最终回复；失败时本地产物保留并返回恢复方法。
 - “目前暂不支持该功能”只在功能确实不存在时使用，不能代替真实错误诊断。
 
+### 长期记忆验收
+
+- 只在完整音频会议的 Meeting Intelligence 和 QA 都通过后运行。
+- 真实 smoke 必须出现 `meeting-memory-curator` 对应的 `subagent` `tool_execution_end`，而不是 workflow 或自然语言自述。
+- 事实性候选同时引用现有 `sourceClaimIds` 与由该 claim 拥有的当前会议 `evidenceSegmentIds`；参会人身份来自 `user_confirmed` 映射。
+- 完全重复不重复写账本，同 key 不同值进入 `conflicts.jsonl` 且不覆盖 `MEMORY.md`。
+- 子 Agent 无 write/bash/publish 工具；模型、解析或持久化失败只把记忆阶段标记为 blocked，不改变会议交付状态。
+
 ## 6. Host / Docker / Store 验收
 
 架构保持 **Host 原生控制面 + Local Docker 受限执行面**。本地 Docker 不能减少本机总计算消耗；`fast_answer/file_summary 不进 Docker`，`document_generation/multi_source_synthesis 默认进 Docker worker`（queue 模式开启时），`raw audio 不进容器`。默认档位为 `4 CPU / 8GB / 长文档并发 2`。
@@ -79,7 +88,7 @@ git diff --check
 启动命令：
 
 ```bash
-docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker hermes-worker
+docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker
 ```
 
 验证 Docker worker 不直接写 SQLite、不调用 `lark-cli`、不 publish、不 reply；Host 登记 worker 产物。Store cleanup 默认 dry run，只有 `cleanup --execute` 才执行删除。

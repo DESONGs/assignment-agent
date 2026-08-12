@@ -27,6 +27,7 @@ flowchart LR
 | `runtime-observability` | 记录 plannerDecisions、policyDecisions、workerDecisions、capabilitySelections、packageAudits | 是 |
 | `meeting-minutes` | 从 Meeting Intelligence 生成纪要 | 按需 |
 | `meeting-agentic-orchestration` | 选择 direct、fresh sub-agent 或 Dynamic Workflow | 按需 |
+| `meeting-memory-curator` | QA 后提炼带 claim/segment 证据的长期记忆候选 | 完整音频会议按需 |
 | `document-router` / `document-generation` | 选择和渲染文档 prompt | 按需 |
 | `document-worker-runtime` | 执行有界 section writing | 按需 |
 | `model-provider` | 调用主模型/审阅模型并记录 model route | 按需 |
@@ -65,7 +66,15 @@ ASR 失败不得静默伪装成功；partial transcript 不能进入完整纪要
 
 短答案与文件摘要保持父级直接处理；长 PRD、技术架构、多源综合可按 execution profile 进入 section worker。`document_revision` 在原 prompt 上叠加 review-context overlay，而不是建立第二套写作系统。
 
-## 6. 飞书与渠道能力
+## 6. 记忆能力
+
+- Pi 原生 Compaction 处理当前会话的短期上下文，不新增摘要服务。
+- `meeting-memory-curator` 通过 `pi-subagents@0.46.0` 的一个 `runs.run(...)` 调用执行，固定 `context=fresh`、`tools=read`、project memory scope；不是 Dynamic Workflow，也不是常驻模型。
+- `meeting_memory_helpers.mjs` 建立受限计划、解析结构化输出，并由父级校验 Meeting Intelligence claim 对 segment 的所有权。
+- 父级持久化维护 `MEMORY.md`、append-only `ledger.jsonl` 和待审 `conflicts.jsonl`；低置信、越界、无 claim、凭证样内容会被拒绝。
+- 记忆提炼属于非阻塞增强能力，不拥有飞书发布或生产配置写权限。
+
+## 7. 飞书与渠道能力
 
 - Event gateway 标准化消息、附件和 sender context。
 - Handler 获取附件、构建 source context、调用 Agent、执行 QA/Policy、发布并回复。
@@ -73,14 +82,14 @@ ASR 失败不得静默伪装成功；partial transcript 不能进入完整纪要
 - 其他 CLI/OpenAPI 输出先过 `secret-scan`。
 - “目前暂不支持该功能”只用于能力确实不存在且无安全替代时，不用于掩盖权限或运行故障。
 
-## 7. 执行与安装边界
+## 8. 执行与安装边界
 
 - Capability Registry 可以检查 PATH、环境变量和 package audit，但检查本身不安装依赖。
 - 第三方 package 必须先有 `package-audit.schema.json` 对应记录，再加入 package manifest。
 - `install_dependency` 属于 Policy Gate 动作，不能由 child Agent 自行执行。
 - Pi package 的 extension、skill、prompt 入口以 `meeting-agent-pi-package/package.json` 为准。
 
-## 8. 新增能力的最小要求
+## 9. 新增能力的最小要求
 
 新增能力必须同时回答：
 

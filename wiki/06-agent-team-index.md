@@ -2,7 +2,7 @@
 
 更新时间：2026-08-12。
 
-当前主架构不是常驻“Agent 团队”，而是一个父 Agent 根据 Meeting Intelligence 按需创建 fresh child，或运行有界 Dynamic Workflow。角色文件是任务模板，不是长期人格或独立状态所有者。
+当前主架构不是常驻“Agent 团队”，而是一个父 Agent 根据 Meeting Intelligence 按需创建 fresh child，或运行有界 Dynamic Workflow。核验角色是任务模板；`meeting-memory-curator` 是唯一带 project memory scope 的持久角色，但每次仍以 fresh 子进程按需运行，不是常驻 LLM。
 
 ## 1. 角色索引
 
@@ -14,7 +14,7 @@
 | Action Reviewer | `.pi/agents/meeting-action-reviewer.md` | action candidates 与证据 | action/owner/due 核验 | 不得补猜 owner/date |
 | Evidence Synthesizer | `.pi/agents/meeting-evidence-synthesizer.md` | 已结构化 specialist 输出 | 去重、冲突与完整性摘要 | 不得创造新事实 |
 | Document Worker | extension/runtime task | section prompt + context pack | Markdown section 与 QA 输入 | 不得发布飞书 |
-| Hermes | `hermes-learning-sidecar/` | 已完成 run trajectory | 学习与改进 proposal | 不得直接改生产 |
+| Memory Curator | `.pi/agents/meeting-memory-curator.md` | QA 通过的 Meeting Intelligence、纪要、participant map、transcript | 结构化长期记忆候选 | 不得写文件、发布或改生产 |
 
 ## 2. 选择规则
 
@@ -44,6 +44,7 @@ flowchart LR
 - 工具必须出现 `tool_execution_end`；只生成计划或文字摘要不算执行。
 - child 返回事实性发现时必须包含 `evidenceSegmentIds`。
 - 父级 `workerDecisions` 和 reconciliation 记录接受、隔离或 fallback 原因。
+- Memory Curator 的事实候选还必须引用 `sourceClaimIds`；父 Agent 校验 claim 对当前 segment 的所有权，去重并隔离同 key 冲突。
 
 ## 4. 与旧 runtime 的关系
 
@@ -51,6 +52,6 @@ flowchart LR
 
 ## 5. 完整链路
 
-当前 scenario playbook 为：ASR provider → evidence index → Meeting Intelligence → Agentic Planner → direct/sub-agent/workflow → 父级 evidence reconciliation → model-route.json → draft/review → QA gate → Policy Gate → delivery。
+当前 scenario playbook 为：ASR provider → evidence index → Meeting Intelligence → Agentic Planner → direct/sub-agent/workflow → 父级 evidence reconciliation → model-route.json → draft/review → QA gate → 按需 Memory Curator → 父级记忆治理 → Policy Gate → delivery。
 
 这是可自适应的会议场景链路，不是全局 fixed workflow。上下文 offload 可按容量使用；它不会阻止 child 在被授权任务内读取完整会议证据。

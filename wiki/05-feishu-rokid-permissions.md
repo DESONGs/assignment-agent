@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-    Content["会议内容\n按任务可进入所选能力"] --> Work["ASR / 模型 / Agent / 文档 / QA / Hermes"]
+    Content["会议内容\n按任务可进入所选能力"] --> Work["ASR / 模型 / Agent / 文档 / QA / Memory Curator"]
     Secrets["凭证\n永不进入模型与普通产物"] --> Block["Fail closed + redaction"]
     Actions["外部动作\n按影响判断"] --> Gate["Policy Gate"]
 ```
@@ -60,11 +60,12 @@ API Key、Token、Cookie、Authorization、App Secret、签名 URL、CLI session
 
 设备只负责采集和传输，不建立第二套 Agent 架构。导出文件走文件 ingestion contract；实时单路音频走 realtime ingestion contract。设备身份、会议身份和用户身份分别记录，避免把设备 owner 自动当作每段 speaker。
 
-## 6. Docker 与 Hermes
+## 6. Docker 与长期记忆
 
 - Docker worker 不接收飞书 token、App Secret、CLI session 或 cookie。
 - `raw audio 不进容器`；Host 完成媒体获取和 ASR，worker 读取 transcript/evidence 或有界 context pack。
-- Hermes 可以读取完成学习任务所需的会议 trajectory 与证据，但不读取凭证，不自动发布，不直接修改生产 prompt/skill。
+- `meeting-memory-curator` 只读取父 Agent 指定的已通过 QA 的文字证据，不能写文件、发布或修改生产 prompt/skill；父 Agent 负责凭证扫描、证据校验和持久化。
+- 长期记忆与飞书发布解耦：发布失败不回滚已经验证的记忆，记忆失败也不阻塞纪要发布。
 
 ## 7. 动作判断示例
 

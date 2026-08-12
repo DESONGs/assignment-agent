@@ -14,7 +14,8 @@ Meeting Agent 是一个以 Pi 为执行内核的会议理解与办公文档 Agen
 - Agentic 编排：简单会议由父 Agent 直接完成；单一核验轴调用 fresh sub-agent；复杂会议运行 Dynamic Workflow 的并行核验、完整性检查、交叉验证与综合。
 - 父级证据回收：委派工具完成后，父 Agent 再验证所有 segment id。跨会议或无证据的子 Agent 发现会被隔离，并成为 QA 阻断项。
 - 飞书闭环：支持事件接入、附件获取、进度回复、文档生成、QA/Policy Gate、Wiki/Drive 发布和最终回复。
-- Hermes 学习侧车：可读取会议 trajectory 与证据，生成复盘、记忆、prompt/skill 和 eval 建议；不会直接修改生产能力。
+- 双层记忆：会话内短期上下文使用 Pi 原生 Compaction；QA 通过后按需唤醒 `meeting-memory-curator`，只提炼带 Meeting Intelligence claim 与 transcript segment 证据的长期记忆候选。
+- 父级记忆治理：父 Agent 校验证据范围、去重并隔离同 key 冲突；记忆子 Agent 只读、fresh、单次运行，失败不会阻塞会议交付。
 
 ## 黄金路径
 
@@ -34,8 +35,10 @@ flowchart LR
     R --> D
     D --> Q["QA Gate"]
     Q --> G["Policy Gate"]
+    Q --> C["Memory Curator\n按需单 Sub-agent"]
+    C --> V["父级校验 / 去重 / 冲突隔离"]
+    V --> L["项目长期记忆"]
     G --> F["飞书发布 / 本地交付"]
-    F --> H["Hermes 复盘建议"]
 ```
 
 ## 仓库结构
@@ -44,7 +47,6 @@ flowchart LR
 | --- | --- |
 | `meeting-agent-pi-package/` | Pi package、extensions、skills、prompts、runtime contracts 与测试 |
 | `.pi/` | 项目级 Pi system prompt、设置和会议专用 sub-agent 定义 |
-| `hermes-learning-sidecar/` | 学习侧车、供应链策略与复盘产物生成 |
 | `AgentWorkbench/` | 只读运行观测界面 |
 | `src/` | workspace 校验器、共享 schema 与示例 |
 | `wiki/` | 当前产品、架构、提示词、技能、权限、测试和历史记录 |
@@ -91,6 +93,7 @@ meeting-agent-pi-package/node_modules/.bin/pi \
 - 审阅模型：`PI_REVIEW_PROVIDER`、`PI_REVIEW_MODEL`；不可用时 Agentic 委派显式尝试主模型并记录 attempts。
 - ASR：`MEETING_ASR_PROVIDER=auto|aliyun_dashscope_paraformer|local_qwen3`。
 - Agentic 委派：`MEETING_AGENTIC_DELEGATION=auto|off`；当前产品默认 `auto`。
+- 长期记忆提炼：`MEETING_MEMORY_CURATION=auto|off`；默认 `auto`，只处理已通过 QA 的完整音频会议。
 
 ## 安全与数据边界
 
@@ -111,4 +114,4 @@ python3 meeting-agent-pi-package/tools/local_ci_check.py
 cd meeting-agent-pi-package && npm audit --omit=dev
 ```
 
-当前自动测试覆盖 ASR 文件/实时边界、格式矩阵、speaker diarization、单录混音复核、Meeting Intelligence、参会人别名、Pi 0.46 Sub-agent API、Dynamic Workflow 生成、真实工具事件解析、模型回退和父级证据隔离。
+当前自动测试覆盖 ASR 文件/实时边界、格式矩阵、speaker diarization、单录混音复核、Meeting Intelligence、参会人别名、Pi 0.46 Sub-agent API、Dynamic Workflow 生成、真实工具事件解析、模型回退、父级证据隔离，以及长期记忆候选校验、去重和冲突处理。

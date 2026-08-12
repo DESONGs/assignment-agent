@@ -25,7 +25,8 @@ Meeting Agent 是面向个人与小团队的会议理解和办公交付 Agent。
 4. Meeting Intelligence 识别会议类型、参会人代号、主议题、决策状态、行动项、风险和待确认。
 5. 简单会议由父 Agent 处理；复杂会议按需委派 sub-agent/workflow。
 6. 父 Agent 验证委派证据，生成会议纪要并执行 QA。
-7. 用户获得本地 Markdown 或飞书文档；实名缺失等非关键信息可随后补充。
+7. QA 通过后按需提炼可跨会议复用的长期记忆；父 Agent 验证并持久化，失败不阻塞交付。
+8. 用户获得本地 Markdown 或飞书文档；实名缺失等非关键信息可随后补充。
 
 ## 4. 功能范围
 
@@ -53,6 +54,13 @@ Meeting Agent 是面向个人与小团队的会议理解和办公交付 Agent。
 - 父 Agent 对返回 segment id 做集合校验，隔离跨会议和无证据输出。
 - 委派失败不阻塞整个会议任务；系统记录原因并执行显式父级 review。
 
+### 记忆能力
+
+- 当前父会话使用 Pi 原生 Compaction 做短期上下文压缩。
+- 长期记忆由一个持久角色、fresh 单次运行的 `meeting-memory-curator` 提出候选，不使用 Dynamic Workflow，也不运行常驻 LLM。
+- 只接受已确认项目事实、已达成决定、用户显式参会人身份、稳定术语和持续开放问题；普通行动项、低置信 ASR、未确认提议和长段原文不进入长期记忆。
+- 父 Agent 必须验证 `sourceClaimIds` 与当前会议 `evidenceSegmentIds`，去重并将同 key 不同值记录为待审冲突；子 Agent 无写入权限。
+
 ### 文档与飞书
 
 - 会议纪要标题和章节由当前会议决定。
@@ -67,6 +75,7 @@ Meeting Agent 是面向个人与小团队的会议理解和办公交付 Agent。
 - 失败透明：provider、模型、格式、权限、网络和委派失败分别记录。
 - 运行可观测：每次 run 保存 planner、model route、Meeting Intelligence、delegation、QA、Policy 和 publish artifact。
 - 成本有界：简单会议不启动 sub-agent；复杂会议 specialist 不超过当前配置上限。
+- 记忆非阻塞：记忆模型、解析或写入失败不能改变已通过 QA 的会议交付状态。
 
 ## 6. 产品边界
 
@@ -83,5 +92,6 @@ Meeting Agent 是面向个人与小团队的会议理解和办公交付 Agent。
 - 两人以上会议生成稳定匿名代号，并在证据不足时保留待确认。
 - sub-agent/workflow 只有真实工具完成事件才记为执行成功。
 - 跨会议 segment id 无法进入最终文档。
+- 长期记忆候选无法引用当前会议以外的 segment，也不能绕过 Meeting Intelligence claim 所有权。
 - 会议纪要覆盖持续主议题，决策、行动项和风险与 transcript 一致。
 - 本地运行目录、录音、转录与凭证均不进入 Git。

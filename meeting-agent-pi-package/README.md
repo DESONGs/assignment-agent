@@ -40,6 +40,8 @@ npm test
 
 自动入口通过受限非交互 Pi 会话真实调用 `subagent` 或 `workflow`，工具 allowlist 为 `read,subagent,workflow`。只有匹配的 `tool_execution_end` 才算真实执行。父级 reconciliation 会校验所有返回 segment id；跨会议 id 或缺少 `evidenceSegmentIds` 的事实性 findings 被隔离并交给 QA 阻断。
 
+会议短期上下文使用 Pi 原生 Compaction。完整音频会议通过 QA 后，runtime 再按需唤醒一个 fresh、只读的 `meeting-memory-curator`，由它提出长期记忆候选；父 Agent 根据 Meeting Intelligence `sourceClaimIds` 与当前 transcript `evidenceSegmentIds` 做二次校验、去重与冲突隔离，再写入项目级 `.pi/agent-memory/meeting-memory/`。该阶段失败不会阻塞会议文档交付，也不会调用 Dynamic Workflow。
+
 第三方 package 已通过 package audit/install mechanism，记录在 `runtime/package-audits/`。Capability Registry 中的记录是 planner-selectable capability descriptions；Metrics 记录 `plannerDecisions`、`policyDecisions`、`workerDecisions`、`capabilitySelections` 和 `packageAudits`。
 
 ## ASR
@@ -85,6 +87,8 @@ python3 tools/local_asr_service_ctl.py stop
 - `agentic-orchestration.json`
 - `agentic-orchestration-result.json`
 - `agentic-orchestration-events.ndjson`
+
+记忆增强在 `artifacts/meeting-memory/` 生成 `curation-plan.json`、`curation-result.json` 与真实工具事件 `curation-events.ndjson`。长期视图为 `.pi/agent-memory/meeting-memory/MEMORY.md`，append-only 审计记录为 `ledger.jsonl`，同 key 冲突写入 `conflicts.jsonl` 待审；整个目录不进入 Git。
 
 默认参会人是 `参会人 A/B/...`。用户可在指令中提供 `参会人 A=张三`；没有姓名不阻塞处理。
 
@@ -140,12 +144,12 @@ Handler 写入 `runtime-runs/feishu-agent/runs/{runId}/`，并分别记录 event
 - 默认 `4 CPU / 8GB / 长文档并发 2`。
 
 ```bash
-docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker hermes-worker
+docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-document-worker
 ```
 
 ## 内容、凭证与动作
 
-会议内容可以被当前任务选择的 ASR、模型、Agent、文档、QA 和 Hermes 使用。上下文 bounding 是性能机制，不是内容隐私 gate。
+会议内容可以被当前任务选择的 ASR、模型、Agent、文档、QA 和记忆整理能力使用。上下文 bounding 是性能机制，不是内容隐私 gate。
 
 API Key、Token、Cookie、Authorization、App Secret、OSS 签名和登录 session 不得进入 prompt、普通 artifact、metrics 或记忆。删除、通知、日历/任务变更、客户可见发布、权限扩大和 `install_dependency` 由 Policy Gate 判断。
 

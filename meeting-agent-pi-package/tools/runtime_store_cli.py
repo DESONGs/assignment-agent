@@ -4,7 +4,7 @@
 runtime-store-v1 implements the local data backend described in
 wiki/14-local-data-storage-cache-backend.md:
 
-- Host-owned SQLite metadata; Docker worker and Hermes worker do not write DB.
+- Host-owned SQLite metadata; Docker workers do not write DB.
 - Hybrid CAS for large/cacheable artifacts under runtime-runs/_store/objects/sha256.
 - Small JSON/state/metrics/manifest control files stay in compatibility run dirs.
 - Workspace-bound, indexed-only, pinned-safe retention cleanup with retention_actions.
@@ -42,7 +42,6 @@ CONTROL_FILE_NAMES = {
     "publish.json",
     "reply.json",
     "progress-replies.ndjson",
-    "sanitized-trajectory.json",
     "agent-task.md",
     "agent-output.json",
     "pi.stdout.txt",
@@ -142,7 +141,6 @@ CAS_KINDS = {
     "transcript_evidence",
     "bounded_docker_bundle",
     "docker_worker_artifact",
-    "hermes_artifact",
     "generated_document",
     "runtime_tool_artifact",
     "model_stream_trace",
@@ -154,7 +152,6 @@ TTL_SECONDS_BY_KIND = {
     "normalized_audio": 7 * 24 * 3600,
     "runtime_tool_artifact": 14 * 24 * 3600,
     "model_stream_trace": 14 * 24 * 3600,
-    "hermes_artifact": 30 * 24 * 3600,
     "extracted_text": 30 * 24 * 3600,
     "raw_media": 45 * 24 * 3600,
     "raw_document_file": 60 * 24 * 3600,
@@ -170,7 +167,6 @@ KIND_MAX_BYTES = {
     "docker_worker_artifact": 1024**3,
     "runtime_tool_artifact": 1024**3,
     "model_stream_trace": 1024**3,
-    "hermes_artifact": 512 * 1024**2,
     "extracted_text": 2 * 1024**3,
     "transcript_evidence": 2 * 1024**3,
     "raw_document_file": 5 * 1024**3,
@@ -184,7 +180,6 @@ DELETE_ORDER = {
     "docker_worker_artifact": 25,
     "runtime_tool_artifact": 30,
     "model_stream_trace": 35,
-    "hermes_artifact": 40,
     "extracted_text": 50,
     "transcript_evidence": 60,
     "raw_media": 70,
@@ -481,7 +476,7 @@ def privacy_class_for(kind: str, path: Path) -> str:
         return "source_document"
     if kind in {"extracted_text", "transcript_evidence", "generated_document", "model_stream_trace"}:
         return "derived_content"
-    if kind in {"bounded_docker_bundle", "docker_worker_artifact", "hermes_artifact"}:
+    if kind in {"bounded_docker_bundle", "docker_worker_artifact"}:
         return "bounded_artifact"
     return "metadata"
 
@@ -498,8 +493,6 @@ def kind_for_path(path: Path, run_dir: Path | None = None) -> str:
         return "transcript_evidence"
     if "docker-worker" in parts:
         return "bounded_docker_bundle" if name in {"task.json", "job.json"} else "docker_worker_artifact"
-    if "hermes" in parts or "hermes-docker" in parts:
-        return "hermes_artifact"
     if "runtime-tool-results" in parts or "runtime-tool-params" in parts:
         return "runtime_tool_artifact"
     if "model-streams" in parts:
@@ -544,7 +537,6 @@ CREATE TABLE IF NOT EXISTS runs (
   run_dir TEXT NOT NULL,
   manifest_path TEXT,
   metrics_path TEXT,
-  trajectory_path TEXT,
   started_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   finished_at TEXT,
@@ -1216,10 +1208,10 @@ def index_run(conn: sqlite3.Connection, runtime_root: Path, run_dir: Path, *, ca
         """
         INSERT INTO runs(
           run_id, channel, execution_profile, task_type, status, source_event_hash,
-          run_dir, manifest_path, metrics_path, trajectory_path, started_at, updated_at,
+          run_dir, manifest_path, metrics_path, started_at, updated_at,
           finished_at, total_bytes, retention_class, expires_at, pinned, deleted_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'standard', ?, 0, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'standard', ?, 0, NULL)
         ON CONFLICT(run_id) DO UPDATE SET
           channel=excluded.channel,
           execution_profile=excluded.execution_profile,
@@ -1229,7 +1221,6 @@ def index_run(conn: sqlite3.Connection, runtime_root: Path, run_dir: Path, *, ca
           run_dir=excluded.run_dir,
           manifest_path=excluded.manifest_path,
           metrics_path=excluded.metrics_path,
-          trajectory_path=excluded.trajectory_path,
           updated_at=excluded.updated_at,
           finished_at=excluded.finished_at,
           expires_at=excluded.expires_at,
@@ -1245,7 +1236,6 @@ def index_run(conn: sqlite3.Connection, runtime_root: Path, run_dir: Path, *, ca
             store_relative(run_dir),
             store_relative(run_dir / "run-manifest.json") if (run_dir / "run-manifest.json").exists() else None,
             store_relative(run_dir / "run.metrics.json") if (run_dir / "run.metrics.json").exists() else None,
-            store_relative(run_dir / "sanitized-trajectory.json") if (run_dir / "sanitized-trajectory.json").exists() else None,
             started,
             updated,
             finished,

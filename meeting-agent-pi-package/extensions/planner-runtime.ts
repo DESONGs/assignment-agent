@@ -16,7 +16,6 @@ const TASK_TYPE = Type.Union([
   Type.Literal("wechat_adapter"),
   Type.Literal("document_lifecycle"),
   Type.Literal("retrieval"),
-  Type.Literal("memory"),
   Type.Literal("calendar"),
   Type.Literal("task_management"),
   Type.Literal("research"),
@@ -35,7 +34,6 @@ const ACTION_INTENT = Type.Union([
   Type.Literal("assign_task"),
   Type.Literal("external_web"),
   Type.Literal("install_dependency"),
-  Type.Literal("persist_memory"),
 ]);
 
 type TaskType =
@@ -45,7 +43,6 @@ type TaskType =
   | "wechat_adapter"
   | "document_lifecycle"
   | "retrieval"
-  | "memory"
   | "calendar"
   | "task_management"
   | "research"
@@ -61,8 +58,7 @@ type ActionIntent =
   | "mutate_calendar"
   | "assign_task"
   | "external_web"
-  | "install_dependency"
-  | "persist_memory";
+  | "install_dependency";
 
 type CapabilityNeed = {
   capabilityId: string;
@@ -132,7 +128,7 @@ function addToolPlan(toolPlan: any[], toolIntent: ActionIntent, toolName: string
       reason,
       policyCheckRequired:
         policyCheckRequired ??
-        ["publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency", "persist_memory"].includes(
+        ["publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency"].includes(
           toolIntent,
         ),
     });
@@ -145,7 +141,6 @@ function inferTaskType(text: string, explicit?: TaskType): TaskType {
   if (hasAny(text, ["机器人不回复", "bot reply", "im.message.receive_v1", "feishu bot", "feishu inbound", "event consume", "feishu agent bridge", "飞书机器人", "飞书双向", "飞书附件", "飞书发布"])) return "feishu_bot";
   if (hasAny(text, ["overwrite", "rewrite section", "diff", "version", "source run", "覆盖修改", "改写章节", "变更摘要", "版本", "文档生命周期"])) return "document_lifecycle";
   if (hasAny(text, ["search previous", "retrieval", "find previous", "history", "上次", "之前", "历史", "检索", "找之前"])) return "retrieval";
-  if (hasAny(text, ["memory", "preference", "profile", "偏好", "记忆", "档案", "常用模板"])) return "memory";
   if (hasAny(text, ["calendar", "schedule", "日历", "排期", "会议邀请"])) return "calendar";
   if (hasAny(text, ["assign", "todo", "task", "任务", "待办"])) return "task_management";
   if (hasAny(text, ["latest", "official docs", "sdk", "mcp", "api docs", "官方文档", "最新", "查阅文档"])) return "research";
@@ -395,18 +390,6 @@ function buildEnvelope(params: any) {
     addToolPlan(toolPlan, "read", "retrieval_index_search", "Search pointer-only run/document index and return bounded previews.", false);
     requiredArtifacts.push("retrieval-index.json");
     constraints.push("Retrieval must return references, hashes, and bounded previews, never full raw transcripts or full files.");
-  }
-
-  if (taskType === "memory") {
-    addCapability(capabilities, {
-      capabilityId: "office-runtime",
-      reason: "User/org preference updates must be recorded as reviewable memory proposals instead of automatic prompt mutations.",
-      loadMode: "lazy",
-      contextCost: "low",
-    });
-    addToolPlan(toolPlan, "persist_memory", "memory_proposal_write", "Write a reviewable memory proposal; persistence requires Policy Gate.", true);
-    policyRisks.push({ actionIntent: "persist_memory", reason: "Long-term memory can affect future tasks and must remain reviewable." });
-    requiredArtifacts.push("memory-proposal.json", "policy-gate.json");
   }
 
   if (taskType === "calendar" || taskType === "task_management") {

@@ -482,46 +482,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
-    name: "memory_proposal_write",
-    label: "Memory Proposal Write",
-    description: "Write a reviewable memory proposal without automatically persisting it into future prompts.",
-    parameters: Type.Object({
-      runId: Type.String(),
-      memoryType: Type.Union([Type.Literal("user_preference"), Type.Literal("org_profile"), Type.Literal("project_profile"), Type.Literal("contact_profile")]),
-      content: Type.String(),
-      rationale: Type.String(),
-      sourceRunId: Type.Optional(Type.String()),
-      artifactPointer: Type.Optional(Type.String()),
-      channel: Type.Optional(CHANNEL),
-      outputRoot: Type.Optional(Type.String()),
-    }),
-    async execute(_toolCallId, params) {
-      try {
-        if (hasSecretLikeValue(params.content) || hasSecretLikeValue(params.rationale)) {
-          throw new Error("memory_proposal_secret_like_content_blocked");
-        }
-        const proposal = {
-          schemaVersion: "memory-proposal-v1",
-          status: "pending_review",
-          memoryType: params.memoryType,
-          content: boundedPreview(params.content, 1200),
-          rationale: boundedPreview(params.rationale, 800),
-          sourceRun: defaultSourceRun(params),
-          artifactPointer: params.artifactPointer ?? null,
-          channel: params.channel ?? "local",
-          requiresHumanReview: true,
-          autoPersisted: false,
-          rawSecretsReturned: false,
-          rawMediaExternalUpload: false,
-        };
-        const path = writeJson(artifactPath(params.runId, "memory-proposal.json", params.outputRoot), proposal);
-        const details = { ok: true, memoryProposalPath: path, status: "pending_review", autoPersisted: false, rawSecretsReturned: false };
-        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
-      } catch (error) {
-        const details = { ok: false, status: "blocked", reason: error instanceof Error ? error.message : String(error), rawSecretsReturned: false };
-        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
-      }
-    },
-  });
 }

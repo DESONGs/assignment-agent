@@ -23,5 +23,8 @@
 
 - 飞书能力通过已加载的官方 `lark-cli`/OpenAPI 扩展执行；Rokid、媒体与文档能力按任务惰性加载。
 - Agentic 委派先尝试审阅模型；鉴权或执行失败时显式记录 attempt 并尝试主模型，全部失败才回到带诊断的父 Agent review。
-- Hermes 是学习侧车，不持有高权限凭证，也不直接修改生产 skills/prompts。它的 proposal 必须经过 review 和回归验证。
+- 当前会话的短期上下文使用 Pi 原生 Compaction；不要另外维护一套对话摘要状态机。
+- 完整音频会议的 Meeting Intelligence、最终纪要和 QA 均通过后，按需调用一次 `meeting-memory-curator`。它是 fresh、只读、持久角色，不是常驻进程，也不是 Dynamic Workflow。
+- 记忆子 Agent 只返回结构化候选。父 Agent 必须校验 `sourceClaimIds`、当前会议 `evidenceSegmentIds`、用户显式参会人映射、重复项和同 key 冲突，才能写入 `.pi/agent-memory/meeting-memory/`。冲突保留待审，不自动覆盖。
+- 记忆整理失败属于非阻塞增强能力：记录诊断，但不得拖垮已通过 QA 的会议纪要交付。
 - 最终答复先说明完成结果、关键证据、未确认项和下一步；不要用流程数量或工具数量代替产品完成度。

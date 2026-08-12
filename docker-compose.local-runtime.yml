@@ -40,21 +40,3 @@ services:
       XIAOMI_BASE_URL: ${XIAOMI_BASE_URL:-}
       PI_PROVIDER: ${PI_PROVIDER:-}
       PI_MODEL: ${PI_MODEL:-}
-
-  hermes-worker:
-    image: python:3.12-slim
-    working_dir: /workspace
-    volumes:
-      - .:/workspace
-    depends_on:
-      - runtime-queue
-    restart: unless-stopped
-    cpus: "1.0"
-    mem_limit: 1g
-    environment:
-      LOCAL_DOCKER_WORKSPACE_ROOT: /workspace
-      HERMES_QUEUE_HOST: runtime-queue
-      HERMES_QUEUE_PORT: "6379"
-      HERMES_QUEUE_NAME: pi:hermes-worker:jobs
-      HERMES_WIKI_AUTO_PUBLISH: "0"
-    command: ["python3", "hermes-learning-sidecar/hermes_queue_worker.py"]

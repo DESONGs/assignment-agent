@@ -26,7 +26,6 @@
         "wechat_adapter",
         "document_lifecycle",
         "retrieval",
-        "memory",
         "calendar",
         "task_management",
         "research",
@@ -71,8 +70,7 @@
               "mutate_calendar",
               "assign_task",
               "external_web",
-              "install_dependency",
-              "persist_memory"
+              "install_dependency"
             ]
           },
           "toolName": { "type": "string" },
@@ -111,8 +109,7 @@
               "mutate_calendar",
               "assign_task",
               "external_web",
-              "install_dependency",
-              "persist_memory"
+              "install_dependency"
             ]
           },
           "reason": { "type": "string" }

@@ -37,7 +37,7 @@
 
 用表格输出：模块、职责、输入、输出、不能做的事、证据。
 
-必须覆盖：Planner、Document Router、Prompt Registry、Document Workers、Model Provider Adapter、QA Gate、Policy Gate、Feishu/Rokid/ASR、Observability、Hermes Sidecar。
+必须覆盖：Planner、Document Router、Prompt Registry、Document Workers、Model Provider Adapter、QA Gate、Policy Gate、Feishu/Rokid/ASR、Observability、Pi 原生 Compaction 与按需 Meeting Memory Curator。
 
 ## 3. Runtime Flow
 

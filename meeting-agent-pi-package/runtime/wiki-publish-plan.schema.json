@@ -6,7 +6,7 @@
   "required": ["schemaVersion", "target", "rootMode", "treePolicy", "projectTitle", "runTitle", "nodes", "documents", "rawSecretsReturned", "rawMediaExternalUpload"],
   "properties": {
     "schemaVersion": { "const": "wiki-publish-plan-v1" },
-    "target": { "enum": ["user-deliverables", "hermes-thinking"] },
+    "target": { "const": "user-deliverables" },
     "spaceId": { "type": ["string", "null"] },
     "rootNodeToken": { "type": ["string", "null"] },
     "rootMode": { "enum": ["configured_space", "configured_root_node", "my_library", "configured_space_or_root_required"] },

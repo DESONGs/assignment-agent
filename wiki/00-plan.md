@@ -19,7 +19,8 @@
 - 父级 segment id reconciliation 与跨会议证据隔离。
 - Prompt Registry、section-batched Document Workers、QA Gate、Policy Gate 和飞书发布闭环。
 - Host-owned runtime store、ASR/file cache、CAS/retention 与本地 Docker 受限 worker。
-- Hermes 学习侧车与 AgentWorkbench 只读观测。
+- Pi 原生 Compaction 与按需 `meeting-memory-curator`：父 Agent 证据校验、去重、冲突隔离后维护项目长期记忆。
+- AgentWorkbench 只读观测。
 
 ## 当前优先级
 
@@ -34,7 +35,7 @@
 - 不宣称单路混音能完整恢复高重叠同时发言。
 - 不把 sub-agent 数量当作 Agentic 能力。
 - 不建立常驻多 Agent 组织或第二套独立状态机。
-- 不让 Hermes 自动修改生产 prompt/skill。
+- 不建立常驻 LLM 记忆进程，不让记忆子 Agent自行写入或修改生产 prompt/skill。
 - 不为未出现的多租户或企业协作需求预建平台。
 
 ## 完成定义
