@@ -1,5 +1,5 @@
 {
-  "version": "runtime-capability-registry-v2",
+  "version": "runtime-capability-registry-v3",
   "defaults": {
     "loadPolicy": "lazy-by-planner-and-policy-gate",
     "alwaysOn": [
@@ -14,7 +14,7 @@
     {
       "capabilityId": "planner-runtime",
       "status": "available",
-      "description": "Builds an auditable planner envelope before selecting optional office capabilities.",
+      "description": "Runs the Office Agent adaptive control loop: goal, task state, capability choice, dependencies, execution observations and acceptance.",
       "defaultLoad": true,
       "contextCost": "low",
       "toolPackage": "local-extension",
@@ -27,17 +27,17 @@
         "summary": "Local planner consumes bounded meeting intelligence summaries without reading credentials or authentication state."
       },
       "triggers": ["all tasks", "plan", "planner", "envelope"],
-      "guardrails": ["fixedWorkflow=false", "no credentials", "meeting intelligence may shape the scenario playbook"]
+      "guardrails": ["fixedWorkflow=false", "no credentials", "meeting intelligence is one domain state module", "hierarchical parent control state"]
     },
     {
       "capabilityId": "policy-gate",
       "status": "available",
-      "description": "Checks action boundaries before publishing, notifying, installing, writing private content, or using external web access.",
+      "description": "Checks credential safety and high-impact external action boundaries; explicit targeted user requests proceed without redundant confirmation.",
       "defaultLoad": true,
       "contextCost": "low",
       "toolPackage": "local-extension",
       "toolIntents": ["read", "draft", "write_private", "publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency"],
-      "policy": ["credential leak blocked", "meeting content transfer allowed", "confirmation required for irreversible actions"],
+      "policy": ["credential leak blocked", "office content transfer allowed", "confirmation only for high-impact, destructive, or ambiguous actions"],
       "observability": ["policyDecisions"],
       "installState": "local",
       "securityReview": {
@@ -45,7 +45,7 @@
         "summary": "Local rule gate; returns pass, needs_confirmation, or blocked without generating business workflow."
       },
       "triggers": ["publish", "notify", "calendar", "install", "web", "secret", "policy"],
-      "guardrails": ["policy only judges action boundary", "does not generate business content"]
+      "guardrails": ["policy only judges action boundary", "does not generate business content", "explicit target and user intent count as authorization"]
     },
     {
       "capabilityId": "meeting-minutes",
@@ -63,7 +63,7 @@
         "summary": "Meeting content may be used by selected models; participant identities remain alias-based unless explicitly mapped, and credentials remain excluded."
       },
       "triggers": ["meeting minutes", "summary", "transcript", "meeting", "会议", "纪要"],
-      "guardrails": ["evidence required", "participant aliases by default", "model-reasoned topicMap", "ASR uncertainty cannot become certain claims"]
+      "guardrails": ["evidence required", "stable participant aliases", "evidence-backed name candidates remain unconfirmed", "model-reasoned topicMap", "ASR uncertainty cannot become certain claims"]
     },
     {
       "capabilityId": "meeting-intelligence",
@@ -73,7 +73,7 @@
       "contextCost": "medium",
       "toolPackage": "local-tools",
       "toolIntents": ["read", "draft", "interact"],
-      "policy": ["meeting content transfer allowed", "credentials excluded", "participant names require explicit mapping"],
+      "policy": ["meeting content transfer allowed", "credentials excluded", "name candidates require evidence and confidence; confirmed identity requires explicit mapping or enrolled voiceprint"],
       "observability": ["modelRoutes", "generatedArtifacts", "qaGate"],
       "installState": "local",
       "securityReview": {
@@ -81,7 +81,7 @@
         "summary": "The model may reason over meeting evidence; output references are validated against current segment ids and participant aliases are deterministic."
       },
       "triggers": ["meeting", "transcript", "ASR", "会议", "纪要", "录音", "转写"],
-      "guardrails": ["evidence ids validated", "stable aliases by default", "user name mappings override aliases", "needs_review evidence cannot own certain claims"]
+      "guardrails": ["evidence ids validated", "stable aliases by default", "user mappings override aliases", "candidate identity cannot own commitments", "needs_review evidence cannot own certain claims"]
     },
     {
       "capabilityId": "doc-writer",
@@ -158,7 +158,7 @@
     {
       "capabilityId": "document-worker-runtime",
       "status": "available",
-      "description": "Runs bounded context-pack document work units through provider-backed parallel workers and returns ordered Markdown plus QA inputs.",
+      "description": "Runs hierarchical work-unit context packs through provider-backed parallel workers while the parent retains task state, dependencies and artifact indexes.",
       "defaultLoad": false,
       "contextCost": "medium",
       "toolPackage": "local-extension",
@@ -171,7 +171,7 @@
         "summary": "Parallel runtime consumes bounded context packs, records model routes/context provenance, and does not write Feishu/calendar/task state."
       },
       "triggers": ["parallel document", "document_workers_run", "prd", "ops-plan", "tech-architecture", "多文档"],
-      "guardrails": ["contextPackRef required for long documents", "taskIndex order retained", "no hardcoded document scaffold", "no monolithic source prompt"]
+      "guardrails": ["contextPackRef required", "task contract and artifact index included", "taskIndex order retained", "no hardcoded document scaffold", "no repeated full transcript injection"]
     },
     {
       "capabilityId": "qa-safety-review",

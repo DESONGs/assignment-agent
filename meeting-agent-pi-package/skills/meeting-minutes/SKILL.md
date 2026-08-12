@@ -108,15 +108,18 @@ heading density, and expression style.
   under stable anonymous labels such as `说话人 1` and `说话人 2`; never merge
   evidence from different labels into one person's view.
 - A provider `speaker_id` is an anonymous within-recording cluster, not a name,
-  role, or action-item owner. Map it to identity only when the current transcript
-  explicitly self-identifies the speaker or the `meetingProfile` contains a
-  direct evidence-backed mapping.
+  role, or action-item owner. Keep the stable alias. The model may attach an
+  evidence-backed `candidateName` from self-introduction, explicit address,
+  context relation, or an enrolled voiceprint; include basis, segment evidence,
+  and confidence, and render it as `参会人 A（可能为张三，待确认）` until confirmed.
 - When no identity mapping exists, use stable aliases from `participant-map.json`
   such as `参会人 A`, `参会人 B`, and `参会人 C`. Participant-name resolution is
   optional and non-blocking; accept explicit mappings such as `参会人 A=张三`.
 - When diarization is disabled, labels are unavailable, or status is
-  `unsupported_realtime_endpoint`, do not infer speaker turns from tone or
-  context. Keep attribution and owners as `待确认`.
+  `unsupported_realtime_endpoint`, do not manufacture speaker turns from tone.
+  Context can support a clearly marked identity candidate only when a specific
+  utterance or relation is cited; attribution and owners otherwise remain
+  `待确认`.
 - Speaker diarization is not source separation. Simultaneous same-channel
   speech, semantic jumps, or unstable speaker labels are best-effort evidence;
   mark them as `重叠发言/归属待确认` instead of repairing them into certain facts.

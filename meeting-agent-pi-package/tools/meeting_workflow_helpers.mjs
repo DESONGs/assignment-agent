@@ -81,7 +81,8 @@ function evidenceInstruction(paths) {
     `会议分析：${paths.meetingAnalysisPath}`,
     `完整转录：${paths.transcriptPath}`,
     paths.participantMapPath ? `参会人映射：${paths.participantMapPath}` : null,
-    "只读取以上明确文件。逐项引用真实 segment id；不要猜测姓名、owner、日期、金额或承诺。",
+    "只读取以上明确文件。逐项引用真实 segment id。允许核验带依据的姓名候选，但未知声纹聚类不能凭空推出姓名，候选也不能用于确定 owner、权限或承诺。",
+    "不要猜测 owner、日期、金额或承诺。",
     "quality=needs_review 的证据只能支持风险或待确认，不能单独升级为已达成决定。",
   ].filter(Boolean).join("\n");
 }

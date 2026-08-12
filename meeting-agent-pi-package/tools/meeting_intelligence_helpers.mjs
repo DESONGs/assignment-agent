@@ -47,6 +47,55 @@ function safeDisplayName(value) {
     .slice(0, 40);
 }
 
+function normalizeCandidateConfidence(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["high", "medium", "low"].includes(normalized)) return normalized;
+  return "low";
+}
+
+function normalizeCandidateName(value, alias, confirmedName = "") {
+  const name = safeDisplayName(value);
+  if (!name || name === alias || name === confirmedName || /^(待确认|未知|不清楚)$/u.test(name)) return null;
+  return name;
+}
+
+function enrolledVoiceprintMatches(voiceprintMatches, speakerId, candidateName) {
+  return (Array.isArray(voiceprintMatches) ? voiceprintMatches : []).some((match) =>
+    String(normalizeSpeakerId(match?.speakerId)) === String(speakerId)
+      && safeDisplayName(match?.displayName ?? match?.name) === candidateName
+      && ["confirmed", "matched"].includes(String(match?.status ?? "").toLowerCase()),
+  );
+}
+
+function identityCandidateForSpeaker(parsedCandidates, speakerId, alias, confirmedName = "", validIds = new Set(), voiceprintMatches = []) {
+  const candidates = Array.isArray(parsedCandidates) ? parsedCandidates : [];
+  const matched = candidates.find((candidate) => {
+    const candidateSpeakerId = normalizeSpeakerId(candidate?.speakerId);
+    const candidateAlias = String(candidate?.alias ?? "").trim();
+    return (candidateSpeakerId !== null && String(candidateSpeakerId) === String(speakerId)) || candidateAlias === alias;
+  });
+  const candidateName = normalizeCandidateName(matched?.candidateName ?? matched?.name, alias, confirmedName);
+  if (!candidateName) return null;
+  const candidateEvidenceSegmentIds = uniqueStrings(matched?.evidenceSegmentIds, 12).filter((segmentId) => validIds.has(segmentId));
+  let candidateBasis = uniqueStrings([matched?.basis].flat().filter((basis) => [
+    "self_introduction",
+    "addressed_by_name",
+    "context_relation",
+    "enrolled_voiceprint",
+  ].includes(String(basis))), 8);
+  const voiceprintConfirmed = candidateBasis.includes("enrolled_voiceprint")
+    && enrolledVoiceprintMatches(voiceprintMatches, speakerId, candidateName);
+  candidateBasis = candidateBasis.filter((basis) => basis !== "enrolled_voiceprint" || voiceprintConfirmed);
+  if (candidateBasis.length === 0) return null;
+  if (!voiceprintConfirmed && candidateEvidenceSegmentIds.length === 0) return null;
+  return {
+    candidateName,
+    candidateConfidence: normalizeCandidateConfidence(matched?.confidence),
+    candidateBasis,
+    candidateEvidenceSegmentIds,
+  };
+}
+
 export function parseParticipantInput(text, speakerIds = []) {
   const prompt = String(text ?? "");
   const sortedSpeakerIds = [...speakerIds].sort(speakerSort);
@@ -271,6 +320,14 @@ export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummar
     allowedTopics: ["string"],
     allowedTerms: ["string"],
     ambiguousTerms: ["string"],
+    participantIdentityCandidates: [{
+      speakerId: 0,
+      alias: "参会人 A",
+      candidateName: "string",
+      confidence: "high|medium|low",
+      basis: "self_introduction|addressed_by_name|context_relation|enrolled_voiceprint",
+      evidenceSegmentIds: ["audio-01:chunk-0000"],
+    }],
     topics: [{
       title: "string",
       timeRange: { startSec: 0, endSec: 0 },
@@ -296,7 +353,8 @@ export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummar
       "# Meeting Intelligence Analysis",
       "",
       "你正在执行会议理解回合，而不是起草会议纪要。根据当前会议时间轴建立结构化事实图，输出且只输出一个 JSON 对象。",
-      "不得猜测姓名。参会人显示名由系统 participant map 决定；speaker id 只是匿名聚类。",
+      "参会人 alias 是稳定身份键。用户显式映射的姓名可直接使用；也允许根据自我介绍、他人称呼、上下文关系或已登记声纹匹配提出姓名候选，但必须写入 participantIdentityCandidates，包含依据、真实 segment id 与置信度。",
+      "未知 speaker id/声纹聚类本身不能凭空推出姓名。未经确认的姓名候选不得成为 owner、承诺、权限或长期事实，且不能覆盖 participant map 的 displayName。",
       "必须区分提议、异议、讨论中判断、已达成共识、被否决方案和未决事项。",
       "quality=needs_review 的片段可以形成风险或待确认问题，但不得单独形成 agreed decision、明确 owner、日期、金额或承诺。",
       "议题数量和结构由会议内容决定，不要套固定行业关键词。每个重要判断必须引用实际 segment id。",
@@ -446,14 +504,32 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
   const plan = parsed.agentPlan ?? {};
   const suggestedDocs = uniqueStrings(plan.suggestedFollowUpDocuments, 8).filter((doc) => ["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(doc));
   const allowedTopics = uniqueStrings(parsed.allowedTopics?.length ? parsed.allowedTopics : topicMap.map((topic) => topic.title), 80);
+  const voiceprintMatches = asrSummary?.speakerDiarization?.identityMatches ?? asrSummary?.voiceprintIdentityMatches ?? [];
+  const participants = participantMap.participants.map((participant) => {
+    if (participant.nameStatus === "user_confirmed") return participant;
+    const candidate = identityCandidateForSpeaker(
+      parsed.participantIdentityCandidates,
+      participant.speakerId,
+      participant.alias,
+      participant.displayName,
+      validIds,
+      voiceprintMatches,
+    );
+    return candidate ? { ...participant, ...candidate } : participant;
+  });
+  const participantResolution = {
+    ...participantMap,
+    participants,
+    candidateCount: participants.filter((participant) => participant.candidateName).length,
+  };
   return {
     schemaVersion: "meeting-intelligence-v1",
     status: "complete",
     analysisMode: "model_reasoned_validated",
     meetingProfile: {
       meetingType: String(parsed.meetingType ?? "会议类型待确认").trim().slice(0, 120),
-      participantMap,
-      allowedRoles: uniqueStrings([...(parsed.allowedRoles ?? []), ...participantMap.participants.map((participant) => participant.displayName)], 80),
+      participantMap: participantResolution,
+      allowedRoles: uniqueStrings([...(parsed.allowedRoles ?? []), ...participants.map((participant) => participant.displayName)], 80),
       allowedTopics,
       allowedTerms: uniqueStrings(parsed.allowedTerms, 160),
       ambiguousTerms: uniqueStrings(parsed.ambiguousTerms, 100),
@@ -475,7 +551,7 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
       suggestedFollowUpDocuments: suggestedDocs,
       focusAreas: uniqueStrings(plan.focusAreas, 30),
     },
-    participantResolution: participantMap,
+    participantResolution,
   };
 }
 

@@ -196,9 +196,10 @@ function buildEnvelope(params: any) {
   const policyRisks: any[] = [];
   const requiredArtifacts = ["planner-envelope.json"];
   const constraints = [
-    "Do not use a fixed meeting pipeline unless the task is a meeting/transcript scenario.",
+    "Operate as a general Office Agent; do not use a fixed meeting pipeline unless the task is a meeting/transcript scenario.",
     "Do not include secrets, tokens, cookies, CLI sessions, or App Secret values in planner/policy/metrics artifacts.",
     "Enable optional capabilities only when task evidence justifies them.",
+    "Keep task control state, artifact indexes, and dependency summaries in the parent; give each work unit only its contract and relevant evidence.",
   ];
   const stopConditions = [
     "policy_gate_check returns blocked",
@@ -448,7 +449,20 @@ function buildEnvelope(params: any) {
             writeScope: "parent-owned meeting analysis and QA inputs",
           },
         ]
-      : [];
+      : taskType === "mixed" || (taskType === "doc_writer" && hasAny(text, ["multi source", "cross document", "compare", "多源", "跨文档", "对比", "综合"]))
+        ? [
+            {
+              component: "office-source-analysts",
+              reason: "The office task has independent source or comparison axes that can be analyzed in fresh contexts.",
+              writeScope: "structured source findings only",
+            },
+            {
+              component: "office-deliverable-reviewer",
+              reason: "Review the integrated deliverable against the user goal and source coverage after parent synthesis.",
+              writeScope: "review findings only",
+            },
+          ]
+        : [];
 
   return {
     schemaVersion: "planner-envelope-v1",
@@ -466,7 +480,7 @@ function buildEnvelope(params: any) {
     requiredArtifacts: Array.from(new Set(requiredArtifacts)),
     stopConditions: Array.from(new Set(stopConditions)),
     fixedWorkflow: false,
-    plannerMode: "scenario_playbook",
+    plannerMode: "office_agent_adaptive_control_loop",
     rawSecretsReturned: false,
     meetingContentAccess: "allowed",
     createdAt: new Date().toISOString(),

@@ -28,6 +28,101 @@ test("participant aliases are stable and explicit user mappings override aliases
   assert.equal(map.blocking, false);
 });
 
+test("evidence-backed identity guesses remain candidates and never replace stable aliases", () => {
+  const participantMap = buildParticipantMap(segments, "");
+  const analysis = normalizeMeetingAnalysisResponse({
+    content: JSON.stringify({
+      meetingType: "产品会议",
+      participantIdentityCandidates: [{
+        speakerId: 1,
+        alias: "参会人 B",
+        candidateName: "李四",
+        confidence: "medium",
+        basis: "addressed_by_name",
+        evidenceSegmentIds: [segments[1].segmentId],
+      }],
+      topics: [{
+        title: "旅游 Agent MVP",
+        evidenceSegmentIds: segments.slice(0, 3).map((segment) => segment.segmentId),
+        coreJudgment: "先聚焦云南信息检索。",
+        decisions: [], actions: [], risks: [], openQuestions: [],
+      }],
+      agentPlan: {},
+    }),
+    segments,
+    participantMap,
+  });
+  const candidate = analysis.participantResolution.participants[1];
+  assert.equal(candidate.alias, "参会人 B");
+  assert.equal(candidate.displayName, "参会人 B");
+  assert.equal(candidate.nameStatus, "alias");
+  assert.equal(candidate.candidateName, "李四");
+  assert.equal(candidate.candidateConfidence, "medium");
+  assert.deepEqual(candidate.candidateBasis, ["addressed_by_name"]);
+  assert.deepEqual(candidate.candidateEvidenceSegmentIds, [segments[1].segmentId]);
+  assert.equal(analysis.participantResolution.candidateCount, 1);
+});
+
+test("identity candidates with cross-meeting evidence are discarded", () => {
+  const participantMap = buildParticipantMap(segments, "");
+  const analysis = normalizeMeetingAnalysisResponse({
+    content: JSON.stringify({
+      meetingType: "产品会议",
+      participantIdentityCandidates: [{
+        speakerId: 1,
+        alias: "参会人 B",
+        candidateName: "李四",
+        confidence: "high",
+        basis: "addressed_by_name",
+        evidenceSegmentIds: ["audio-99:chunk-9999"],
+      }],
+      topics: [{
+        title: "旅游 Agent MVP",
+        evidenceSegmentIds: segments.slice(0, 3).map((segment) => segment.segmentId),
+        coreJudgment: "先聚焦云南信息检索。",
+        decisions: [], actions: [], risks: [], openQuestions: [],
+      }],
+      agentPlan: {},
+    }),
+    segments,
+    participantMap,
+  });
+  assert.equal(analysis.participantResolution.participants[1].candidateName, undefined);
+  assert.equal(analysis.participantResolution.candidateCount, 0);
+});
+
+test("voiceprint identity candidates require upstream enrolled-match metadata", () => {
+  const participantMap = buildParticipantMap(segments, "");
+  const response = {
+    meetingType: "产品会议",
+    participantIdentityCandidates: [{
+      speakerId: 1,
+      alias: "参会人 B",
+      candidateName: "李四",
+      confidence: "high",
+      basis: "enrolled_voiceprint",
+      evidenceSegmentIds: [],
+    }],
+    topics: [{
+      title: "旅游 Agent MVP",
+      evidenceSegmentIds: segments.slice(0, 3).map((segment) => segment.segmentId),
+      coreJudgment: "先聚焦云南信息检索。",
+      decisions: [], actions: [], risks: [], openQuestions: [],
+    }],
+    agentPlan: {},
+  };
+  const withoutRegistry = normalizeMeetingAnalysisResponse({ content: JSON.stringify(response), segments, participantMap });
+  assert.equal(withoutRegistry.participantResolution.candidateCount, 0);
+  const withRegistry = normalizeMeetingAnalysisResponse({
+    content: JSON.stringify(response),
+    segments,
+    participantMap,
+    asrSummary: { speakerDiarization: { identityMatches: [{ speakerId: 1, displayName: "李四", status: "matched" }] } },
+  });
+  assert.equal(withRegistry.participantResolution.participants[1].candidateName, "李四");
+  assert.deepEqual(withRegistry.participantResolution.participants[1].candidateBasis, ["enrolled_voiceprint"]);
+});
+
 test("meeting timeline keeps speaker aliases, evidence ids, and ASR review quality", () => {
   const map = buildParticipantMap(segments, "");
   const timeline = buildMeetingTimeline(segments, map);

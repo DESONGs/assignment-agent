@@ -1,16 +1,19 @@
-# Meeting Agent
+# Office Agent
 
-Meeting Agent 是一个以 Pi 为执行内核的会议理解与办公文档 Agent。它接收本地文件、飞书消息与附件、Rokid 导出素材，将音视频转成带证据的转录，构建 Meeting Intelligence，再生成会议纪要及按需的 PRD、技术架构、运营方案和需求确认文档。
+Office Agent 是一个以 Pi 为执行内核的主动型办公助手。它处理问答、文件总结、多源综合、文档生成与修订、飞书协作、任务建议和会议理解；会议录音会进一步转成带证据的转录与 Meeting Intelligence，再生成纪要和后续办公资产。
 
 当前版本：2026-08-12。运行基线为 Node `>=22.19.0`、Pi `0.84.1`、`pi-subagents@0.46.0`、`@quintinshaw/pi-dynamic-workflows@3.5.1`。
 
 ## 当前产品能力
 
+- 通用办公主控：父 Agent 围绕用户目标维护任务状态、选择能力、处理依赖与冲突，并对最终交付负责；会议是能力模块，不是父级身份边界。
+- 分层上下文：父级保留 task state、artifact index、决策与开放问题；worker/sub-agent 使用 fresh context 和 task-scoped context pack，不在每次调用反复拼入完整 transcript/evidence。
+- 复杂任务分发：一个独立任务用 fresh sub-agent，多个隔离轴用 Dynamic Workflow 并行、校验和综合；中间结果留在 workflow/artifact，不挤占父上下文。
 - 云端 ASR 优先：录音文件使用 DashScope 文件转写接口和 OSS；实时流使用独立 WebSocket 接口，二者不混用。
 - 完整格式矩阵：文件端支持 `.aac/.amr/.avi/.flac/.flv/.m4a/.mkv/.mov/.mp3/.mp4/.mpeg/.ogg/.opus/.wav/.webm/.wma/.wmv`；实时端支持 `pcm/wav/mp3/opus/speex/aac/amr`。
 - 单录混音会议：文件 ASR 支持 speaker diarization；robust 模式增加双模型一致性复核。轮流发言可分角色，高重叠同时发言仍不承诺声源级恢复。
 - Meeting Intelligence：建立参会人、议题、决策状态、行动项、风险、开放问题和证据映射，驱动检索、写作、标题与 QA。
-- 参会人代号：默认使用稳定的 `参会人 A/B/...`；用户可补充 `参会人 A=张三`，没有实名不阻塞处理。
+- 参会人身份：`参会人 A/B/...` 是稳定键；用户映射可确认姓名，也允许用自我介绍、称呼、上下文或登记声纹提出带依据和置信度的候选，但候选不绑定责任或承诺。
 - Agentic 编排：简单会议由父 Agent 直接完成；单一核验轴调用 fresh sub-agent；复杂会议运行 Dynamic Workflow 的并行核验、完整性检查、交叉验证与综合。
 - 父级证据回收：委派工具完成后，父 Agent 再验证所有 segment id。跨会议或无证据的子 Agent 发现会被隔离，并成为 QA 阻断项。
 - 飞书闭环：支持事件接入、附件获取、进度回复、文档生成、QA/Policy Gate、Wiki/Drive 发布和最终回复。
@@ -21,8 +24,10 @@ Meeting Agent 是一个以 Pi 为执行内核的会议理解与办公文档 Agen
 
 ```mermaid
 flowchart LR
-    U["用户 / 飞书 / 本地文件 / Rokid"] --> I["输入解析与任务路由"]
-    I --> A["ASR Provider\n文件或实时流"]
+    U["用户 / 飞书 / 本地文件 / Rokid"] --> I["Office Agent 目标与任务状态"]
+    I --> K{"输入与任务类型"}
+    K -->|普通办公| X["检索 / 文档 / 修订 / 分析"]
+    K -->|会议媒体| A["ASR Provider\n文件或实时流"]
     A --> T["完整转录 + speaker/quality + evidence index"]
     T --> M["Meeting Intelligence"]
     M --> O{"会议复杂度"}
@@ -31,7 +36,8 @@ flowchart LR
     O -->|多个核验轴| W["Pi Dynamic Workflow"]
     S --> R["父级证据回收"]
     W --> R
-    P --> D["Prompt Registry + Document Workers"]
+    X --> D["Prompt Registry + Document Workers"]
+    P --> D
     R --> D
     D --> Q["QA Gate"]
     Q --> G["Policy Gate"]
@@ -97,12 +103,12 @@ meeting-agent-pi-package/node_modules/.bin/pi \
 
 ## 安全与数据边界
 
-会议录音、转录、纪要和相关文件可以被当前任务选中的 ASR、模型、sub-agent、workflow、文档与 QA 能力使用。上下文分段、检索与容量截断用于质量和性能，不是会议内容禁用规则。
+办公内容、会议录音、转录、纪要和相关文件可以被当前任务选中的 ASR、模型、sub-agent、workflow、文档与 QA 能力使用。上下文分层、检索与容量控制用于质量和性能，不是内容禁用规则。
 
 以下边界仍然强制执行：
 
 - API Key、Token、Cookie、Authorization、App Secret、签名 URL 与登录会话不得进入 prompt、普通日志、会议产物或长期记忆。
-- 删除、通知他人、日历/任务变更、客户可见发布、权限扩大和依赖安装根据动作影响进入 Policy Gate。
+- 凭证泄漏、高影响、不可逆或目标不明的外部动作进入 Policy Gate；明确目标的用户请求不重复确认。
 - 云端 ASR 会把音视频上传至配置的 DashScope/OSS；本地 ASR 不上传媒体。运行产物必须真实记录 provider 和 `rawMediaExternalUpload`。
 - 不得把 sub-agent/workflow 的工具成功等同于会议事实成立；父 Agent 的 transcript segment 集合是证据范围真相源。
 

@@ -1,17 +1,19 @@
-# Meeting Agent：Agent 端专项架构
+# Office Agent：Agent 端专项架构
 
 更新时间：2026-08-12。
 
-本文是当前 Agent 架构的唯一详细说明。它描述系统如何从会议证据形成判断、何时委派、如何回收证据，以及怎样把结果交付到本地或飞书。代码目录映射见 [11-current-project-architecture.md](11-current-project-architecture.md)。
+本文是当前 Agent 架构的唯一详细说明。它描述通用办公父 Agent 如何维护任务状态、按需使用会议与文档能力、分发复杂工作、回收证据，以及怎样把结果交付到本地或飞书。代码目录映射见 [11-current-project-architecture.md](11-current-project-architecture.md)。
 
 ## 1. 架构目标
 
 Agent 的核心职责不是把一组步骤按顺序跑完，而是围绕当前用户目标持续选择最合适的能力，并对最终结果负责。
 
-- 会议证据优先：事实、决定、行动项和风险必须能回到当前 transcript segment。
+- 办公目标优先：先判断用户真正要完成的工作与验收标准，再选择会议、文档、检索或协作能力。
+- 来源可追溯：关键事实与判断必须能回到当前 source/segment；会议决定与行动必须回到 transcript segment。
 - 单一责任主体：父 Agent 拥有最终判断、冲突处理、文档交付和外部动作权限。
 - 自适应委派：简单任务直接完成；一个独立核验轴用 fresh sub-agent；多个核验轴才用 Dynamic Workflow。
-- 语义状态贯穿：Meeting Intelligence 同时服务 Planner、检索、委派、写作和 QA。
+- 分层上下文：父 Agent 持有 task state 与 artifact index，worker/child 只接收 task-scoped context pack。
+- 语义状态按需：Meeting Intelligence 服务会议场景的 Planner、检索、委派、写作和 QA，不取代通用任务状态。
 - 内容可用、凭证隔离：会议内容可以进入所选能力；凭证永远不得进入模型、普通日志或产物。
 - 失败透明：partial ASR、委派未执行、模型回退、证据越界和发布失败分别记录。
 
@@ -20,7 +22,8 @@ Agent 的核心职责不是把一组步骤按顺序跑完，而是围绕当前�
 ```mermaid
 flowchart TB
     User["用户"] --> Channels["本地文件 / 飞书 / Rokid / 智能眼镜"]
-    Channels --> Parent["Pi 父 Agent"]
+    Channels --> Parent["Pi Office Parent Agent"]
+    Parent --> Task["Task State / Artifact Index"]
     Parent --> Media["文件 ASR / 实时流 ASR"]
     Parent --> Lark["飞书 CLI / OpenAPI"]
     Parent --> Models["主模型 / 审阅模型"]
@@ -34,7 +37,7 @@ flowchart TB
     Store --> Workbench["AgentWorkbench 只读观测"]
 ```
 
-Pi 父 Agent 是系统中心，但不独占全部推理。ASR、Meeting Intelligence、sub-agent、workflow 和文档 worker 都提供专门能力；父 Agent 负责选择、组合、校验和交付。
+Pi 父 Agent 是系统中心，但不独占全部推理。检索、ASR、Meeting Intelligence、sub-agent、workflow 和文档 worker 都提供专门能力；父 Agent 负责目标、任务状态、选择、组合、校验和交付。
 
 ## 3. Agent 角色关系
 
@@ -48,9 +51,13 @@ graph TD
     ES["Evidence Synthesizer\n仅综合已验证发现"]
     DW["Document Worker\n按 section 写作"]
     MC["Memory Curator\n长期记忆候选"]
+    OS["Office Source Analyst\n独立来源分析"]
+    OR["Office Deliverable Reviewer\n交付验收"]
 
     P --> MI
     MI --> P
+    P -."通用办公按需委派".-> OS
+    P -."交付前按需审阅".-> OR
     P -."按需委派".-> EA
     P -."按需委派".-> DR
     P -."按需委派".-> AR
@@ -104,7 +111,7 @@ flowchart LR
     Worker --> QAGate
 ```
 
-Planner Envelope 记录目标、输入、Meeting Intelligence 摘要、候选能力、模型路线、预期产物和风险。它是可审计决策，不是全局固定 workflow。Capability Registry 提供 planner-selectable capability descriptions；Policy Gate 只判断动作边界，不替 Agent 编排业务。
+Planner Envelope 与 task state 记录目标、输入、领域状态摘要、候选能力、依赖、模型路线、预期产物和风险。Artifact index 指向完整来源和中间结果。它们构成可更新控制面，不是全局固定 workflow。Capability Registry 提供可选能力；Policy Gate 只判断凭证与高影响动作边界，不替 Agent 编排业务。
 
 ## 5. 会议黄金流程
 
@@ -223,7 +230,7 @@ erDiagram
 | `.pi/agent-memory/meeting-memory/MEMORY.md` | 最多 200 行的当前项目长期记忆视图 |
 | `.pi/agent-memory/meeting-memory/ledger.jsonl` | 父级接受的 append-only 记忆审计账本 |
 
-完整 transcript 可由工具按任务读取；offload、检索和 bounded preview 用于控制上下文质量与成本，不是会议内容隐私禁令。运行指标仍不保存 raw transcript 或凭证。
+完整 transcript/来源可由工具按任务读取；`context-pack-v2` 包含 work-unit contract、task state 摘要、相关 evidence 和 artifact index。offload、检索和 bounded preview 用于控制上下文质量与成本，不是内容隐私禁令。运行指标仍不保存 raw transcript 或凭证。
 
 ## 9. 飞书闭环
 
@@ -238,7 +245,7 @@ sequenceDiagram
     U->>G: 消息 / 附件 / 文档修订请求
     G->>H: normalized event + attachment refs
     H->>F: 获取附件或 review context
-    F-->>H: 本地文件 / bounded context
+    F-->>H: 本地文件 / task-scoped context
     H->>A: execution profile + source context
     A-->>H: 文档 + QA + policy decision
     H->>F: 创建或更新文档、组织目录
@@ -308,7 +315,7 @@ flowchart TB
 - 当前 transcript segment 集合是委派证据范围真相源。
 - 文件 ASR 与实时流 ASR 不共用端口契约。
 - speaker diarization 不等于声源分离。
-- QA Gate 判断内容是否可交付；Policy Gate 判断动作是否可执行。
+- QA Gate 判断内容是否可交付；Policy Gate 只判断凭证和高影响动作是否可执行。可自动修复、披露或降级的问题不应机械阻断。
 - Pi 原生 Compaction 是短期上下文机制，不是长期事实库。
 - Memory Curator 只能提出候选；父 Agent 是长期记忆唯一校验与写入者。
 - 同 key 冲突不得自动覆盖，记忆失败不得阻塞会议交付。

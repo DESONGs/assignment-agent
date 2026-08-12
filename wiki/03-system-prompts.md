@@ -1,104 +1,129 @@
-# System Prompt 与提示词架构
+# Office Agent System Prompt 与上下文架构
 
 更新时间：2026-08-12。
 
-当前提示词系统的目标是让 Agent 基于 Meeting Intelligence 自主选择能力，同时把证据、不确定性和外部动作边界保持清晰。本文说明契约，不复制生产 prompt 全文。
+当前提示词系统的中心是主动型办公助手，而不是会议纪要流水线。会议理解、文档写作、飞书协作、多源综合、修订和研究都是父 Agent 按目标选择的能力模块。本文描述当前契约，不复制生产 Prompt 全文。
 
-## 1. 提示词分层
+## 1. Prompt 分层
 
 ```mermaid
 flowchart TD
-    S[".pi/SYSTEM.md\n父 Agent 身份与不变量"] --> P["Planner Envelope\n当前目标、输入和执行选择"]
-    MI["Meeting Intelligence\n议题、决定、行动、风险、证据"] --> P
-    P --> R["Document Prompt Registry\n按文档类型选择基准 prompt"]
-    R --> O["可选 Overlay\n修订评论 / 渠道 / 交付要求"]
-    O --> W["Document Worker Section Prompt"]
-    W --> Q["QA Gate Prompt / 机器规则"]
-    Q --> M["Memory Curator Prompt\n长期记忆候选"]
+    S[".pi/SYSTEM.md\nOffice Agent 身份与执行循环"] --> T["Parent Task State\n目标 / 成功标准 / 依赖 / 开放问题"]
+    A["Artifact Index\n完整来源与中间产物指针"] --> T
+    T --> P{"任务分解"}
+    P -->|直接| D["父 Agent"]
+    P -->|一个独立轴| SA["Fresh Sub-agent"]
+    P -->|多个独立轴| WF["Dynamic Workflow"]
+    T --> C["Work-unit Context Pack\n任务契约 + 相关证据 + 语义状态"]
+    C --> R["Document Prompt Registry"]
+    R --> W["Document Worker"]
+    D --> Q["Acceptance / QA"]
+    SA --> Q
+    WF --> Q
+    W --> Q
+    Q --> X["Policy：仅凭证与外部动作"]
 ```
 
 | 层 | 真相源 | 职责 |
 | --- | --- | --- |
-| System | `.pi/SYSTEM.md` | 父 Agent 身份、委派规则、内容/凭证边界、最终责任 |
-| Planning | Planner Envelope + execution profile | 当前任务目标、能力选择、模型和交付计划 |
-| Meeting | `meeting-intelligence.json` | 当前会议语义和证据映射 |
-| Document | `runtime/document-prompt-registry.json` + `prompts/*.md` | 会议纪要、PRD、架构、运营、确认清单的写作契约 |
-| Revision | `prompts/document-revision-overlay.md` | 在基准 prompt 上叠加 review context，不另建流程 |
-| QA | `qa-gate.schema.json` 与规则 | 证据覆盖、无证据实体、结构、发布阻断 |
-| Memory | `.pi/agents/meeting-memory-curator.md` | 只从 QA 通过的证据中提炼长期记忆候选 |
+| Parent System | `.pi/SYSTEM.md` | 通用办公身份、Agentic 循环、委派与最终责任 |
+| Task Control | `task-state.json` / Planner Envelope | 目标、成功标准、依赖、完成状态、开放问题和下一步 |
+| Artifact | source records/segments、完整 transcript、结构化分析 | 保存可按需读取的完整数据，不占据每个模型调用 |
+| Domain State | Meeting Intelligence 等 | 为特定场景提供结构化语义；不取代父 Agent |
+| Work Unit | `context-pack-v2` | 给一个 worker/child 的任务契约、相关证据、artifact index 和输出契约 |
+| Document | registry + `prompts/*.md` | 文档类型的受众、逻辑、结构和质量自检 |
+| QA | `qa-gate.ts` | 检查错误交付风险，优先自动修复或降级披露 |
+| Policy | `policy-gate.ts` | 凭证和高影响外部动作；不规定业务流程 |
 
-## 2. System Prompt 当前原则
+## 2. 父 Agent Prompt
 
-`.pi/SYSTEM.md` 必须表达：
+`.pi/SYSTEM.md` 现在定义 Office Agent，而不是“会议终结 Agent”。核心行为是：
 
-- 先理解目标与证据，再选择 skill、extension、模型和工具。
-- Meeting Intelligence 贯穿 Planner、检索、写作与 QA。
-- 默认参会人代号；显式姓名映射优先，缺少姓名不阻塞。
-- direct、single_subagent、dynamic_workflow 根据当前复杂度选择。
-- 子 Agent 只核验，父 Agent 校验 segment id 并承担最终交付。
-- 会议内容可供当前任务能力使用；凭证不能进入模型或产物。
-- QA Gate 与 Policy Gate 分工，不用策略门替代业务推理。
-- 当前会话由 Pi 原生 Compaction 压缩；长期记忆由 fresh、只读的 `meeting-memory-curator` 按需提出候选，父 Agent 负责校验和写入。
+- 先建立目标、交付物、成功标准、来源、约束和开放问题，再选择能力。
+- 普通问答、单文件总结和局部修订直接处理；Meeting Intelligence 只在会议场景启用。
+- 按“理解 → 计划 → 执行 → 观察 → 更新状态 → 验收”循环推进，新证据可改变计划。
+- 一个独立工作轴使用 fresh sub-agent；多个输入输出可隔离的轴才使用 Dynamic Workflow。
+- 父 Agent 保留跨任务状态、冲突裁决、最终质量和外部动作责任。
+- 显式用户请求与明确目标构成授权；只有高影响、不可逆或目标不明时才询问。
 
-## 3. 会议纪要 Prompt
+## 3. 复杂任务上下文
 
-`prompts/meeting-minutes.md` 接收的不是一段裸 transcript，而是由 Meeting Intelligence 与证据包组织的输入。它要求：
+旧描述容易被理解成“把长 transcript 与 evidence 截断后不断拼接”。当前实现改为两层：
 
-- 先判断会议类型和持续主议题，再动态组织章节。
-- 区分 proposed、discussion、objection、agreed、rejected、unresolved。
-- 不猜人名、owner、日期、金额或承诺。
-- `needs_review` 只能进入风险或待确认，不能单独支撑确定结论。
-- 原始长 transcript 保存在独立 artifact，不复制进纪要。
-- 标题从参与方/角色、核心主题和关键安排推导，文件名与 H1 同步。
+```mermaid
+flowchart LR
+    subgraph Parent["控制面：父 Agent"]
+        G["Goal / Acceptance"] --> TS["Task State"]
+        TS --> DEP["Dependencies / Decisions / Open Questions"]
+        DEP --> IDX["Artifact Index"]
+    end
+    subgraph Data["数据面：按需工作单元"]
+        IDX --> CP1["Context Pack A"]
+        IDX --> CP2["Context Pack B"]
+        IDX --> CP3["Context Pack C"]
+        CP1 --> W1["Worker / Child A"]
+        CP2 --> W2["Worker / Child B"]
+        CP3 --> W3["Worker / Child C"]
+    end
+    W1 --> SUM["有界结果 / 引用 / 冲突"]
+    W2 --> SUM
+    W3 --> SUM
+    SUM --> TS
+```
 
-## 4. 文档 Prompt Registry
+父上下文不保存每份来源全文，而保存任务状态、artifact 路径、hash、依赖输出摘要与下一步。完整 transcript/evidence 保留在 artifact；work unit 只得到当前任务相关证据。Dynamic Workflow 的中间结果保留在脚本变量和运行 artifact 中，只把综合结果送回父级。
 
-| 文档类型 | Prompt | 核心输出 |
-| --- | --- | --- |
-| `meeting_minutes` | `meeting-minutes.md` | 核心结论、议题、决定、行动、风险、待确认 |
-| `prd` | `prd.md` | 用户、问题、范围、黄金路径、验收 |
-| `tech_architecture` | `tech-architecture.md` | 上下文、组件、数据、流程、边界、验证 |
-| `ops_plan` | `ops-plan.md` | 目标、阶段、责任、资源、风险、节奏 |
-| `customer_requirement_checklist` | `customer-requirement-checklist.md` | 已确认、待确认、约束、后续问题 |
+这适合复杂任务的原因不是“截断更多”，而是隔离：每个 child 拿 fresh context，不被其他议题污染；父 Agent 只管理控制信息。当前检索仍是确定性 section/keyword + Meeting Intelligence 引导，还不是语义向量检索；context pack 不足时必须由父级补取并重建，worker 不能自行假装读取全文。
 
-`document_prompt_render_batch` 负责把结构化 task input 渲染到 prompt；`document_workers_run` 按 section 执行并保持原顺序。文档结构归 prompt registry 所有，worker runtime 不硬编码业务模板。
+Pi 原生 Compaction 只负责长父会话的历史压缩。它不替代 task state、artifact、领域语义状态或长期记忆。
 
-## 5. Sub-agent 与 Workflow Prompt
+## 4. 会议纪要 Prompt
 
-会议角色位于 `.pi/agents/`：
+`prompts/meeting-minutes.md` 先要求模型恢复会议叙事，再写章节：
 
-- `meeting-evidence-analyst.md`：核验议题覆盖与证据。
-- `meeting-decision-reviewer.md`：核验决定状态、异议与未决项。
-- `meeting-action-reviewer.md`：核验行动内容、owner、due date 与证据。
-- `meeting-evidence-synthesizer.md`：综合已经过 schema 约束的发现。
-- `meeting-memory-curator.md`：从最终 Meeting Intelligence、纪要、QA、participant map 与完整转录中提炼少量长期记忆候选。
+- 会议目的、持续议题、议题关系和当前状态。
+- 事实、推断、建议、待确认四层内容。
+- 提议、异议、讨论、共识、否决和未决的差异。
+- 主要议题内的动态三级结构，而不是按时间轴或固定行业模板复述。
+- 行动内容、owner、期限和验收条件分别判断。
+- 文件名/H1 同源，但低置信身份候选不进入标题。
 
-每个角色都必须收到明确任务、允许读取的 artifact、当前 segment id 范围和输出 schema。禁止让 child 自己决定发布、扩展工具或把常识写成会议事实。
+## 5. 参会人身份策略
 
-Memory Curator 额外要求每个事实性候选同时给出 `sourceClaimIds` 和 `evidenceSegmentIds`；参会人身份只能来自 `user_confirmed` 映射。它不能写文件、运行 workflow 或把普通行动项、低置信 ASR、未经确认提议、凭证写入记忆。父 Agent 将同 key 不同值写入冲突账本，不自动覆盖。
+`参会人 A/B/...` 始终是稳定身份键。实名分为：
 
-## 6. 上下文管理
+1. `user_confirmed`：用户显式映射，可直接使用。
+2. 已登记声纹匹配：有现存 voiceprint identity，可视为确认来源。
+3. `candidateName`：由自我介绍、明确称呼、上下文关系或声纹匹配提出，必须附 `candidateBasis`、segment evidence 与 `candidateConfidence`。
 
-长 transcript 和完整 evidence 可以写入 offload artifact，并由 read/search 工具按需取回。主上下文保留任务相关片段、artifact path、hash、bounded preview、topic/evidence map、QA 状态和开放问题；Pi 原生 Compaction 在接近上下文上限时压缩旧对话。这些都是容量与质量优化，不是内容不能被 Agent 使用，也不替代项目长期记忆。
+候选身份的用户可见写法为“参会人 A（可能为张三，待确认）”。未知 speaker id/声纹聚类不能凭空产生姓名；候选不得用于确定 owner、承诺、权限、预算或长期身份记忆。
 
-以下内容必须在进入 prompt 前剔除：API Key、Token、Cookie、Authorization、App Secret、签名 URL、登录会话和可能包含它们的原始命令输出。`auth-status-summary` 只返回认证状态摘要；`secret-scan` 处理其他外部输出。
+## 6. Sub-agent 与 Workflow Prompt
 
-## 7. 质量检查
+当前项目角色分两类：
 
-提示词质量不能只靠文案 review，至少检查：
+- 通用办公：`office-source-analyst`、`office-deliverable-reviewer`。
+- 会议专项：evidence、decision、action、synthesizer、memory curator。
 
-- prompt placeholder 与 registry schema 一致。
-- Meeting Intelligence 的重要判断在最终文档有覆盖。
-- 每个确定结论都有当前 segment evidence。
-- 同一实体不会因 speaker alias、姓名或 source 切换而串线。
-- 子 Agent payload 未通过 reconciliation 时不会进入文档。
-- 文档结构随会议变化，而不是固定填满模板。
-- 失败和待确认以用户可理解的方式出现。
+每个角色必须收到单一任务、可读 artifact、引用范围和输出契约。普通独立核验使用 Pi subagent；多个隔离轴、完整性检查与交叉验证使用 Dynamic Workflow。不要用 workflow 代替一个普通工具调用，也不要让 child 持有发布和生产写权限。
 
-## 8. 维护规则
+## 7. 精简后的 Gate
 
-- 全局 Agent 行为只在 `.pi/SYSTEM.md` 维护。
-- 文档类型结构只在 `prompts/*.md` 与 registry 维护。
-- 角色只在 `.pi/agents/*.md` 维护。
-- 代码中的提示词只允许用于工具调用说明、schema 约束和短运行指令，不复制整份文档 prompt。
-- Memory Curator 只能提出候选；父 Agent 是长期记忆唯一校验与写入者，且记忆不得自动修改生产 prompt/skill。
+已精简的过度防御：
+
+- 低置信 document identity 从 `needs_fix` 降为 warning，优先自动改善标题。
+- 未确认姓名候选不再一律视为违规；只要求 alias、候选标识、依据和置信度。
+- 评论 API/独立评论线程不完整时继续处理明确用户指令和可读正文，并披露覆盖范围。
+- web research 不再要求额外“会议事实默认不联网”授权；用户需要最新资料时可检索，但必须记录来源并与会议事实分层。
+- 删除不再永久硬禁；只有精确目标和用户确认同时存在才执行，否则请求确认或给可逆替代。
+- 明确目标的发布、通知、任务或日历请求不重复确认。
+
+继续保留的硬边界：凭证泄漏、跨会议证据污染、把低置信 ASR 升级为确定承诺、未明确目标的覆盖/删除，以及高影响动作的授权。
+
+## 8. 维护与验证
+
+- 全局 Office Agent 行为只在 `.pi/SYSTEM.md` 维护。
+- 文档逻辑在 `prompts/*.md` 与 registry 维护。
+- 角色定义在 `.pi/agents/*.md` 维护。
+- runtime 代码只组装任务契约、上下文和工具调用，不复制整份业务 Prompt。
+- 测试必须验证真实 `participantIdentityCandidates` 归一化、context-pack-v2 task state/artifact index，以及 QA/Policy 的新边界。

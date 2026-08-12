@@ -10,8 +10,9 @@
 flowchart LR
     Input["本地 / 飞书 / Rokid / 智能眼镜"] --> Adapter["Channel 与 File Adapters"]
     Adapter --> Router["Task Router + Execution Profile"]
+    Router --> Task["Parent Task State + Artifact Index"]
     Router --> ASR["File ASR / Realtime ASR"]
-    Router --> Context["Source Context"]
+    Task --> Context["Work-unit Source Context"]
     ASR --> Context
     Context --> MI["Meeting Intelligence"]
     MI --> Planner["Pi Parent + Agentic Planner"]
@@ -49,12 +50,12 @@ flowchart LR
 | 组件 | 拥有的判断 | 不拥有的判断 |
 | --- | --- | --- |
 | Task Router | task intent、execution profile | 模型、prompt、文档结构、事实结论 |
-| Parent / Planner | 目标拆解、能力选择、委派、停止条件 | provider 的底层实现 |
+| Parent / Planner | 目标拆解、task state、artifact index、能力选择、委派、停止条件与验收 | provider 的底层实现 |
 | Model Router | provider/model 候选与显式 fallback | 会议事实 |
 | Prompt Registry | docType、正式 prompt、required sections | 外部发布权限 |
 | Document Worker | section batch、合并、bounded repair | 最终证据接受、飞书发布 |
 | QA Gate | 证据、实体、结构和可交付质量 | 外部动作授权 |
-| Policy Gate | 凭证与外部动作边界 | 会议业务流程和内容结构 |
+| Policy Gate | 凭证与高影响/不可逆/目标不明的外部动作边界 | 办公业务流程和内容结构 |
 | Handler / Adapter / Publisher | 转换、执行、记录和回复 | 不重新做 Planner 判断 |
 | Memory Curator | QA 后长期记忆候选 | 不写文件、不发布、不绕过父级证据校验 |
 | Parent Memory Governance | claim/segment 校验、去重、冲突隔离与写入 | 不自动覆盖冲突，不把低置信内容升级为事实 |
@@ -100,7 +101,7 @@ flowchart LR
 - `agentic-orchestration.json`
 - `agentic-orchestration-result.json`
 
-participant map 使用稳定 `参会人 A/B/...`，显式姓名映射覆盖显示名。模型生成的 topic/decision/action 先经过当前 segment id、participant alias 和 quality 规则校验，再进入写作。
+participant map 使用稳定 `参会人 A/B/...`，显式姓名映射覆盖显示名。模型也可输出带 segment evidence、basis 和 confidence 的姓名候选，但候选不覆盖 displayName，也不能确定 owner/承诺。topic/decision/action 先经过当前 segment id、participant alias 和 quality 规则校验，再进入写作。
 
 ## 7. 双层记忆
 
@@ -142,7 +143,7 @@ flowchart LR
 
 ## 10. Source Context 与 Office Runtime
 
-`im_file_context_helpers.mjs` 处理附件识别、提取和 preview；`source-context-runtime.ts` 建立 source record、segment、retrieval plan、context pack 和 generation gate。完整内容可按任务读取，bounded context 用于相关性和模型预算。
+`im_file_context_helpers.mjs` 处理附件识别、提取和 preview；`source-context-runtime.ts` 建立 source record、segment、task state、artifact index、retrieval plan、`context-pack-v2` 和 generation gate。父级保留控制状态，worker 只拿任务契约与相关证据；完整内容可按任务补取并重建 pack。
 
 `office-runtime.ts` 管理 document lifecycle、office object reference 和 retrieval index。检索索引保存 hash、摘要、preview 和 artifact pointer，不复制完整正文；这属于索引设计，不是会议内容调用禁令。长期记忆只走 Memory Curator 与父级治理路径，不再由 office-runtime 提供第二套 proposal 入口。
 

@@ -37,7 +37,6 @@ type ActionIntent =
   | "delete";
 
 const CONFIRMATION_REQUIRED = new Set<ActionIntent>([
-  "publish_customer_visible",
   "notify_people",
   "mutate_calendar",
   "assign_task",
@@ -99,6 +98,16 @@ function isFeishuExplicitWriteAllowed(params: any, actionIntent: ActionIntent) {
   return true;
 }
 
+function explicitTargetedActionAllowed(params: any, actionIntent: ActionIntent) {
+  if (params.explicitUserRequest !== true && params.userRequestedAction !== true) return false;
+  if (params.destructiveAction === true || actionIntent === "delete") return false;
+  if (params.modifyExistingDocument === true && params.targetSpecified !== true) return false;
+  if (["publish_customer_visible", "notify_people", "mutate_calendar", "assign_task"].includes(actionIntent)) {
+    return params.targetSpecified === true || isFeishuExplicitWriteAllowed(params, actionIntent);
+  }
+  return false;
+}
+
 function buildDecision(params: any) {
   const actionIntent = params.actionIntent as ActionIntent;
   const reasons: string[] = [];
@@ -108,16 +117,28 @@ function buildDecision(params: any) {
   let sourceRecordRequired = Boolean(params.sourceRecordRequired);
 
   if (actionIntent === "delete" || params.destructiveAction === true) {
-    status = "blocked";
-    reasons.push("destructive_action_blocked");
-    safeAlternative = "Create, publish, or overwrite an explicitly targeted document instead; deletion is not supported.";
+    if (params.userConfirmed === true && params.targetSpecified === true) {
+      reasons.push("explicit_targeted_destructive_action_confirmed");
+    } else {
+      status = "needs_confirmation";
+      requiredUserConfirmation = true;
+      reasons.push("destructive_action_requires_explicit_target_and_confirmation");
+      safeAlternative = "Specify the exact target and confirm the destructive action, or choose a reversible archive/overwrite alternative.";
+    }
   }
 
-  if (status !== "blocked" && params.modifyExistingDocument === true && params.targetSpecified !== true) {
+  if (params.modifyExistingDocument === true && params.targetSpecified !== true) {
     status = "needs_confirmation";
     requiredUserConfirmation = true;
     reasons.push("document_modify_target_required");
     safeAlternative = "Ask the user for an explicit file token/link, or modify a document generated in the current conversation.";
+  }
+
+  if (actionIntent === "publish_customer_visible" && !explicitTargetedActionAllowed(params, actionIntent)) {
+    status = "needs_confirmation";
+    requiredUserConfirmation = true;
+    reasons.push("publish_customer_visible_requires_explicit_targeted_request");
+    safeAlternative = "Keep the result as a private draft until the user specifies the publication target.";
   }
 
   if (params.containsSecrets) {
@@ -141,8 +162,8 @@ function buildDecision(params: any) {
   }
 
   if (status !== "blocked" && CONFIRMATION_REQUIRED.has(actionIntent)) {
-    if (isFeishuExplicitWriteAllowed(params, actionIntent)) {
-      reasons.push(`${actionIntent}_allowed_by_explicit_feishu_user_request`);
+    if (explicitTargetedActionAllowed(params, actionIntent)) {
+      reasons.push(`${actionIntent}_allowed_by_explicit_targeted_user_request`);
     } else if (params.channel === "wechat" && FEISHU_WRITE_INTENTS.has(actionIntent) && params.userConfirmed !== true) {
       status = "needs_confirmation";
       requiredUserConfirmation = true;

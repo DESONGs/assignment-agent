@@ -112,6 +112,10 @@ type WorkUnit = {
   retrievalReasons: string[];
   outputContractVersion: string;
   documentIdentityConfidence: "high" | "medium" | "low";
+  taskStateRef: string;
+  sourceRecordsRef: string;
+  sourceSegmentsRef: string;
+  sourceStructureRef: string;
 };
 
 type PromptRecord = {
@@ -128,7 +132,7 @@ const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
 const promptRegistryPath = join(packageDir, "runtime", "document-prompt-registry.json");
 
-const SOURCE_CONTEXT_VERSION = "source-context-v1";
+const SOURCE_CONTEXT_VERSION = "source-context-v2";
 const SEGMENT_TARGET_CHARS = 1200;
 const SEGMENT_MAX_CHARS = 1500;
 const SEGMENT_OVERLAP_CHARS = 120;
@@ -1076,6 +1080,8 @@ function buildModelContext(params: {
   operation?: string;
   speakerDiarization?: unknown;
   meetingAnalysis?: any;
+  taskState?: any;
+  artifactIndex?: any;
 }) {
   const evidenceBlocks: string[] = [];
   let budget = DEFAULT_EVIDENCE_HARD_CAP_CHARS;
@@ -1120,9 +1126,15 @@ function buildModelContext(params: {
     `documentIdentityConfidence: ${params.documentIdentity?.confidence ?? "unknown"}`,
     `outputContractVersion: ${params.outputContract?.outputContractVersion ?? "document-output-contract-v1"}`,
     "",
-    "## User Request",
+    "## Work Unit Contract",
     "",
-    params.taskPrompt || "请根据上下文生成文档章节。",
+    JSON.stringify({
+      objective: params.taskPrompt || "请根据上下文生成文档章节。",
+      docType: params.docType,
+      targetSections: params.sections,
+      completionRule: "只完成当前章节；缺失证据必须保留为待确认，不得从常识补齐。",
+      taskStateRef: params.artifactIndex?.taskState ?? null,
+    }, null, 2),
     "",
     "## Selected Source Evidence",
     "",
@@ -1148,6 +1160,10 @@ function buildModelContext(params: {
           participantResolution: params.meetingAnalysis.participantResolution,
         }, null, 2)
       : "No Meeting Intelligence analysis is available; derive cautiously from selected evidence and mark gaps as 待确认.",
+    "",
+    "## Artifact Index For On-demand Retrieval",
+    "",
+    JSON.stringify(params.artifactIndex ?? {}, null, 2),
     "",
     "## Selected Source Structure Blocks",
     "",
@@ -1243,6 +1259,7 @@ function buildContextPlane(params: any) {
   const sourceRecordsPath = join(dir, "source-records.json");
   const sourceSegmentsPath = join(dir, "source-segments.jsonl");
   const sourceStructurePath = join(dir, "source-structure.json");
+  const taskStatePath = join(dir, "task-state.json");
   writeJson(sourceRecordsPath, {
     schemaVersion: `${SOURCE_CONTEXT_VERSION}/source-records`,
     generatedAt: nowIso(),
@@ -1263,6 +1280,36 @@ function buildContextPlane(params: any) {
     rawSecretsReturned: false,
   })));
   writeJson(sourceStructurePath, sourceStructure);
+  const taskState = {
+    schemaVersion: "office-task-state-v2",
+    objective: taskPrompt || "生成办公文档",
+    operation,
+    requestedDocuments,
+    sourceCount: sourceRecords.length,
+    segmentCount: sourceSegments.length,
+    meetingState: meetingAnalysis
+      ? {
+          status: meetingAnalysis.status,
+          meetingType: meetingAnalysis.meetingProfile?.meetingType ?? null,
+          topicCount: meetingAnalysis.topicMap?.length ?? 0,
+          unresolvedParticipantCount: meetingAnalysis.participantResolution?.unresolvedCount ?? 0,
+          identityCandidateCount: meetingAnalysis.participantResolution?.candidateCount ?? 0,
+        }
+      : null,
+    completedWorkUnits: [],
+    openQuestions: [],
+  };
+  writeJson(taskStatePath, taskState);
+  const artifactIndex = {
+    taskState: workspaceRelative(taskStatePath),
+    sourceRecords: workspaceRelative(sourceRecordsPath),
+    sourceSegments: workspaceRelative(sourceSegmentsPath),
+    sourceStructure: workspaceRelative(sourceStructurePath),
+    transcript: workspaceRelative(params.transcriptPath),
+    evidenceIndex: workspaceRelative(params.evidenceIndexPath),
+    meetingAnalysis: meetingAnalysis ? "artifacts/meeting-intelligence/meeting-analysis.json" : null,
+    retrievalInstruction: "当前 pack 不足时，由父 Agent/read-search 能力按 source id 或 segment id 从以上 artifact 补取，并重建 work unit；不要假装已读取未选择内容。",
+  };
 
   const workUnits: WorkUnit[] = [];
   const retrievalPlan: any[] = [];
@@ -1289,9 +1336,11 @@ function buildContextPlane(params: any) {
         operation,
         speakerDiarization: audio.speakerDiarization,
         meetingAnalysis: meetingContext,
+        taskState,
+        artifactIndex,
       });
       const contextPack = {
-        schemaVersion: "context-pack-v1",
+        schemaVersion: "context-pack-v2",
         generatedAt: nowIso(),
         contextPackId,
         workUnitId,
@@ -1307,6 +1356,8 @@ function buildContextPlane(params: any) {
         retrievalReasons,
         speakerDiarization: audio.speakerDiarization,
         meetingIntelligence: meetingContext,
+        taskState,
+        artifactIndex,
         documentIdentity: {
           projectName: documentIdentity.projectName,
           subject: documentIdentity.subject,
@@ -1368,6 +1419,10 @@ function buildContextPlane(params: any) {
         retrievalReasons,
         outputContractVersion: outputContract.outputContractVersion,
         documentIdentityConfidence: documentIdentity.confidence,
+        taskStateRef: taskStatePath,
+        sourceRecordsRef: sourceRecordsPath,
+        sourceSegmentsRef: sourceSegmentsPath,
+        sourceStructureRef: sourceStructurePath,
       });
       retrievalPlan.push({
         workUnitId,
@@ -1416,6 +1471,7 @@ function buildContextPlane(params: any) {
     sourceRecordsPath,
     sourceSegmentsPath,
     sourceStructurePath,
+    taskStatePath,
     retrievalPlanPath,
     gatePath,
     sourceCount: sourceRecords.length,
@@ -1453,6 +1509,8 @@ function buildContextPlane(params: any) {
       segmentMaxChars: SEGMENT_MAX_CHARS,
       deterministicRetrieval: true,
       vectorStoreUsed: false,
+      contextStrategy: "hierarchical_control_plane_and_work_unit_data_plane",
+      repeatedFullTranscriptInjection: false,
     },
     workUnits,
     gate,
@@ -1471,6 +1529,7 @@ function buildContextPlane(params: any) {
     `sourceRecords: ${workspaceRelative(sourceRecordsPath)}`,
     `sourceSegments: ${workspaceRelative(sourceSegmentsPath)}`,
     `sourceStructure: ${workspaceRelative(sourceStructurePath)}`,
+    `taskState: ${workspaceRelative(taskStatePath)}`,
     `retrievalPlan: ${workspaceRelative(retrievalPlanPath)}`,
     `sourceCount: ${sourceRecords.length}`,
     `segmentCount: ${sourceSegments.length}`,
@@ -1486,6 +1545,7 @@ function buildContextPlane(params: any) {
     sourceRecordsPath,
     sourceSegmentsPath,
     sourceStructurePath,
+    taskStatePath,
     retrievalPlanPath,
     gatePath,
     contextBrief,
@@ -1722,7 +1782,7 @@ export default function (pi: ExtensionAPI) {
       const contextPackId = `${workUnitId}-${sha256(params.selectedSegments).slice(0, 10)}`;
       const retrievalReasons = (params.selectedSegments as SourceSegment[]).map((segment) => `manual_selected:${segment.segmentId}`);
       const details = {
-        schemaVersion: "context-pack-v1",
+        schemaVersion: "context-pack-v2",
         contextPackId,
         workUnitId,
         docType: params.docType,
@@ -1732,6 +1792,14 @@ export default function (pi: ExtensionAPI) {
         evidenceBudgetChars: DEFAULT_EVIDENCE_HARD_CAP_CHARS,
         sourceSegmentIds: (params.selectedSegments as SourceSegment[]).map((segment) => segment.segmentId),
         retrievalReasons,
+        taskState: {
+          schemaVersion: "office-task-state-v2",
+          objective: params.taskPrompt ?? "",
+          requestedDocuments: [params.docType],
+          completedWorkUnits: [],
+          openQuestions: [],
+        },
+        artifactIndex: {},
         modelContext: buildModelContext({
           packId: contextPackId,
           workUnitId,
@@ -1741,6 +1809,14 @@ export default function (pi: ExtensionAPI) {
           selectedSegments: params.selectedSegments as SourceSegment[],
           retrievalReasons,
           operation: params.operation,
+          taskState: {
+            schemaVersion: "office-task-state-v2",
+            objective: params.taskPrompt ?? "",
+            requestedDocuments: [params.docType],
+            completedWorkUnits: [],
+            openQuestions: [],
+          },
+          artifactIndex: {},
         }),
         rawSecretsReturned: false,
         rawMediaExternalUpload: false,

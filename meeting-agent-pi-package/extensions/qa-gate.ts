@@ -137,10 +137,6 @@ function hasReadableTableOutput(markdown: string) {
     || /^[-*]\s+.+$/m.test(markdown) && /表格|字段|列|行|范围|需求|验收|暂不做/.test(markdown);
 }
 
-function requiredIdentityDoc(docType: string) {
-  return new Set(["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist", "meeting-minutes"]).has(docType);
-}
-
 function evaluateGate(checks: any, publishIntent: boolean) {
   const issues: Issue[] = [];
   for (const issue of asArray(checks?.issues)) {
@@ -192,9 +188,9 @@ function evaluateGate(checks: any, publishIntent: boolean) {
   addListIssue(issues, {
     list: entitySafety.speakerAttributionViolations,
     code: "speaker_attribution_violation",
-    severity: "blocking",
-    message: "纪要使用了 participant map 不支持的参会人身份或代号。",
-    suggestedFix: "改用 participant-map.json 中的稳定代号，或让用户提供明确姓名映射。",
+    severity: "needs_fix",
+    message: "纪要使用了未绑定稳定参会人代号、或未标明候选状态的身份。",
+    suggestedFix: "保留 participant-map.json 中的稳定代号；未经确认的姓名写成候选并标注待确认。",
   });
 
   const asrEvidence = checks?.asrEvidence ?? {};
@@ -255,12 +251,12 @@ function evaluateGate(checks: any, publishIntent: boolean) {
   });
 
   const webAccess = checks?.webAccess ?? {};
-  if (webAccess.used === true && webAccess.allowed !== true) {
+  if (webAccess.used === true && webAccess.allowed === false) {
     issues.push({
       code: "web_access_not_allowed",
       severity: "blocking",
       message: "WebAccess 用于未授权场景。",
-      suggestedFix: "会议事实生成默认不联网；移除外部事实或取得明确授权。",
+      suggestedFix: "移除被明确禁止的外部访问；若用户需要最新资料，重新确认允许的检索范围并记录来源。",
     });
   }
   if (webAccess.used === true && asArray(webAccess.sources).length === 0) {
@@ -279,9 +275,9 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     if (!reviewContext.artifact || reviewContext.status === "missing") {
       issues.push({
         code: "document_revision_review_context_missing",
-        severity: "blocking",
-        message: "用户要求按批注/评论修订，但缺少 review-context.json。",
-        suggestedFix: "先读取飞书正文与评论线程，写入 review-context.json，再进入文档修订 worker。",
+        severity: "needs_fix",
+        message: "用户要求按批注/评论修订，但当前没有完整 review-context.json。",
+        suggestedFix: "继续处理用户明确给出的修改和可读正文，并披露未覆盖的评论范围；需要逐条评论时再补取。",
       });
     }
     const access = reviewContext.commentAccess ?? {};
@@ -376,12 +372,12 @@ function evaluateGate(checks: any, publishIntent: boolean) {
         evidence: { docType, title, markdownTitle: doc.markdownTitle ?? markdownH1(markdown) },
       }));
     }
-    if (requiredIdentityDoc(docType) && (identityBasis.length === 0 || identityConfidence === "low")) {
+    if (identityBasis.length === 0 || identityConfidence === "low") {
       documentIssues.push(scopedDocumentIssue(docType, priority, {
         code: "document_identity_missing",
-        severity: "needs_fix",
-        message: `${docType} 缺少可追溯 documentIdentity，不能确认标题/主题来源。`,
-        suggestedFix: "回到 source_context_prepare，补齐 source H1、review title、用户请求或 dominant heading 的 identity basis。",
+        severity: "warning",
+        message: `${docType} 的标题/主题 identity 置信度较低。`,
+        suggestedFix: "优先自动从用户请求、source H1 或 dominant heading 改善标题；不影响正文事实时不阻断交付。",
         evidence: { docType, identityBasis, identityConfidence, documentIdentity },
       }));
     }

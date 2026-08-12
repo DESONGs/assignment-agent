@@ -36,6 +36,16 @@ REQUIRED_SKILLS = [
     "context-offload",
 ]
 
+REQUIRED_AGENT_ROLES = [
+    "meeting-action-reviewer.md",
+    "meeting-decision-reviewer.md",
+    "meeting-evidence-analyst.md",
+    "meeting-evidence-synthesizer.md",
+    "meeting-memory-curator.md",
+    "office-source-analyst.md",
+    "office-deliverable-reviewer.md",
+]
+
 REQUIRED_PROMPTS = [
     "meeting-minutes.md",
     "prd.md",
@@ -45,7 +55,6 @@ REQUIRED_PROMPTS = [
 ]
 
 REQUIRED_EXTENSIONS = [
-    "approval-gates.ts",
     "feishu-bot-gateway.ts",
     "feishu-tools.ts",
     "media-tools.ts",
@@ -563,6 +572,14 @@ def validate_package() -> None:
         if marker not in memory_agent:
             fail(f"meeting memory curator agent missing marker: {marker}")
 
+    for role_name in REQUIRED_AGENT_ROLES:
+        role_path = ROOT / ".pi" / "agents" / role_name
+        if not role_path.exists():
+            fail(f"missing Pi agent role {role_name}")
+        role_text = role_path.read_text(encoding="utf-8")
+        if not role_text.startswith("---") or "tools: read" not in role_text:
+            fail(f"Pi agent role must be frontmatter-defined and read-only: {role_name}")
+
     memory_helper = (ROOT / "meeting-agent-pi-package" / "tools" / "meeting_memory_helpers.mjs").read_text(encoding="utf-8")
     for marker in (
         "meeting-memory-candidates-v1",
@@ -937,10 +954,9 @@ def validate_extensions() -> None:
         if removed_marker in feishu:
             fail(f"feishu-tools.ts still contains removed custom wrapper marker: {removed_marker}")
 
-    approval = (ROOT / "meeting-agent-pi-package" / "extensions" / "approval-gates.ts").read_text(encoding="utf-8")
-    for removed_marker in ("pi.on(\"tool_call\"", "feishu_send_im", "feishu_reply_im", "feishu_move_doc", "approval-store"):
-        if removed_marker in approval:
-            fail(f"approval-gates.ts still intercepts Feishu actions: {removed_marker}")
+    approval = ROOT / "meeting-agent-pi-package" / "extensions" / "approval-gates.ts"
+    if approval.exists():
+        fail("approval-gates.ts should be removed; Policy Gate owns only credential and high-impact action boundaries")
 
     approval_store = ROOT / "meeting-agent-pi-package" / "extensions" / "approval-store.ts"
     if approval_store.exists():
@@ -1579,7 +1595,7 @@ def validate_extensions() -> None:
     for marker in (
         "Planner Envelope",
         "planner_envelope",
-        "scenario_playbook",
+        "office_agent_adaptive_control_loop",
         "fixedWorkflow",
         "goal",
         "taskType",
@@ -1753,6 +1769,16 @@ def validate_extensions() -> None:
     for marker in ("bad_document_title", "document_identity_missing", "raw_html_table_in_markdown", "table_source_unreadable_in_output"):
         if marker not in qa_gate:
             fail(f"qa-gate.ts missing document output contract marker: {marker}")
+    office_agent_sources = (
+        qa_gate
+        + task_execution_runner
+        + source_context
+        + (ROOT / ".pi" / "SYSTEM.md").read_text(encoding="utf-8")
+        + (ROOT / "meeting-agent-pi-package" / "tools" / "meeting_intelligence_helpers.mjs").read_text(encoding="utf-8")
+    )
+    for marker in ('severity: "warning"', "explicitPublishRequested", "candidateName", "office-task-state-v2", "context-pack-v2", "hierarchical_control_plane_and_work_unit_data_plane", "repeatedFullTranscriptInjection"):
+        if marker not in office_agent_sources:
+            fail(f"Office Agent upgrade marker missing: {marker}")
 
     office_runtime = (ROOT / "meeting-agent-pi-package" / "extensions" / "office-runtime.ts").read_text(
         encoding="utf-8"
@@ -2012,7 +2038,7 @@ def validate_runtime_configs() -> None:
         "office-object.schema.json": ("office-object-v1", "version", "objectType", "channel", "context", "sourceRun", "pointers", "artifactPointer", "rawMediaExternalUpload"),
         "document-lifecycle.schema.json": ("document-lifecycle-v1", "version", "documentId", "channel", "context", "sourceRun", "lifecycleEvents", "diffPointer", "destructiveActionsAllowed", "rawMediaExternalUpload"),
         "retrieval-index.schema.json": ("retrieval-index-v1", "version", "channel", "context", "sourceRun", "pointerOnly", "entries", "artifactPointer", "summaryPointer", "embeddingPointer", "boundedPreview", "rawMediaExternalUpload"),
-        "source-context.schema.json": ("source-context-v1/context-manifest", "runtime-context-plane-v1", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "documentIdentity", "outputContract", "document-output-contract-v1", "retrievalPlanPath", "contextPackId", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "retrievalReasons", "vectorStoreUsed"),
+        "source-context.schema.json": ("source-context-v2/context-manifest", "runtime-context-plane-v1", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "taskStatePath", "documentIdentity", "outputContract", "document-output-contract-v1", "retrievalPlanPath", "contextPackId", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "retrievalReasons", "vectorStoreUsed", "contextStrategy", "repeatedFullTranscriptInjection"),
         "asr-providers.schema.json": ("asr-providers-v1", "local_qwen3", "aliyun_dashscope_paraformer", "rawMediaExternalUpload", "languageHints"),
     }.items():
         schema_text = json.dumps(load_json(runtime_root / schema_name), ensure_ascii=False)

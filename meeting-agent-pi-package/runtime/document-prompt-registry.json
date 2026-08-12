@@ -1,11 +1,14 @@
 {
-  "version": "document-prompt-registry-v1",
+  "version": "document-prompt-registry-v2",
   "documents": [
     {
       "docType": "meeting-minutes",
       "promptFile": "meeting-minutes.md",
       "aliases": ["meeting", "minutes", "meeting-minutes", "会议纪要", "纪要"],
       "parallelizable": false,
+      "contextMode": "meeting_intelligence_hierarchical",
+      "reasoningProfile": "deep",
+      "identityPolicy": "alias_with_evidence_backed_candidate",
       "requiredSections": ["会议概况", "核心结论", "主要议题", "决策与分歧", "行动项", "风险与待确认事项"]
     },
     {

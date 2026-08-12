@@ -3,9 +3,9 @@
   "$id": "https://meeting-agent.local/schemas/source-context.schema.json",
   "title": "Runtime Source Context Plane",
   "type": "object",
-  "required": ["schemaVersion", "contextPlane", "runId", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "retrievalPlanPath", "workUnits", "gate", "documentIdentity", "outputContract", "rawSecretsReturned"],
+  "required": ["schemaVersion", "contextPlane", "runId", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "taskStatePath", "retrievalPlanPath", "workUnits", "gate", "documentIdentity", "outputContract", "rawSecretsReturned"],
   "properties": {
-    "schemaVersion": { "const": "source-context-v1/context-manifest" },
+    "schemaVersion": { "const": "source-context-v2/context-manifest" },
     "contextPlane": { "const": "runtime-context-plane-v1" },
     "runId": { "type": "string", "minLength": 1 },
     "operation": { "enum": ["create_document", "document_revision", "meeting_minutes", "multi_source_synthesis"] },
@@ -13,6 +13,7 @@
     "sourceRecordsPath": { "type": "string", "minLength": 1 },
     "sourceSegmentsPath": { "type": "string", "minLength": 1 },
     "sourceStructurePath": { "type": "string", "minLength": 1 },
+    "taskStatePath": { "type": "string", "minLength": 1 },
     "retrievalPlanPath": { "type": "string", "minLength": 1 },
     "gatePath": { "type": "string" },
     "sourceCount": { "type": "integer", "minimum": 0 },
@@ -68,7 +69,9 @@
         "segmentTargetChars": { "type": "integer" },
         "segmentMaxChars": { "type": "integer" },
         "deterministicRetrieval": { "const": true },
-        "vectorStoreUsed": { "const": false }
+        "vectorStoreUsed": { "const": false },
+        "contextStrategy": { "const": "hierarchical_control_plane_and_work_unit_data_plane" },
+        "repeatedFullTranscriptInjection": { "const": false }
       },
       "additionalProperties": true
     },
@@ -76,7 +79,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["workUnitId", "docType", "sections", "contextPackRef", "contextPackId", "contextPackHash", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "evidenceBudgetChars", "retrievalReasons", "outputContractVersion", "documentIdentityConfidence"],
+        "required": ["workUnitId", "docType", "sections", "contextPackRef", "contextPackId", "contextPackHash", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "evidenceBudgetChars", "retrievalReasons", "outputContractVersion", "documentIdentityConfidence", "taskStateRef", "sourceRecordsRef", "sourceSegmentsRef", "sourceStructureRef"],
         "properties": {
           "workUnitId": { "type": "string", "minLength": 1 },
           "docType": { "type": "string", "minLength": 1 },
@@ -91,7 +94,11 @@
           "evidenceBudgetChars": { "type": "integer", "maximum": 12000 },
           "retrievalReasons": { "type": "array", "items": { "type": "string" } },
           "outputContractVersion": { "const": "document-output-contract-v1" },
-          "documentIdentityConfidence": { "enum": ["high", "medium", "low"] }
+          "documentIdentityConfidence": { "enum": ["high", "medium", "low"] },
+          "taskStateRef": { "type": "string", "minLength": 1 },
+          "sourceRecordsRef": { "type": "string", "minLength": 1 },
+          "sourceSegmentsRef": { "type": "string", "minLength": 1 },
+          "sourceStructureRef": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": true
       }

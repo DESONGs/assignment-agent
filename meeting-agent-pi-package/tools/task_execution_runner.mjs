@@ -2271,7 +2271,8 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
         prompt: prompt.prompt,
         systemPrompt: [
           "你是 Meeting Intelligence Agent。你的任务是从带时间戳、匿名参会人和 ASR 质量标签的当前会议证据中建立结构化会议状态。",
-          "你自主识别会议类型、议题、分歧、共识、行动和开放问题，但不得发明姓名或把低质量语音升级为确定决定。",
+          "你自主识别会议类型、议题、分歧、共识、行动和开放问题。允许从自我介绍、明确称呼、上下文关系或已登记声纹匹配提出姓名候选，但必须保留 alias、证据与置信度，不能把候选身份用于确定 owner 或承诺。",
+          "不要把未知声纹聚类凭空解释为真实姓名，也不要把低质量语音升级为确定决定。",
           "只输出符合用户 Prompt 中 contract 的 JSON。",
         ].join(""),
         temperature: 0.1,
@@ -2451,11 +2452,12 @@ async function buildEvidencePack(task, paths, options = {}) {
     audioSegmentCount: sourceContext.evidenceSummary?.audioSegmentCount ?? 0,
     sources: sourceContext.evidenceSummary?.sourceSummary ?? sources,
     contextPlane: {
-      schemaVersion: sourceContext.schemaVersion ?? "source-context-v1",
+      schemaVersion: sourceContext.schemaVersion ?? "source-context-v2",
       manifestPath: workspaceRelative(sourceContext.manifestPath),
       sourceRecordsPath: workspaceRelative(sourceContext.sourceRecordsPath),
       sourceSegmentsPath: workspaceRelative(sourceContext.sourceSegmentsPath),
       sourceStructurePath: workspaceRelative(sourceContext.sourceStructurePath),
+      taskStatePath: workspaceRelative(sourceContext.taskStatePath),
       retrievalPlanPath: workspaceRelative(sourceContext.retrievalPlanPath),
       gatePath: workspaceRelative(sourceContext.gatePath),
       workUnitCount: sourceContext.workUnits?.length ?? 0,
@@ -3198,8 +3200,11 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
           ambiguousTermExpansions: [],
         };
 
+    const explicitPublishRequested = /发布|保存|放到|上传到|云端|飞书文档|创建文档|归档|publish|save|upload/i.test(
+      cleanUserPrompt(task.sourceEvent?.message?.text ?? ""),
+    );
     const qaGate = await callRuntimeTool("qa_gate_evaluate", {
-      publishIntent: true,
+      publishIntent: explicitPublishRequested,
       checks: {
         security: { rawSecretsReturned: false, secretsLeaked: false },
         topicCoverage: { omittedMacroTopics: meetingQa.omittedMacroTopics, actionCoverageGaps: meetingQa.actionCoverageGaps },
@@ -3259,6 +3264,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       explicitUserRequest: true,
       userRequestedAction: true,
       destructiveAction: false,
+      targetSpecified: true,
     }, paths, options);
     await callRuntimeTool("policy_gate_write", { runId: task.runId, decision: policyGate, outputRoot }, paths, options);
     await hooks.onStep?.("policy_gate_completed", policyGate.status === "pass" ? "completed" : policyGate.status ?? "blocked", { artifact: join(paths.runDir, "policy-gate.json"), status: policyGate.status });

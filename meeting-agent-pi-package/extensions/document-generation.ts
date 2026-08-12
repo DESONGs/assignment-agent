@@ -75,9 +75,11 @@ function readContextManifestSummary(contextEnvelopeRef: string) {
           }
         : null,
       sourceStructurePath: manifest.sourceStructurePath ?? null,
+      taskStatePath: manifest.taskStatePath ?? null,
       sourceStructureSummary: manifest.sourceStructureSummary ?? null,
       meetingIntelligence: manifest.meetingIntelligence ?? null,
       outputContract: manifest.outputContract ?? null,
+      contextStrategy: manifest.budgetPolicy?.contextStrategy ?? null,
       fullContentAvailableByArtifact: true,
     };
   } catch {
@@ -153,8 +155,8 @@ function normalizeContextBrief(params: {
     [
       "## Runtime Context Plane",
       "",
-      "Source content is available only through the bounded context pack attached to the current work unit.",
-      "Do not request, recreate, or assume full raw source text.",
+      "Use the attached work unit context pack as the task data plane. It contains the current task contract, selected evidence, semantic state, artifact index, and output contract.",
+      "The parent control plane may retrieve additional evidence from indexed artifacts and rebuild the work unit when needed; never assume unselected source content was read.",
       "",
       `contextEnvelopeRef: ${params.contextEnvelopeRef}`,
       `workUnitCount: ${params.workUnits.length}`,
@@ -257,7 +259,7 @@ function renderWorkItem(params: {
           enabled: true,
           contextEnvelopeRef: params.contextEnvelopeRef,
           workUnitCount: workUnits.length,
-          promptMode: "bounded_work_unit_context_pack",
+          promptMode: "hierarchical_work_unit_context_pack",
           fullContentAvailableByArtifact: true,
         }
       : null,

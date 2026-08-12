@@ -1,4 +1,4 @@
-# Meeting Agent 开发与运行规则
+# Office Agent 开发与运行规则
 
 更新时间：2026-08-12。
 
@@ -34,22 +34,22 @@
 
 ## 产品黄金路径
 
-1. 识别用户目标、输入类型和预期交付物。
-2. 音视频先选择 ASR provider：文件和实时流使用不同端口。
-3. 生成完整 transcript、readable transcript、speaker/quality 元数据和 evidence index。
-4. Meeting Intelligence 建立参会人、议题、决策状态、行动项、风险、开放问题和证据映射。
-5. 根据当前会议复杂度选择父 Agent、一个 fresh sub-agent 或 Dynamic Workflow。
-6. 父 Agent 对委派结果做 segment id 集合校验；越界证据必须隔离。
-7. Prompt Registry 与 Document Workers 生成文档，QA Gate 检查证据与交付质量，Policy Gate 检查外部动作。
+1. 识别用户目标、输入类型、预期交付物、成功标准与外部动作。
+2. 父 Agent 建立任务控制状态与 artifact index，选择最小能力集合；普通问答、单文件与局部修订不进入会议链路。
+3. 复杂任务按独立工作轴选择父 Agent 直做、一个 fresh sub-agent 或 Dynamic Workflow；父级持有依赖、冲突与最终验收。
+4. 文档与分析 work unit 只接收任务契约、相关证据、必要上游摘要和 artifact pointers，不反复拼接全量来源。
+5. 会议输入额外执行 ASR 与 Meeting Intelligence：生成完整 transcript、readable transcript、speaker/quality 元数据、evidence index，以及参会人/议题/决定/行动/风险图。
+6. 父 Agent 对委派结果做来源和 segment id 集合校验；越界证据必须隔离。
+7. Prompt Registry 与 Document Workers 生成交付物，QA 负责质量验收，Policy 只检查凭证与高影响外部动作。
 8. 已通过 QA 的完整音频会议按需唤醒一次 `meeting-memory-curator`；父 Agent 校验 claim/segment、去重、隔离冲突并更新项目长期记忆。
-9. 按用户要求交付本地文件或发布飞书。记忆提炼失败不得阻塞已通过 QA 的会议交付。
+9. 按用户要求交付本地文件或发布飞书；明确目标的用户写入/发布请求不重复确认。
 
-这是一条产品黄金路径，不是所有任务都必须执行的固定 DAG。`fast_answer`、`file_summary`、文档修订和多源综合会按 execution profile 选择所需阶段。
+这是一条办公任务控制循环，不是所有任务都必须执行的固定 DAG。`fast_answer`、`file_summary`、文档修订、多源综合和会议会按 execution profile 选择所需阶段。
 
 ## Agent 决策边界
 
 - 父 Agent 是最终责任主体：理解目标、决定是否委派、整合冲突、验证证据、生成最终交付和执行外部动作。
-- Meeting Intelligence 是会议语义状态源，不是另一个聊天 Agent。
+- Meeting Intelligence 是会议场景的语义状态模块，不是整个 Office Agent 的身份或另一聊天 Agent。
 - Sub-agent 是一次性、任务型、fresh context 的只读核验者，不拥有发布或生产写权限。
 - Dynamic Workflow 只在存在多个独立核验轴时使用；并行度、Agent 数量和 retry 必须有界。
 - `meeting-memory-curator` 是持久角色、fresh 单次子进程，不是常驻 LLM，也不是 Dynamic Workflow；它只提出结构化候选，无写入和发布权限。
@@ -59,7 +59,8 @@
 
 ## 会议证据规则
 
-- 默认使用 `参会人 A/B/...`，不要根据声纹猜姓名。
+- `参会人 A/B/...` 是稳定身份键；用户显式映射或已登记声纹匹配可确认姓名。
+- 允许依据自我介绍、明确称呼、上下文关系或声纹匹配提出姓名候选，但必须保留 alias、依据、置信度并标记待确认；候选不得成为 owner、承诺、权限或长期身份事实。
 - 用户给出 `参会人 A=张三` 时采用显式映射；未给实名不阻塞。
 - 区分 proposed、discussion、objection、agreed、rejected、unresolved。
 - `quality=needs_review` 可形成风险或待确认，不能单独确定决策、owner、日期、金额或承诺。
@@ -78,9 +79,10 @@
 
 - 会议内容可以进入选定的 ASR、模型、sub-agent、workflow、文档、QA 和记忆整理能力。
 - 分段、检索、offload 与 bounded preview 是上下文质量和性能机制，不是内容隐私阻断。
+- 复杂任务使用父级 task state/artifact index 与 work-unit context pack 分层；禁止把完整 transcript/evidence 在每个 worker 中重复拼接。
 - API Key、Token、Cookie、Authorization、App Secret、签名 URL 和登录会话永远不得进入 prompt、普通日志、会议产物或长期记忆。
 - `lark-cli auth status --verify` 只通过 `auth-status-summary` 暴露安全摘要；其他可能含凭证的 CLI 输出使用 `secret-scan`。
-- 删除、通知他人、日历/任务变更、客户可见发布、权限扩大和依赖安装由 Policy Gate 处理。
+- 凭证泄漏、高影响或不可逆外部动作由 Policy Gate 处理；用户已明确动作和目标时视为已授权，只有删除、目标不明或显著扩大影响时再确认。
 
 ## 文档维护
 

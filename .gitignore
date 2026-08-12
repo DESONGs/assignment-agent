@@ -19,6 +19,7 @@ node_modules/
 !.pi/agents/
 .pi/agents/*
 !.pi/agents/meeting-*.md
+!.pi/agents/office-*.md
 .pi/agent-memory/
 .pi-subagents/
 .hf-cache/

@@ -2,13 +2,15 @@
 
 更新时间：2026-08-12。
 
-当前主架构不是常驻“Agent 团队”，而是一个父 Agent 根据 Meeting Intelligence 按需创建 fresh child，或运行有界 Dynamic Workflow。核验角色是任务模板；`meeting-memory-curator` 是唯一带 project memory scope 的持久角色，但每次仍以 fresh 子进程按需运行，不是常驻 LLM。
+当前主架构不是常驻“Agent 团队”，而是一个 Office 父 Agent根据任务状态按需创建 fresh child，或运行有界 Dynamic Workflow。Meeting Intelligence 为会议场景提供委派信号；核验角色是任务模板。`meeting-memory-curator` 是唯一带 project memory scope 的持久角色，但每次仍以 fresh 子进程按需运行，不是常驻 LLM。
 
 ## 1. 角色索引
 
 | 角色 | 定义 | 输入 | 输出 | 禁止事项 |
 | --- | --- | --- | --- | --- |
 | 父 Agent | `.pi/SYSTEM.md` | 用户目标、source context、Meeting Intelligence | 最终判断、文档、动作决策 | 不得跳过证据/QA |
+| Office Source Analyst | `.pi/agents/office-source-analyst.md` | 单一来源轴与 task state | 事实、冲突、推断和缺口 | 不得生成最终交付或外部动作 |
+| Office Deliverable Reviewer | `.pi/agents/office-deliverable-reviewer.md` | 交付物、任务契约和来源索引 | 目标/受众/来源覆盖审阅 | 不得因格式偏好机械阻断 |
 | Evidence Analyst | `.pi/agents/meeting-evidence-analyst.md` | transcript 与 topic candidates | 议题覆盖、支持/冲突证据 | 不得决定发布 |
 | Decision Reviewer | `.pi/agents/meeting-decision-reviewer.md` | decision candidates 与证据 | 决定状态、异议、未决项 | 不得把讨论写成共识 |
 | Action Reviewer | `.pi/agents/meeting-action-reviewer.md` | action candidates 与证据 | action/owner/due 核验 | 不得补猜 owner/date |
@@ -20,7 +22,8 @@
 
 ```mermaid
 flowchart LR
-    MI["Meeting Intelligence"] --> C{"核验复杂度"}
+    TS["Office Task State"] --> C{"独立工作轴数量"}
+    MI["Meeting Intelligence（会议时）"] --> C
     C -->|低| D["父 Agent direct"]
     C -->|一个独立轴| S["一个 fresh sub-agent"]
     C -->|多个独立轴| W["Dynamic Workflow"]
@@ -52,6 +55,6 @@ flowchart LR
 
 ## 5. 完整链路
 
-当前 scenario playbook 为：ASR provider → evidence index → Meeting Intelligence → Agentic Planner → direct/sub-agent/workflow → 父级 evidence reconciliation → model-route.json → draft/review → QA gate → 按需 Memory Curator → 父级记忆治理 → Policy Gate → delivery。
+通用链路为：目标与 task state → source/artifact index → direct/sub-agent/workflow → 父级整合 → document/answer → QA → 必要的 Policy → delivery。会议在 source 后增加 ASR、Meeting Intelligence、segment reconciliation 与按需 Memory Curator。
 
 这是可自适应的会议场景链路，不是全局 fixed workflow。上下文 offload 可按容量使用；它不会阻止 child 在被授权任务内读取完整会议证据。

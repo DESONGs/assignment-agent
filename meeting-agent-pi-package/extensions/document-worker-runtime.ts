@@ -34,6 +34,10 @@ type DocumentWorkItem = {
     retrievalReasons?: string[];
     outputContractVersion?: string;
     documentIdentityConfidence?: "high" | "medium" | "low";
+    taskStateRef?: string;
+    sourceRecordsRef?: string;
+    sourceSegmentsRef?: string;
+    sourceStructureRef?: string;
   }>;
   upstreamDependencyContext?: unknown;
   requiredSections?: string[];
@@ -67,13 +71,16 @@ const OPEN_QUESTION_PATTERN = /待确认|确认|问题|阻塞|缺口|未定|未�
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
-const SYSTEM_PROMPT =
-  "你是一个证据约束的中文办公文档写作 worker。你只根据当前 work unit 的 bounded context pack 和目标章节写作，不调用飞书，不修改日历/任务，不编造 owner/deadline/budget/外部事实。输出 Markdown。";
+const SYSTEM_PROMPT = [
+  "你是 Office Agent 的专业文档 worker。先理解当前文档的受众、用途、决策问题和目标章节，再组织信息，而不是机械扩写模板。",
+  "当前 work unit context pack 是任务数据面；使用其中的任务状态、相关证据、上游摘要和 artifact pointers。只把来源支持的内容写成事实，将合理推断、建议和未知明确区分。",
+  "证据不足时保留缺口，不用常识补齐 owner、deadline、budget 或外部事实。你不执行飞书、日历、任务、通知或发布动作。输出中文 Markdown。",
+].join("");
 const MEETING_SYSTEM_PROMPT = [
-  "你是会议理解与执行提炼 Agent，不是普通文档续写器。",
-  "你必须使用 Meeting Intelligence、当前 work unit 的证据和 participant map，自主判断当前章节应突出哪些议题、分歧、共识、行动和开放问题。",
+  "你是 Office Agent 的会议理解与执行提炼 worker，不是 transcript 摘要器或普通文档续写器。",
+  "先恢复会议目的、持续议题、立场关系、决定状态与后续执行，再使用 Meeting Intelligence、当前 work unit 的证据和 participant map 自主组织当前章节。",
   "证据优先级为：用户明确事实；多模型一致且质量稳定的 ASR；主模型单独支持的 ASR；quality=needs_review 的冲突片段。",
-  "冲突片段不得单独支持已决定事项、姓名、owner、日期、金额或承诺。speaker id 只是匿名聚类；未确认姓名一律使用参会人代号。",
+  "冲突片段不得单独支持已决定事项、owner、日期、金额或承诺。始终保留参会人代号；带依据的姓名候选可写成‘参会人 A（可能为某人，待确认）’，但不能据此确定责任或承诺。",
   "严格区分提议、异议、讨论中判断、已达成共识、被否决方案和未决事项。会议没有形成共识时，不得替会议生成最终结论。",
   "输出中文 Markdown，只写当前目标章节。",
 ].join("");
@@ -254,6 +261,10 @@ function normalizeDocumentWorkItems(value: unknown): DocumentWorkItem[] {
       promptBudgetChars: Number(unit?.promptBudgetChars ?? 0) || undefined,
       evidenceBudgetChars: Number(unit?.evidenceBudgetChars ?? 0) || undefined,
       retrievalReasons: Array.isArray(unit?.retrievalReasons) ? unit.retrievalReasons.map(String).filter(Boolean) : [],
+      taskStateRef: unit?.taskStateRef ? String(unit.taskStateRef) : undefined,
+      sourceRecordsRef: unit?.sourceRecordsRef ? String(unit.sourceRecordsRef) : undefined,
+      sourceSegmentsRef: unit?.sourceSegmentsRef ? String(unit.sourceSegmentsRef) : undefined,
+      sourceStructureRef: unit?.sourceStructureRef ? String(unit.sourceStructureRef) : undefined,
     })).filter((unit: any) => unit.workUnitId && unit.contextPackRef) : [],
     upstreamDependencyContext: item?.upstreamDependencyContext ?? null,
     requiredSections: Array.isArray(item?.requiredSections) ? item.requiredSections.map(String).filter(Boolean) : [],
@@ -779,6 +790,51 @@ function readContextPack(path?: string) {
   }
 }
 
+function taskStatePathForItems(items: DocumentWorkItem[]) {
+  for (const item of items) {
+    for (const unit of item.workUnits ?? []) {
+      const path = safeContextPackPath(unit.taskStateRef);
+      if (path) return path;
+    }
+  }
+  return null;
+}
+
+function updateDocumentTaskState(
+  items: DocumentWorkItem[],
+  results: any[],
+  phase: "running" | "completed",
+) {
+  const path = taskStatePathForItems(items);
+  if (!path || !existsSync(path)) return;
+  try {
+    const current = JSON.parse(readFileSync(path, "utf8"));
+    const completedWorkUnits = results.flatMap((result) =>
+      (result?.sectionAttempts ?? [])
+        .filter((attempt: any) => attempt?.status === "completed")
+        .map((attempt: any) => ({
+          workUnitId: attempt.workUnitId ?? null,
+          docType: result.docType,
+          sections: attempt.sections ?? [],
+          status: "completed",
+          contextPackId: attempt.contextPackId ?? null,
+        })),
+    );
+    const openQuestions = uniqueStrings(results.flatMap((result) => result?.qaInput?.openQuestions ?? [])).slice(0, 100);
+    writeJson(path, {
+      ...current,
+      phase,
+      completedDocuments: results.filter((result) => result?.status === "completed").map((result) => result.docType),
+      pendingDocuments: items.map((item) => item.docType).filter((docType) => !results.some((result) => result?.docType === docType && result?.status === "completed")),
+      completedWorkUnits,
+      openQuestions,
+      updatedAt: nowIso(),
+    });
+  } catch {
+    // Task-state observability must not replace the document result.
+  }
+}
+
 function contextWorkUnitForSections(item: DocumentWorkItem, sections: string[]) {
   const units = Array.isArray(item.workUnits) ? item.workUnits : [];
   return units.find((unit) => workUnitMatchesSections(unit, sections))
@@ -809,6 +865,12 @@ function contextMetadataForSections(item: DocumentWorkItem, sections: string[]) 
     outputContract: pack?.outputContract ?? null,
     outputContractVersion: unit?.outputContractVersion ?? pack?.outputContract?.outputContractVersion ?? "document-output-contract-v1",
     documentIdentityConfidence: unit?.documentIdentityConfidence ?? pack?.documentIdentity?.confidence ?? null,
+    taskStateRef: unit?.taskStateRef ?? pack?.artifactIndex?.taskState ?? null,
+    sourceRecordsRef: unit?.sourceRecordsRef ?? pack?.artifactIndex?.sourceRecords ?? null,
+    sourceSegmentsRef: unit?.sourceSegmentsRef ?? pack?.artifactIndex?.sourceSegments ?? null,
+    sourceStructureRef: unit?.sourceStructureRef ?? pack?.artifactIndex?.sourceStructure ?? null,
+    taskState: pack?.taskState ?? null,
+    artifactIndex: pack?.artifactIndex ?? null,
     modelContext: pack?.modelContext ?? null,
     contextPackFound: Boolean(pack),
   };
@@ -864,8 +926,8 @@ function buildSectionPrompt(params: {
     "",
     "1. 只输出目标章节，不输出非目标章节。",
     "2. 每个目标章节都必须出现，章节标题必须使用 `## {目标章节}`，目标章节文本必须逐字匹配。",
-    "3. 根据 Runtime Context Pack 中的 selected evidence、写作规则和目标章节写作。",
-    "4. 所有事实、推断、待确认要分清楚；证据不足必须写“待确认”，不得编造 owner、deadline、budget、外部事实。",
+    "3. 先读取 Work Unit Contract 与 taskState，再根据 selected evidence、写作规则和目标章节写作。",
+    "4. 所有事实、推断、建议、待确认要分清楚；证据不足必须写“待确认”，不得编造 owner、deadline、budget、外部事实。",
     "5. 不要输出 raw evidence id、API key、Authorization、raw request body、raw media 或源音频文件名。",
     "6. 表格必须输出为 Markdown pipe table 或分组 bullet；不要输出 HTML table/tbody/tr/th/td 标签。",
     "",
@@ -884,11 +946,17 @@ function buildSectionPrompt(params: {
       contextPackFound: contextMeta.contextPackFound,
       documentIdentityConfidence: contextMeta.documentIdentityConfidence,
       outputContractVersion: contextMeta.outputContractVersion,
+      taskStateRef: contextMeta.taskStateRef,
+      sourceRecordsRef: contextMeta.sourceRecordsRef,
+      sourceSegmentsRef: contextMeta.sourceSegmentsRef,
+      sourceStructureRef: contextMeta.sourceStructureRef,
     }, null, 2),
     "",
     "## Document Output Contract",
     "",
     JSON.stringify({
+      taskState: contextMeta.taskState,
+      artifactIndex: contextMeta.artifactIndex,
       documentIdentity: contextMeta.documentIdentity,
       outputContract: contextMeta.outputContract,
       selectedSourceBlocks: contextMeta.selectedSourceBlocks?.map((block: any) => ({
@@ -2163,6 +2231,7 @@ export default function (pi: ExtensionAPI) {
         const dependencyPlan = dependencyWaves(documentWorkItems);
         const completedByDocType = new Map<string, any>();
         const results: any[] = new Array(documentWorkItems.length);
+        updateDocumentTaskState(documentWorkItems, [], "running");
         for (const wave of dependencyPlan.waves) {
           const waveTasks = wave.taskIndexes.map((taskIndex) => ({ taskIndex, item: documentWorkItems[taskIndex] }));
           const waveResults = await runLimited(waveTasks, maxWorkers, (task) =>
@@ -2194,8 +2263,10 @@ export default function (pi: ExtensionAPI) {
               completedByDocType.set(result.docType, result);
             }
           }
+          updateDocumentTaskState(documentWorkItems, results.filter(Boolean), "running");
         }
         const orderedResults = results.sort((a, b) => a.taskIndex - b.taskIndex);
+        updateDocumentTaskState(documentWorkItems, orderedResults, "completed");
         const workflowSummary = summarizeWorkflow(workflow, orderedResults);
         if (workflowSummary.manifestPath) {
           writeJson(workflowSummary.manifestPath, {

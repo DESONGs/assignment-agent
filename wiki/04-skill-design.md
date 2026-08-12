@@ -26,6 +26,7 @@ flowchart LR
 | `qa-safety-review` | 判断证据覆盖、实体隔离、标题和发布阻断 | 是 |
 | `runtime-observability` | 记录 plannerDecisions、policyDecisions、workerDecisions、capabilitySelections、packageAudits | 是 |
 | `meeting-minutes` | 从 Meeting Intelligence 生成纪要 | 按需 |
+| `office-source-analyst` / `office-deliverable-reviewer` | 复杂办公任务的独立来源分析与交付验收角色 | 按需 |
 | `meeting-agentic-orchestration` | 选择 direct、fresh sub-agent 或 Dynamic Workflow | 按需 |
 | `meeting-memory-curator` | QA 后提炼带 claim/segment 证据的长期记忆候选 | 完整音频会议按需 |
 | `document-router` / `document-generation` | 选择和渲染文档 prompt | 按需 |
@@ -52,7 +53,7 @@ ASR 失败不得静默伪装成功；partial transcript 不能进入完整纪要
 
 ## 4. Agentic 编排能力
 
-`meeting_agentic_plan` 只生成可信计划。真实执行由受限 Pi 父会话调用 `subagent` 或 `workflow`：
+通用办公任务由父 Agent 维护 task state 与 artifact index；一个独立来源轴可委派 `office-source-analyst`，整合后可用 `office-deliverable-reviewer` 做目标/来源覆盖验收。会议场景的 `meeting_agentic_plan` 生成专项计划。真实执行由受限 Pi 父会话调用 `subagent` 或 `workflow`：
 
 - `pi-subagents@0.46.0` 使用 `workflowScript` 和 `runs.run(...)`。
 - `pi-dynamic-workflows@3.5.1` 使用 planner 生成的 script、args、background、concurrency、maxAgents 和 agentRetries。
@@ -62,7 +63,7 @@ ASR 失败不得静默伪装成功；partial transcript 不能进入完整纪要
 
 ## 5. 文档能力
 
-`document-prompt-registry.json` 是文档类型与 prompt 的唯一映射。`document_prompt_render_batch` 创建 work unit，`document_workers_run` 执行模型调用和 section 合并。worker 只写私有运行产物，不拥有飞书发布权限。
+`document-prompt-registry.json` 是文档类型与 prompt 的唯一映射。`document_prompt_render_batch` 创建 work unit，`context-pack-v2` 携带任务契约、task state、相关证据和 artifact index，`document_workers_run` 执行模型调用和 section 合并。worker 只写私有运行产物，不拥有飞书发布权限。
 
 短答案与文件摘要保持父级直接处理；长 PRD、技术架构、多源综合可按 execution profile 进入 section worker。`document_revision` 在原 prompt 上叠加 review-context overlay，而不是建立第二套写作系统。
 
