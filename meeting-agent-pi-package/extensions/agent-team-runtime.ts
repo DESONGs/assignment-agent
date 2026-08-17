@@ -12,6 +12,10 @@ type IndexedAgentTeamTask = AgentTeamTask & {
   taskIndex: number;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 type AgentTeamRunDetails =
   | {
       status: string;
@@ -364,12 +368,12 @@ function taskIdFor(task: IndexedAgentTeamTask) {
 }
 
 function normalizeWorkerResult(result: unknown, task: IndexedAgentTeamTask) {
-  if (result && typeof result === "object" && !Array.isArray(result)) {
+  if (isRecord(result)) {
     return {
       ...result,
-      taskId: (result as any).taskId ?? taskIdFor(task),
+      taskId: typeof result.taskId === "string" ? result.taskId : taskIdFor(task),
       taskIndex: task.taskIndex,
-      componentId: (result as any).componentId ?? task.componentId,
+      componentId: typeof result.componentId === "string" ? result.componentId : task.componentId,
     };
   }
   return {
@@ -545,11 +549,10 @@ export default function (pi: ExtensionAPI) {
       const effectiveTimeoutMs = Math.min(Math.max(requestedTimeoutMs.value, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
       const invalidShape = rawTasks
         .map((task, taskIndex) => ({ task, taskIndex }))
-        .filter(({ task }) => !task || typeof task !== "object" || Array.isArray(task) ||
-          typeof (task as any).componentId !== "string" || !(task as any).componentId.trim())
+        .filter(({ task }) => !isRecord(task) || typeof task.componentId !== "string" || !task.componentId.trim())
         .map(({ task, taskIndex }) => ({
           taskIndex,
-          componentId: task && typeof task === "object" && !Array.isArray(task) ? ((task as any).componentId ?? null) : null,
+          componentId: isRecord(task) ? (task.componentId ?? null) : null,
           reason: "invalid_task",
         }));
       if (invalidShape.length > 0) {
@@ -575,7 +578,7 @@ export default function (pi: ExtensionAPI) {
       const startedAt = new Date().toISOString();
       const results = await runPool(indexedTasks, effectiveMaxWorkers, effectiveTimeoutMs);
       const details = {
-        status: results.some((result: any) => result.status === "failed") ? "needs_review" : "completed",
+        status: results.some((result) => isRecord(result) && result.status === "failed") ? "needs_review" : "completed",
         reason: null,
         implementation: "node_worker_threads",
         trueParallelWorkers: true,

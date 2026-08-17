@@ -7,6 +7,28 @@ import { selectAudioTranscoder } from "./audio_normalize_helpers.mjs";
 
 export const DIARIZATION_RECOMMENDED_MAX_DURATION_SECONDS = 2 * 60 * 60;
 
+/**
+ * @typedef {{ exitCode: number, stdout: string, stderr: string, timedOut: boolean, error?: string }} CommandResult
+ * @typedef {{
+ *   path: string,
+ *   basename: string,
+ *   sizeBytes?: number,
+ *   hashSha256?: string,
+ *   format?: string,
+ *   extension?: string,
+ *   mediaType?: string
+ * }} MediaSource
+ * @typedef {{
+ *   ffprobePath?: string,
+ *   timeoutMs?: number,
+ *   transcoder?: string,
+ *   enabled?: unknown,
+ *   speakerCount?: unknown
+ * }} DiarizationOptions
+ * @typedef {{ status: "completed", source: MediaSource, transcoder: string } | { status: "blocked", reason: string, transcoder?: string, exitCode?: number, timedOut?: boolean }} MonoPreparation
+ */
+
+/** @param {string} path @returns {Promise<string>} */
 function sha256File(path) {
   return new Promise((resolveHash, rejectHash) => {
     const hash = createHash("sha256");
@@ -17,6 +39,7 @@ function sha256File(path) {
   });
 }
 
+/** @param {string} command @param {string[]} args @param {number} [timeoutMs] @returns {Promise<CommandResult>} */
 function runCommand(command, args, timeoutMs = 20 * 60 * 1000) {
   return new Promise((resolveCommand) => {
     let stdout = "";
@@ -47,18 +70,21 @@ function runCommand(command, args, timeoutMs = 20 * 60 * 1000) {
   });
 }
 
+/** @param {unknown} value */
 export function normalizeDiarizationPreference(value) {
   if (value === true || /^(1|true|yes|on|enabled)$/i.test(String(value ?? "").trim())) return "enabled";
   if (value === false || /^(0|false|no|off|disabled)$/i.test(String(value ?? "").trim())) return "disabled";
   return "auto";
 }
 
+/** @param {unknown} value */
 export function normalizeSpeakerCount(value) {
   if (value === undefined || value === null || String(value).trim() === "") return null;
   const count = Number(value);
   return Number.isInteger(count) && count >= 2 && count <= 100 ? count : Number.NaN;
 }
 
+/** @param {string} path @param {DiarizationOptions} [options] */
 export async function probeMediaAudio(path, options = {}) {
   const command = options.ffprobePath ?? "ffprobe";
   const result = await runCommand(command, [
@@ -86,13 +112,15 @@ export async function probeMediaAudio(path, options = {}) {
   }
 }
 
+/** @param {unknown} value */
 function safeStem(value) {
   const extension = extname(String(value ?? ""));
   return basename(String(value ?? "media"), extension).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 100) || "media";
 }
 
+/** @param {MediaSource} source @param {string} outputDir @param {DiarizationOptions} [options] @returns {Promise<MonoPreparation>} */
 async function prepareMonoSource(source, outputDir, options = {}) {
-  const transcoder = selectAudioTranscoder({ transcoder: options.transcoder });
+  const transcoder = selectAudioTranscoder(options.transcoder === undefined ? {} : { transcoder: options.transcoder });
   if (!transcoder) return { status: "blocked", reason: "diarization_transcoder_unavailable" };
   mkdirSync(outputDir, { recursive: true });
   const stem = safeStem(source.basename);
@@ -129,6 +157,7 @@ async function prepareMonoSource(source, outputDir, options = {}) {
   };
 }
 
+/** @param {MediaSource} source @param {string} outputDir @param {DiarizationOptions} [options] */
 export async function prepareFileDiarization(source, outputDir, options = {}) {
   const preference = normalizeDiarizationPreference(options.enabled);
   const speakerCount = normalizeSpeakerCount(options.speakerCount);

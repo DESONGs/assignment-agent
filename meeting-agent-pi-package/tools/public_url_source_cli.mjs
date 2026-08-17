@@ -20,11 +20,30 @@ const ENV_ALLOWLIST = new Set([
   "YT_DLP_BIN", "FFPROBE_BIN",
 ]);
 
+/**
+ * @typedef {Record<string, string | boolean>} CliArgs
+ * @typedef {{
+ *   url?: unknown, runId?: unknown, outputRoot?: unknown, envFile?: unknown,
+ *   resolveOnly?: boolean, mockModel?: boolean, ytDlpBin?: unknown,
+ *   maxMediaBytes?: unknown, maxDurationSec?: unknown, timeoutMs?: unknown
+ * }} PublicUrlCliParams
+ * @typedef {{ schemaVersion: string, runId: string, status: string, updatedAt: string, steps: Array<Record<string, unknown>>, rawSecretsReturned: false }} PublicUrlRunState
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
+/** @param {string[]} argv @returns {CliArgs} */
 function parseArgs(argv) {
+  /** @type {CliArgs} */
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
-    if (!item.startsWith("--")) continue;
+    if (!item || !item.startsWith("--")) continue;
     const key = item.slice(2);
     const next = argv[index + 1];
     if (next === undefined || next.startsWith("--")) args[key] = true;
@@ -33,29 +52,35 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} text @returns {Record<string, string>} */
 function parseDotenv(text) {
+  /** @type {Record<string, string>} */
   const values = {};
   for (const rawLine of String(text ?? "").split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!match) continue;
+    const key = match?.[1];
+    if (!key) continue;
     let value = match[2] ?? "";
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
     else value = value.replace(/\s+#.*$/, "").trim();
-    values[match[1]] = value;
+    values[key] = value;
   }
   return values;
 }
 
+/** @param {string} [path] */
 function loadLocalEnv(path = join(workspaceDir, ".env.local")) {
   if (!existsSync(path)) return { status: "missing", loadedKeys: [] };
   const values = parseDotenv(readFileSync(path, "utf8"));
+  /** @type {string[]} */
   const loadedKeys = [];
   for (const [key, value] of Object.entries(values)) {
     if (!ENV_ALLOWLIST.has(key) || process.env[key] !== undefined) continue;
@@ -65,27 +90,31 @@ function loadLocalEnv(path = join(workspaceDir, ".env.local")) {
   return { status: "loaded", loadedKeys };
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeSegment(value, fallback = "run") {
   const clean = String(value ?? fallback).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
   return clean && clean !== "." && clean !== ".." ? clean : fallback;
 }
 
+/** @param {unknown} url */
 function defaultRunId(url) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const hash = createHash("sha256").update(String(url)).digest("hex").slice(0, 10);
   return `public_url_${timestamp}_${hash}`;
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+/** @param {PublicUrlCliParams} params */
 export async function runPublicUrlCliTask(params) {
-  loadLocalEnv(params.envFile ? resolve(params.envFile) : undefined);
+  loadLocalEnv(params.envFile ? resolve(String(params.envFile)) : undefined);
   const url = String(params.url ?? "").trim();
   if (!url) throw new Error("public_url_source_cli_url_required");
-  const outputRoot = resolve(params.outputRoot ?? DEFAULT_OUTPUT_ROOT);
+  const outputRoot = resolve(String(params.outputRoot ?? DEFAULT_OUTPUT_ROOT));
   if (!isInside(RUNTIME_ROOT, outputRoot)) throw new Error("public_url_output_root_outside_ignored_runtime_blocked");
   const runId = safeSegment(params.runId ?? defaultRunId(url));
   const runDir = resolve(outputRoot, "runs", runId);
@@ -106,7 +135,9 @@ export async function runPublicUrlCliTask(params) {
     requestedAt: new Date().toISOString(),
     rawSecretsReturned: false,
   });
+  /** @type {PublicUrlRunState} */
   const state = { schemaVersion: "public-url-run-state-v1", runId, status: "running", updatedAt: new Date().toISOString(), steps: [], rawSecretsReturned: false };
+  /** @param {string} name @param {string} status @param {Record<string, unknown>} [details] */
   const recordStep = async (name, status, details = {}) => {
     state.steps.push({ name, status, at: new Date().toISOString(), ...details });
     state.status = status === "blocked" || status === "failed" ? status : state.status;
@@ -114,9 +145,23 @@ export async function runPublicUrlCliTask(params) {
     writeJson(join(runDir, "state.json"), state);
   };
   const task = {
-    schemaVersion: "public-url-task-v1",
+    schemaVersion: "feishu-task-v1",
     runId,
-    sourceEvent: { eventType: "local.public_url", message: { text: url, attachments: [] } },
+    status: "running",
+    sourceEvent: {
+      schemaVersion: "feishu-event-v1",
+      eventId: `local-${runId}`,
+      eventType: "local.public_url",
+      receivedAt: new Date().toISOString(),
+      message: {
+        messageId: `local-message-${runId}`,
+        chatId: "local-cli",
+        msgType: "text",
+        text: url,
+        attachments: [],
+      },
+      rawSecretsReturned: false,
+    },
     attachments: [],
     fileContexts: { contexts: [] },
     taskIntent: {
@@ -130,30 +175,34 @@ export async function runPublicUrlCliTask(params) {
       requiresLocalAsr: false,
       sourcePreparation: { sourceSetMode: "explicit_public_url", inputModalities: ["public_url"], publicUrls: [url], requestedDocuments: [] },
     },
+    rawSecretsReturned: false,
   };
   const result = await runTaskExecutionPipeline(task, paths, {
     onStep: recordStep,
-    progressReply: async (text, stage) => recordStep(stage, "running", { message: text }),
+    progressReply: async (/** @type {string} */ text, /** @type {string} */ stage) => recordStep(stage, "running", { message: text }),
     publicUrlResolveOnly: params.resolveOnly === true,
     pipelineMockModel: params.mockModel === true,
-    ytDlpBin: params.ytDlpBin,
-    publicUrlMaxMediaBytes: params.maxMediaBytes ? Number(params.maxMediaBytes) : undefined,
-    publicUrlMaxDurationSec: params.maxDurationSec ? Number(params.maxDurationSec) : undefined,
-    publicUrlTimeoutMs: params.timeoutMs ? Number(params.timeoutMs) : undefined,
+    ...(typeof params.ytDlpBin === "string" ? { ytDlpBin: params.ytDlpBin } : {}),
+    ...(params.maxMediaBytes ? { publicUrlMaxMediaBytes: Number(params.maxMediaBytes) } : {}),
+    ...(params.maxDurationSec ? { publicUrlMaxDurationSec: Number(params.maxDurationSec) } : {}),
+    ...(params.timeoutMs ? { publicUrlTimeoutMs: Number(params.timeoutMs) } : {}),
   });
-  state.status = result.status;
+  const normalizedResult = asRecord(result);
+  const output = asRecord(normalizedResult.output);
+  const outputDetails = asRecord(output.details);
+  state.status = String(normalizedResult.status ?? "blocked");
   state.updatedAt = new Date().toISOString();
   writeJson(join(runDir, "state.json"), state);
   const payload = {
-    status: result.status,
+    status: normalizedResult.status,
     runId,
     runDir,
-    sourcePackPath: result.output?.details?.sourcePackPath ? resolve(workspaceDir, result.output.details.sourcePackPath) : null,
-    readableSourcePackPath: result.output?.details?.readableSourcePackPath ? resolve(workspaceDir, result.output.details.readableSourcePackPath) : null,
-    provenancePath: result.output?.details?.provenancePath ? resolve(workspaceDir, result.output.details.provenancePath) : null,
+    sourcePackPath: outputDetails.sourcePackPath ? resolve(workspaceDir, String(outputDetails.sourcePackPath)) : null,
+    readableSourcePackPath: outputDetails.readableSourcePackPath ? resolve(workspaceDir, String(outputDetails.readableSourcePackPath)) : null,
+    provenancePath: outputDetails.provenancePath ? resolve(workspaceDir, String(outputDetails.provenancePath)) : null,
     sourceResolutionPath: join(paths.artifactsDir, "public-source", "source-resolution.json"),
-    summary: result.output?.summary ?? null,
-    todo: result.output?.details?.todo ?? null,
+    summary: output.summary ?? null,
+    todo: outputDetails.todo ?? null,
     rawSecretsReturned: false,
     knowledgeBaseWritePerformed: false,
   };

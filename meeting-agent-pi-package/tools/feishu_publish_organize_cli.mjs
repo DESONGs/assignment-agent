@@ -24,18 +24,44 @@ const PROJECT_OVERRIDES_FILE = "publish-project-overrides.json";
 const WIKI_REGISTRY_FILE = "feishu-wiki-target-registry.json";
 const DRIVE_REGISTRY_FILE = "feishu-publish-targets.json";
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {{ _: string[], [key: string]: string | boolean | string[] | undefined }} CliArgs
+ * @typedef {{ docType: string, title: string, fileName: string | null, localPath: string | null, fileToken: string | null, url: string | null, status: unknown }} PublishDocument
+ * @typedef {{ runId: string, runDir: string, publishPath: string, status: unknown, reason: unknown, legacySessionKey: string, legacyFolderName: unknown, legacyFolderToken: string | null, taxonomy: ReturnType<typeof buildPublishTaxonomy>, documents: PublishDocument[], publishTarget: unknown }} InventoryRun
+ * @typedef {{ root: string, generatedAt: string, runs: InventoryRun[] }} Inventory
+ * @typedef {{ runIds: Record<string, UnknownRecord>, legacySessionKeys: Record<string, UnknownRecord>, [key: string]: unknown }} ProjectOverrides
+ * @typedef {{ entries: Record<string, UnknownRecord>, projectEntries: Record<string, UnknownRecord>, legacySessionMappings: Record<string, UnknownRecord> }} DriveRegistry
+ * @typedef {{ spaces: Record<string, UnknownRecord>, rootNodes: Record<string, UnknownRecord>, projectNodes: Record<string, UnknownRecord>, runNodes: Record<string, UnknownRecord>, categoryNodes: Record<string, UnknownRecord>, documentNodes: Record<string, UnknownRecord>, [key: string]: unknown }} WikiRegistry
+ * @typedef {{ projectKey: string, projectTitle: string, projectConfidence: string, wikiPath: string[], driveFolderName: string, categories: Array<{docType: string, title: string}>, runs: Array<{runId: string, legacyFolderName: unknown, legacyFolderToken: ReturnType<typeof publicTokenState>, documents: Array<{docType: string, title: string, wikiTitle: string, fileToken: ReturnType<typeof publicTokenState>, urlPresent: boolean}>}> }} OrganizationProject
+ * @typedef {{ projects: OrganizationProject[], [key: string]: unknown }} OrganizationPlan
+ * @typedef {{ exitCode: number | null, stdout: string, stderr: string }} CommandResult
+ * @typedef {UnknownRecord & { plannedCommands: string[][], operations: UnknownRecord[], summary: { wikiNodesCreatedOrReused: number, documentsMovedToWiki: number, documentsRecreatedInWiki: number, driveFoldersMoved: number, driveFoldersRenamed: number, legacyUrlsPreserved: number, failures: number } }} OrganizationReport
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {unknown} value */
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
+/** @param {string[]} argv @returns {CliArgs} */
 function parseArgs(argv) {
+  /** @type {CliArgs} */
   const args = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
+    if (item === undefined) continue;
     if (!item.startsWith("--")) {
       args._.push(item);
       continue;
@@ -56,29 +82,35 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} path @returns {UnknownRecord | null} */
 function loadJsonIfExists(path) {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   return path;
 }
 
+/** @param {string} root @param {UnknownRecord} entry */
 function appendLedger(root, entry) {
   appendFileSync(join(root, LEDGER_FILE), `${JSON.stringify({ at: nowIso(), ...entry, rawSecretsReturned: false })}\n`, "utf8");
 }
 
+/** @param {unknown} value */
 function publicTokenState(value) {
   return value ? { present: true, hash: hashText(value).slice(0, 12) } : { present: false, hash: null };
 }
 
+/** @param {string} dir @param {string[]} [output] @returns {string[]} */
 function findPublishJsonFiles(dir, output = []) {
   if (!existsSync(dir)) return output;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -92,54 +124,60 @@ function findPublishJsonFiles(dir, output = []) {
   return output;
 }
 
+/** @param {unknown} input */
 function normalizeRoot(input) {
-  const root = resolve(input ?? DEFAULT_ROOT);
+  const root = resolve(typeof input === "string" ? input : DEFAULT_ROOT);
   mkdirSync(root, { recursive: true });
   return root;
 }
 
+/** @param {string} root @returns {DriveRegistry} */
 function loadDriveRegistry(root) {
   const registry = loadJsonIfExists(join(root, DRIVE_REGISTRY_FILE)) ?? {};
   return {
-    entries: registry.entries ?? {},
-    projectEntries: registry.projectEntries ?? {},
-    legacySessionMappings: registry.legacySessionMappings ?? {},
+    entries: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.entries)),
+    projectEntries: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.projectEntries)),
+    legacySessionMappings: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.legacySessionMappings)),
   };
 }
 
+/** @param {string} root @returns {WikiRegistry} */
 function loadWikiRegistry(root) {
   const registry = loadJsonIfExists(join(root, WIKI_REGISTRY_FILE)) ?? {};
   return {
     schemaVersion: "feishu-wiki-target-registry-v1",
     updatedAt: registry.updatedAt ?? null,
-    spaces: registry.spaces ?? {},
-    rootNodes: registry.rootNodes ?? {},
-    projectNodes: registry.projectNodes ?? {},
-    runNodes: registry.runNodes ?? {},
-    categoryNodes: registry.categoryNodes ?? {},
-    documentNodes: registry.documentNodes ?? {},
+    spaces: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.spaces)),
+    rootNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.rootNodes)),
+    projectNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.projectNodes)),
+    runNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.runNodes)),
+    categoryNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.categoryNodes)),
+    documentNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.documentNodes)),
     rawSecretsReturned: false,
   };
 }
 
+/** @param {string} root @returns {ProjectOverrides} */
 function loadProjectOverrides(root) {
   const parsed = loadJsonIfExists(join(root, PROJECT_OVERRIDES_FILE)) ?? {};
   return {
     schemaVersion: "feishu-publish-project-overrides-v1",
-    runIds: parsed.runIds ?? {},
-    legacySessionKeys: parsed.legacySessionKeys ?? {},
+    runIds: /** @type {Record<string, UnknownRecord>} */ (asRecord(parsed.runIds)),
+    legacySessionKeys: /** @type {Record<string, UnknownRecord>} */ (asRecord(parsed.legacySessionKeys)),
     rawSecretsReturned: false,
   };
 }
 
+/** @param {InventoryRun} run @param {ProjectOverrides} overrides @returns {(UnknownRecord & {overrideType: string}) | null} */
 function overrideForRun(run, overrides) {
-  const runOverride = overrides.runIds?.[run.runId] ?? null;
+  const runOverride = overrides.runIds[run.runId] ?? null;
   if (runOverride) return { ...runOverride, overrideType: "run_id" };
   const sessionOverride = run.legacySessionKey ? overrides.legacySessionKeys?.[run.legacySessionKey] ?? null : null;
   if (sessionOverride) return { ...sessionOverride, overrideType: "legacy_session_key" };
   return null;
 }
 
+/** @param {string} root @param {WikiRegistry} registry */
 function saveWikiRegistry(root, registry) {
   writeJson(join(root, WIKI_REGISTRY_FILE), {
     ...registry,
@@ -148,6 +186,7 @@ function saveWikiRegistry(root, registry) {
   });
 }
 
+/** @param {string} root @param {DriveRegistry} registry */
 function saveDriveRegistry(root, registry) {
   writeJson(join(root, DRIVE_REGISTRY_FILE), {
     schemaVersion: "feishu-publish-target-registry-v2",
@@ -159,6 +198,7 @@ function saveDriveRegistry(root, registry) {
   });
 }
 
+/** @param {WikiRegistry} registry @param {{runId: string, docType: string, spaceId: string | null}} identity */
 function existingDocumentNode(registry, { runId, docType, spaceId }) {
   return Object.values(registry.documentNodes ?? {}).find((entry) =>
     entry?.sourceRun === runId
@@ -168,29 +208,36 @@ function existingDocumentNode(registry, { runId, docType, spaceId }) {
   ) ?? null;
 }
 
+/** @param {string} root @param {unknown} path */
 function localPath(root, path) {
-  return path ? relative(workspaceDir, resolve(path)) : null;
+  return typeof path === "string" && path ? relative(workspaceDir, resolve(path)) : null;
 }
 
+/** @param {UnknownRecord} publish @param {UnknownRecord} agentOutput @returns {PublishDocument[]} */
 function documentsForRun(publish, agentOutput) {
-  const docs = Array.isArray(publish?.documents) && publish.documents.length > 0
+  const docs = Array.isArray(publish.documents) && publish.documents.length > 0
     ? publish.documents
-    : Array.isArray(agentOutput?.documents) ? agentOutput.documents : [];
-  return docs.map((doc) => ({
-    docType: doc.docType ?? "document",
-    title: doc.title ?? doc.fileName ?? doc.docType ?? "document",
-    fileName: doc.fileName ?? null,
-    localPath: doc.localPath ?? null,
-    fileToken: doc.fileToken ?? doc.objToken ?? null,
-    url: doc.url ?? null,
-    status: doc.status ?? null,
-  }));
+    : Array.isArray(agentOutput.documents) ? agentOutput.documents : [];
+  return docs.map((docValue) => {
+    const doc = asRecord(docValue);
+    return ({
+      docType: String(doc.docType ?? "document"),
+      title: String(doc.title ?? doc.fileName ?? doc.docType ?? "document"),
+      fileName: typeof doc.fileName === "string" ? doc.fileName : null,
+      localPath: typeof doc.localPath === "string" ? doc.localPath : null,
+      fileToken: typeof (doc.fileToken ?? doc.objToken) === "string" ? String(doc.fileToken ?? doc.objToken) : null,
+      url: typeof doc.url === "string" ? doc.url : null,
+      status: doc.status ?? null,
+    });
+  });
 }
 
+/** @param {{projectTitle?: unknown}} project */
 function projectDisplayTitle(project) {
   return String(project?.projectTitle ?? "待确认项目").replace(/^项目｜/, "").trim() || "待确认项目";
 }
 
+/** @param {InventoryRun} run */
 function runDisplayStamp(run) {
   const fromRunId = String(run?.runId ?? "").match(/feishu_(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
   if (fromRunId) return `${fromRunId[1]} ${fromRunId[2]}${fromRunId[3]}${fromRunId[4]}`;
@@ -198,6 +245,7 @@ function runDisplayStamp(run) {
   return date || hashText(run?.runId ?? nowIso()).slice(0, 8);
 }
 
+/** @param {string} docType */
 function docDisplayKind(docType) {
   if (docType === "prd") return "PRD";
   if (docType === "tech-architecture") return "技术架构";
@@ -207,6 +255,7 @@ function docDisplayKind(docType) {
   return docCategory(docType);
 }
 
+/** @param {string} docType */
 function docDisplayPurpose(docType) {
   if (docType === "prd") return "产品化方案";
   if (docType === "tech-architecture") return "技术实现方案";
@@ -216,6 +265,7 @@ function docDisplayPurpose(docType) {
   return "文档";
 }
 
+/** @param {{projectTitle: string}} project @param {InventoryRun} run @param {PublishDocument} doc */
 function wikiDocumentDisplayTitle(project, run, doc) {
   const base = [
     docDisplayKind(doc.docType),
@@ -226,23 +276,31 @@ function wikiDocumentDisplayTitle(project, run, doc) {
   return base.endsWith(".md") ? base : `${base}.md`;
 }
 
+/** @param {UnknownRecord} publish */
 function folderKeyFromPublish(publish) {
-  const fromTarget = extractLegacySessionKeyFromPublishTarget(publish?.publishTarget);
+  const fromTarget = extractLegacySessionKeyFromPublishTarget(publish.publishTarget);
   if (fromTarget) return fromTarget;
-  const folderName = String(publish?.publishTarget?.folderName ?? "");
+  const folderName = String(asRecord(publish.publishTarget).folderName ?? "");
   const match = folderName.match(/feishu-chat-([A-Za-z0-9_-]{8,})/i);
   return match?.[1] ?? "";
 }
 
+/** @param {string} root @returns {Inventory} */
 function collectInventory(root) {
   const driveRegistry = loadDriveRegistry(root);
   const publishFiles = findPublishJsonFiles(join(root, "runs")).sort();
+  /** @type {InventoryRun[]} */
   const runs = [];
   for (const publishPath of publishFiles) {
     const runDir = dirname(publishPath);
     const artifactsDir = join(runDir, "artifacts");
     const publish = loadJsonIfExists(publishPath) ?? {};
-    const task = loadJsonIfExists(join(runDir, "task.json")) ?? { runId: publish.runId ?? runDir.split("/").pop(), sourceEvent: { message: {} } };
+    const taskInput = loadJsonIfExists(join(runDir, "task.json")) ?? {};
+    const sourceEvent = asRecord(taskInput.sourceEvent);
+    const task = {
+      runId: String(taskInput.runId ?? publish.runId ?? runDir.split("/").pop() ?? "unknown_run"),
+      sourceEvent: { ...sourceEvent, message: asRecord(sourceEvent.message) },
+    };
     const agentOutput = loadJsonIfExists(join(runDir, "agent-output.json")) ?? {};
     const documents = documentsForRun(publish, agentOutput);
     if (documents.length === 0) continue;
@@ -258,14 +316,14 @@ function collectInventory(root) {
     });
     const legacyTarget = legacySessionKey ? driveRegistry.entries?.[legacySessionKey] ?? null : null;
     runs.push({
-      runId: task.runId ?? publish.runId ?? runDir.split("/").pop(),
+      runId: task.runId,
       runDir,
       publishPath,
       status: publish.status ?? null,
       reason: publish.reason ?? null,
       legacySessionKey,
-      legacyFolderName: legacyTarget?.folderName ?? publish?.publishTarget?.folderName ?? null,
-      legacyFolderToken: legacyTarget?.folderToken ?? null,
+      legacyFolderName: legacyTarget?.folderName ?? asRecord(publish.publishTarget).folderName ?? null,
+      legacyFolderToken: typeof legacyTarget?.folderToken === "string" ? legacyTarget.folderToken : null,
       taxonomy,
       documents,
       publishTarget: publish.publishTarget ?? null,
@@ -274,6 +332,7 @@ function collectInventory(root) {
   return { root, generatedAt: nowIso(), runs };
 }
 
+/** @param {Inventory} inventory */
 function publicInventory(inventory) {
   return {
     schemaVersion: "feishu-publish-organization-inventory-v1",
@@ -304,9 +363,13 @@ function publicInventory(inventory) {
   };
 }
 
+/** @param {Inventory} inventory @param {ProjectOverrides} [overrides] @returns {OrganizationPlan} */
 function buildOrganizationPlan(inventory, overrides = loadProjectOverrides(inventory.root)) {
+  /** @type {Map<string, {projectKey: string, projectTitle: string, projectConfidence: string, wikiRootTitle: string, driveFolderName: string, categoryTitles: Map<string, string>, runs: InventoryRun[]}>} */
   const projects = new Map();
+  /** @type {UnknownRecord[]} */
   const manualReviewRuns = [];
+  /** @type {UnknownRecord[]} */
   const overridesApplied = [];
   for (const run of inventory.runs) {
     const override = overrideForRun(run, overrides);
@@ -331,8 +394,8 @@ function buildOrganizationPlan(inventory, overrides = loadProjectOverrides(inven
       });
       continue;
     }
-    const key = override?.projectKey ?? run.taxonomy.projectKey;
-    const projectTitle = override?.projectTitle ?? run.taxonomy.projectTitle;
+    const key = typeof override?.projectKey === "string" ? override.projectKey : run.taxonomy.projectKey;
+    const projectTitle = typeof override?.projectTitle === "string" ? override.projectTitle : run.taxonomy.projectTitle;
     const projectConfidence = override ? "override" : run.taxonomy.projectConfidence;
     if (override) {
       overridesApplied.push({
@@ -341,7 +404,7 @@ function buildOrganizationPlan(inventory, overrides = loadProjectOverrides(inven
         projectKey: key,
         projectTitle,
         overrideType: override.overrideType,
-        reason: override.reason ?? "manual_project_assignment",
+        reason: typeof override.reason === "string" ? override.reason : "manual_project_assignment",
       });
     }
     if (!projects.has(key)) {
@@ -356,6 +419,7 @@ function buildOrganizationPlan(inventory, overrides = loadProjectOverrides(inven
       });
     }
     const project = projects.get(key);
+    if (!project) throw new Error("organization_project_missing");
     for (const doc of run.documents) project.categoryTitles.set(doc.docType, docCategory(doc.docType));
     project.runs.push(run);
   }
@@ -400,6 +464,7 @@ function buildOrganizationPlan(inventory, overrides = loadProjectOverrides(inven
   };
 }
 
+/** @param {string} bin @param {string[]} args @param {number} [timeoutMs] @returns {Promise<CommandResult>} */
 function runCommand(bin, args, timeoutMs = 120000) {
   return new Promise((resolveResult) => {
     const child = spawn(bin, args, { cwd: workspaceDir, stdio: ["ignore", "pipe", "pipe"] });
@@ -421,29 +486,35 @@ function runCommand(bin, args, timeoutMs = 120000) {
   });
 }
 
+/** @param {CommandResult} result */
 function stderrTail(result) {
   return String(result?.stderr ?? "").slice(-1600);
 }
 
+/** @param {string[]} args @param {Array<string | null>} [secretValues] */
 function publicCommand(args, secretValues = []) {
   const secrets = new Set(secretValues.filter(Boolean));
   return args.map((arg) => (secrets.has(arg) ? "<token>" : arg));
 }
 
+/** @param {unknown} text @returns {unknown} */
 function parseJsonOutput(text) {
   try {
-    return text?.trim() ? JSON.parse(text) : null;
+    return typeof text === "string" && text.trim() ? JSON.parse(text) : null;
   } catch {
     return null;
   }
 }
 
+/** @param {unknown} value @param {string[]} keys @returns {string | null} */
 function findToken(value, keys) {
   if (!value || typeof value !== "object") return null;
+  const record = asRecord(value);
   for (const key of keys) {
-    if (typeof value[key] === "string" && value[key]) return value[key];
+    const entry = record[key];
+    if (typeof entry === "string" && entry) return entry;
   }
-  for (const child of Object.values(value)) {
+  for (const child of Object.values(record)) {
     if (Array.isArray(child)) {
       for (const item of child) {
         const found = findToken(item, keys);
@@ -457,10 +528,11 @@ function findToken(value, keys) {
   return null;
 }
 
+/** @param {{ root: string, registry: WikiRegistry, level: string, reuseKey: string, title: string, parentToken: string | null, live: boolean, publishAs: string, spaceId: string | null, timeoutMs: number, report: OrganizationReport }} input */
 async function ensureWikiNode({ root, registry, level, reuseKey, title, parentToken, live, publishAs, spaceId, timeoutMs, report }) {
   const cacheMap = level === "root" ? registry.rootNodes : level === "project" ? registry.projectNodes : registry.categoryNodes;
   const existingEntry = cacheMap[reuseKey] ?? null;
-  const existing = existingEntry?.nodeToken && (!spaceId || existingEntry.spaceId === spaceId) ? existingEntry.nodeToken : null;
+  const existing = typeof existingEntry?.nodeToken === "string" && (!spaceId || existingEntry.spaceId === spaceId) ? existingEntry.nodeToken : null;
   if (existing) return existing;
   const args = ["wiki", "+node-create", "--as", publishAs, "--title", title, "--obj-type", "docx"];
   if (parentToken) args.push("--parent-node-token", parentToken);
@@ -478,17 +550,21 @@ async function ensureWikiNode({ root, registry, level, reuseKey, title, parentTo
   return nodeToken;
 }
 
+/** @param {unknown} value @returns {UnknownRecord[]} */
 function listedSpaces(value) {
-  const data = value?.data ?? value;
-  if (Array.isArray(data?.spaces)) return data.spaces;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(value?.spaces)) return value.spaces;
-  if (Array.isArray(value?.items)) return value.items;
+  const root = asRecord(value);
+  const data = asRecord(root.data ?? root);
+  if (Array.isArray(data.spaces)) return data.spaces.map(asRecord);
+  if (Array.isArray(data.items)) return data.items.map(asRecord);
+  if (Array.isArray(root.spaces)) return root.spaces.map(asRecord);
+  if (Array.isArray(root.items)) return root.items.map(asRecord);
   return [];
 }
 
+/** @param {{ root: string, registry: WikiRegistry, live: boolean, publishAs: string, timeoutMs: number, report: OrganizationReport, spaceName?: string }} input */
 async function ensureKnowledgeBaseSpace({ root, registry, live, publishAs, timeoutMs, report, spaceName = PROJECT_WIKI_ROOT_TITLE }) {
-  const cached = registry.spaces?.[spaceName]?.spaceId ?? null;
+  const cachedValue = registry.spaces[spaceName]?.spaceId;
+  const cached = typeof cachedValue === "string" ? cachedValue : null;
   if (cached) {
     return cached;
   }
@@ -499,7 +575,7 @@ async function ensureKnowledgeBaseSpace({ root, registry, live, publishAs, timeo
     const found = listed.exitCode === 0
       ? listedSpaces(parseJsonOutput(listed.stdout)).find((space) => String(space?.name ?? "") === spaceName)
       : null;
-    if (found?.space_id) {
+    if (typeof found?.space_id === "string" && found.space_id) {
       registry.spaces ??= {};
       registry.spaces[spaceName] = { name: spaceName, spaceId: found.space_id, status: "reused", updatedAt: nowIso() };
       saveWikiRegistry(root, registry);
@@ -551,8 +627,10 @@ async function ensureKnowledgeBaseSpace({ root, registry, live, publishAs, timeo
   return `<space:${spaceName}>`;
 }
 
+/** @param {{ root: string, registry: DriveRegistry, project: OrganizationProject, live: boolean, publishAs: string, timeoutMs: number, report: OrganizationReport }} input */
 async function ensureDriveProjectFolder({ root, registry, project, live, publishAs, timeoutMs, report }) {
-  const existing = registry.projectEntries?.[project.projectKey]?.folderToken ?? null;
+  const existingValue = registry.projectEntries[project.projectKey]?.folderToken;
+  const existing = typeof existingValue === "string" ? existingValue : null;
   if (existing) return existing;
   const args = ["drive", "+create-folder", "--as", publishAs, "--name", project.driveFolderName];
   report.plannedCommands.push(["lark-cli", ...args]);
@@ -576,11 +654,13 @@ async function ensureDriveProjectFolder({ root, registry, project, live, publish
   return folderToken;
 }
 
+/** @param {{ root: string, inventory: Inventory, plan: OrganizationPlan, live: boolean, noDelete: boolean, publishAs: string, spaceId: string | null, timeoutMs: number }} input */
 async function applyOrganization({ root, inventory, plan, live, noDelete, publishAs, spaceId, timeoutMs }) {
   if (!noDelete) throw new Error("publish_organize_apply_requires_no_delete");
   const wikiRegistry = loadWikiRegistry(root);
   const driveRegistry = loadDriveRegistry(root);
   const runsById = new Map(inventory.runs.map((run) => [run.runId, run]));
+  /** @type {OrganizationReport} */
   const report = {
     schemaVersion: "feishu-publish-organization-report-v1",
     generatedAt: nowIso(),
@@ -669,7 +749,7 @@ async function applyOrganization({ root, inventory, plan, live, noDelete, publis
           folderName: project.driveFolderName,
           projectTitle: project.projectTitle,
           projectKey: project.projectKey,
-          legacySessionKeys: Array.from(new Set([...(existingProjectEntry.legacySessionKeys ?? []), run.legacySessionKey])),
+          legacySessionKeys: Array.from(new Set([...(Array.isArray(existingProjectEntry.legacySessionKeys) ? existingProjectEntry.legacySessionKeys.map(String) : []), run.legacySessionKey])),
           updatedAt: nowIso(),
         };
         driveRegistry.legacySessionMappings[run.legacySessionKey] = {
@@ -851,8 +931,8 @@ async function main() {
       plan,
       live: Boolean(args.live),
       noDelete: Boolean(args["no-delete"]),
-      publishAs: args.as ?? "user",
-      spaceId: args["wiki-space-id"] ?? process.env.FEISHU_WIKI_SPACE_ID ?? null,
+      publishAs: typeof args.as === "string" ? args.as : "user",
+      spaceId: typeof args["wiki-space-id"] === "string" ? args["wiki-space-id"] : process.env.FEISHU_WIKI_SPACE_ID ?? null,
       timeoutMs: Number(args["cli-timeout-ms"] ?? 120000),
     });
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

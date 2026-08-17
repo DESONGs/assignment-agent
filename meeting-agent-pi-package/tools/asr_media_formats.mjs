@@ -50,6 +50,7 @@ export const CLOUD_ASR_MEDIA_EXTENSIONS = new Set([
   ...DASHSCOPE_REALTIME_EXTENSIONS,
 ]);
 
+/** @param {unknown} value */
 export function mediaExtension(value) {
   const text = String(value ?? "").trim().toLowerCase();
   if (!text) return "";
@@ -57,6 +58,7 @@ export function mediaExtension(value) {
   return extname(text).toLowerCase();
 }
 
+/** @param {unknown} value */
 export function cloudAsrMediaKind(value) {
   const extension = mediaExtension(value);
   if (DASHSCOPE_FILE_VIDEO_EXTENSIONS.has(extension)) return "video";
@@ -64,10 +66,12 @@ export function cloudAsrMediaKind(value) {
   return null;
 }
 
+/** @param {unknown} value */
 export function isCloudAsrMedia(value) {
   return CLOUD_ASR_MEDIA_EXTENSIONS.has(mediaExtension(value));
 }
 
+/** @param {unknown} value @param {unknown} explicitFormat */
 export function realtimeFormatForPath(value, explicitFormat) {
   const format = explicitFormat
     ? String(explicitFormat).trim().toLowerCase().replace(/^\./, "")
@@ -75,6 +79,10 @@ export function realtimeFormatForPath(value, explicitFormat) {
   return DASHSCOPE_REALTIME_FORMATS.has(format) ? format : null;
 }
 
+/**
+ * @param {unknown} value
+ * @param {{ inputMode?: unknown, explicitFormat?: unknown, fileTransportConfigured?: boolean }} [options]
+ */
 export function planDashScopeInput(value, options = {}) {
   const extension = mediaExtension(value);
   const requestedMode = String(options.inputMode ?? "auto").trim().toLowerCase();
@@ -106,6 +114,7 @@ export function planDashScopeInput(value, options = {}) {
   return { status: "blocked", reason: "cloud_asr_file_transport_unavailable", extension };
 }
 
+/** @param {unknown} value @param {Buffer | Uint8Array} head */
 export function validateCloudAsrMediaHeader(value, head) {
   const extension = mediaExtension(value);
   const bytes = Buffer.isBuffer(head) ? head : Buffer.from(head ?? []);
@@ -114,12 +123,12 @@ export function validateCloudAsrMediaHeader(value, head) {
   let detectedContainer = null;
 
   if (extension === ".wav") ok = bytes.length >= 12 && bytes.subarray(0, 4).equals(Buffer.from("RIFF")) && bytes.subarray(8, 12).equals(Buffer.from("WAVE"));
-  else if (extension === ".mp3") ok = bytes.subarray(0, 3).equals(Buffer.from("ID3")) || (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0);
+  else if (extension === ".mp3") ok = bytes.subarray(0, 3).equals(Buffer.from("ID3")) || (bytes.length >= 2 && bytes.at(0) === 0xFF && ((bytes.at(1) ?? 0) & 0xE0) === 0xE0);
   else if ([".m4a", ".mov", ".mp4"].includes(extension)) ok = bytes.subarray(0, 32).includes(Buffer.from("ftyp"));
   else if (extension === ".flac") ok = bytes.subarray(0, 4).equals(Buffer.from("fLaC"));
   else if ([".ogg", ".opus"].includes(extension)) ok = bytes.subarray(0, 4).equals(Buffer.from("OggS")) || bytes.subarray(0, 16).includes(Buffer.from("OpusHead"));
   else if (extension === ".aac") {
-    const adts = bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xF0) === 0xF0;
+    const adts = bytes.length >= 2 && bytes.at(0) === 0xFF && ((bytes.at(1) ?? 0) & 0xF0) === 0xF0;
     const isoMedia = bytes.subarray(0, 32).includes(Buffer.from("ftyp"));
     ok = adts || isoMedia;
     detectedContainer = isoMedia ? "m4a" : adts ? "aac-adts" : null;
@@ -143,6 +152,7 @@ export function validateCloudAsrMediaHeader(value, head) {
   };
 }
 
+/** @param {string} path @param {number} [maxBytes] */
 export function readCloudAsrMediaHeader(path, maxBytes = 64) {
   const size = Math.max(16, Math.min(4096, Number(maxBytes) || 64));
   const buffer = Buffer.alloc(size);

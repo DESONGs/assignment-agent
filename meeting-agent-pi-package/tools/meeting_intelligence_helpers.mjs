@@ -1,23 +1,50 @@
 const DEFAULT_TIMELINE_MAX_CHARS = 140_000;
 const DEFAULT_TOPIC_WINDOW_SECONDS = 12 * 60;
 
+/**
+ * @typedef {{ segmentId?: unknown, sourceIndex?: unknown, chunkIndex?: unknown, startSec?: unknown, endSec?: unknown, speakerId?: unknown, speaker_id?: unknown, text?: unknown, language?: unknown, quality?: unknown, singleMixEvidence?: unknown, [key: string]: unknown }} RawMeetingSegment
+ * @typedef {{ segmentId: string, sourceIndex: number, chunkIndex: number, startSec: number, endSec: number, speakerId: number | string | null, text: string, language: string, quality: string, reviewIds: string[] }} MeetingSegment
+ * @typedef {{ speakerId: number | string | null, alias: string, displayName: string, nameStatus: string, identityEvidence: string[], candidateName?: string, [key: string]: unknown }} Participant
+ * @typedef {{ schemaVersion: string, participants: Participant[], declaredRoster: string[], participantCount: number, unresolvedCount: number, question: string | null, blocking: false, [key: string]: unknown }} ParticipantMap
+ * @typedef {{ text: string, state?: string | undefined, ownerSpeakerId: number | string | null, dueDate: string | null, evidenceSegmentIds: string[], ownerAlias?: string | null }} TopicClaim
+ * @typedef {{ topicId: string, title: string, timeRange: { startSec: number, endSec: number }, evidenceSegmentIds: string[], evidenceDensity: { segmentCount: number, sustained: boolean }, speakerAliases: string[], coreJudgment: string, decisions: TopicClaim[], actions: TopicClaim[], risks: TopicClaim[], openQuestions: TopicClaim[] }} MeetingTopic
+ * @typedef {{ claimId: string, topicId: string, claimType: string, text: string, status: string, evidenceQuality: string, evidenceSegmentIds: string[] }} EvidenceClaim
+ * @typedef {{ text: string, state: string, priority: string, why: string, blocks: string[], evidenceSegmentIds: string[], question?: string }} DiscoveryItem
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
+/** @param {unknown} value @returns {unknown[]} */
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/** @param {unknown} value @param {number} [fallback] */
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
+/** @param {unknown} values @param {number} [limit] */
 function uniqueStrings(values, limit = 200) {
   return [...new Set((Array.isArray(values) ? values : [])
     .map((value) => String(value ?? "").trim())
     .filter(Boolean))].slice(0, limit);
 }
 
+/** @param {unknown} value */
 function normalizeSpeakerId(value) {
   if (value === null || value === undefined || String(value).trim() === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : String(value).trim();
 }
 
+/** @param {unknown} left @param {unknown} right */
 function speakerSort(left, right) {
   const a = Number(left);
   const b = Number(right);
@@ -25,6 +52,7 @@ function speakerSort(left, right) {
   return String(left).localeCompare(String(right));
 }
 
+/** @param {unknown} index */
 export function participantAlias(index) {
   let value = Math.max(0, Number(index) || 0);
   let letters = "";
@@ -35,10 +63,12 @@ export function participantAlias(index) {
   return `参会人 ${letters}`;
 }
 
+/** @param {unknown} alias */
 function aliasCode(alias) {
   return String(alias ?? "").replace(/^参会人\s*/u, "").trim().toUpperCase();
 }
 
+/** @param {unknown} value */
 function safeDisplayName(value) {
   return String(value ?? "")
     .replace(/[，,；;。\n].*$/u, "")
@@ -47,31 +77,35 @@ function safeDisplayName(value) {
     .slice(0, 40);
 }
 
+/** @param {unknown} value */
 function normalizeCandidateConfidence(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (["high", "medium", "low"].includes(normalized)) return normalized;
   return "low";
 }
 
+/** @param {unknown} value @param {string} alias @param {string} [confirmedName] */
 function normalizeCandidateName(value, alias, confirmedName = "") {
   const name = safeDisplayName(value);
   if (!name || name === alias || name === confirmedName || /^(待确认|未知|不清楚)$/u.test(name)) return null;
   return name;
 }
 
+/** @param {unknown} voiceprintMatches @param {unknown} speakerId @param {string} candidateName */
 function enrolledVoiceprintMatches(voiceprintMatches, speakerId, candidateName) {
-  return (Array.isArray(voiceprintMatches) ? voiceprintMatches : []).some((match) =>
-    String(normalizeSpeakerId(match?.speakerId)) === String(speakerId)
-      && safeDisplayName(match?.displayName ?? match?.name) === candidateName
-      && ["confirmed", "matched"].includes(String(match?.status ?? "").toLowerCase()),
+  return (Array.isArray(voiceprintMatches) ? voiceprintMatches : []).map(asRecord).some((match) =>
+    String(normalizeSpeakerId(match.speakerId)) === String(speakerId)
+      && safeDisplayName(match.displayName ?? match.name) === candidateName
+      && ["confirmed", "matched"].includes(String(match.status ?? "").toLowerCase()),
   );
 }
 
+/** @param {unknown} parsedCandidates @param {unknown} speakerId @param {string} alias @param {string} [confirmedName] @param {Set<string>} [validIds] @param {unknown} [voiceprintMatches] */
 function identityCandidateForSpeaker(parsedCandidates, speakerId, alias, confirmedName = "", validIds = new Set(), voiceprintMatches = []) {
-  const candidates = Array.isArray(parsedCandidates) ? parsedCandidates : [];
+  const candidates = (Array.isArray(parsedCandidates) ? parsedCandidates : []).map(asRecord);
   const matched = candidates.find((candidate) => {
-    const candidateSpeakerId = normalizeSpeakerId(candidate?.speakerId);
-    const candidateAlias = String(candidate?.alias ?? "").trim();
+    const candidateSpeakerId = normalizeSpeakerId(candidate.speakerId);
+    const candidateAlias = String(candidate.alias ?? "").trim();
     return (candidateSpeakerId !== null && String(candidateSpeakerId) === String(speakerId)) || candidateAlias === alias;
   });
   const candidateName = normalizeCandidateName(matched?.candidateName ?? matched?.name, alias, confirmedName);
@@ -96,9 +130,11 @@ function identityCandidateForSpeaker(parsedCandidates, speakerId, alias, confirm
   };
 }
 
+/** @param {unknown} text @param {Array<number | string>} [speakerIds] */
 export function parseParticipantInput(text, speakerIds = []) {
   const prompt = String(text ?? "");
   const sortedSpeakerIds = [...speakerIds].sort(speakerSort);
+  /** @type {Map<string, string>} */
   const directMappings = new Map();
   const pattern = /(?:参会人|说话人|speaker)\s*([A-Za-z]+|_?\d+)\s*(?:是|=|：|:)\s*([^，,；;。\n]{1,40})/giu;
   for (const match of prompt.matchAll(pattern)) {
@@ -116,39 +152,47 @@ export function parseParticipantInput(text, speakerIds = []) {
 
   const rosterMatch = prompt.match(/(?:参会人(?:员)?|参与人(?:员)?|与会人(?:员)?)\s*[：:]\s*([^。\n]{1,160})/u);
   const declaredRoster = rosterMatch
-    ? uniqueStrings(rosterMatch[1].split(/[、，,；;]/u).map(safeDisplayName).filter(Boolean), 30)
+    ? uniqueStrings((rosterMatch[1] ?? "").split(/[、，,；;]/u).map(safeDisplayName).filter(Boolean), 30)
     : [];
   return { directMappings, declaredRoster };
 }
 
+/** @param {RawMeetingSegment} segment @param {number} index */
 function segmentIdFor(segment, index) {
   if (segment.segmentId) return String(segment.segmentId);
-  const sourceIndex = Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0;
-  const chunkIndex = Number.isInteger(segment.chunkIndex) ? segment.chunkIndex : index;
+  const sourceIndex = typeof segment.sourceIndex === "number" && Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0;
+  const chunkIndex = typeof segment.chunkIndex === "number" && Number.isInteger(segment.chunkIndex) ? segment.chunkIndex : index;
   return `audio-${String(sourceIndex + 1).padStart(2, "0")}:chunk-${String(chunkIndex).padStart(4, "0")}`;
 }
 
+/** @param {unknown} [segments] @returns {MeetingSegment[]} */
 export function normalizeMeetingSegments(segments = []) {
-  return (Array.isArray(segments) ? segments : [])
-    .map((segment, index) => ({
+  return (Array.isArray(segments) ? segments : []).map(asRecord)
+    .map((record, index) => {
+      const segment = /** @type {RawMeetingSegment} */ (record);
+      const singleMixEvidence = asRecord(segment.singleMixEvidence);
+      return ({
       segmentId: segmentIdFor(segment, index),
-      sourceIndex: Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0,
-      chunkIndex: Number.isInteger(segment.chunkIndex) ? segment.chunkIndex : index,
+      sourceIndex: typeof segment.sourceIndex === "number" && Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0,
+      chunkIndex: typeof segment.chunkIndex === "number" && Number.isInteger(segment.chunkIndex) ? segment.chunkIndex : index,
       startSec: finiteNumber(segment.startSec),
       endSec: Math.max(finiteNumber(segment.startSec), finiteNumber(segment.endSec, finiteNumber(segment.startSec))),
       speakerId: normalizeSpeakerId(segment.speakerId ?? segment.speaker_id),
       text: String(segment.text ?? "").trim(),
       language: String(segment.language ?? "").trim(),
-      quality: segment.singleMixEvidence?.status === "needs_review" ? "needs_review" : String(segment.quality ?? "ready"),
-      reviewIds: uniqueStrings(segment.singleMixEvidence?.reviewIds ?? [], 30),
-    }))
+      quality: singleMixEvidence.status === "needs_review" ? "needs_review" : String(segment.quality ?? "ready"),
+      reviewIds: uniqueStrings(singleMixEvidence.reviewIds ?? [], 30),
+    });
+    })
     .filter((segment) => segment.text)
     .sort((left, right) => left.startSec - right.startSec || left.chunkIndex - right.chunkIndex);
 }
 
+/** @param {MeetingSegment[]} segments @param {unknown} [userPrompt] @returns {ParticipantMap} */
 export function buildParticipantMap(segments, userPrompt = "") {
   const speakerIds = [...new Set(segments.map((segment) => segment.speakerId).filter((value) => value !== null))].sort(speakerSort);
   const input = parseParticipantInput(userPrompt, speakerIds);
+  /** @type {Participant[]} */
   const participants = speakerIds.map((speakerId, index) => {
     const alias = participantAlias(index);
     const displayName = input.directMappings.get(String(speakerId)) ?? input.directMappings.get(aliasCode(alias)) ?? alias;
@@ -184,6 +228,7 @@ export function buildParticipantMap(segments, userPrompt = "") {
   };
 }
 
+/** @param {unknown} seconds */
 function formatTime(seconds) {
   const total = Math.max(0, Math.floor(finiteNumber(seconds)));
   const hours = Math.floor(total / 3600);
@@ -192,12 +237,14 @@ function formatTime(seconds) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
 }
 
+/** @param {ParticipantMap} participantMap @param {unknown} speakerId */
 function participantForSpeaker(participantMap, speakerId) {
   return participantMap.participants.find((participant) => String(participant.speakerId) === String(speakerId))
     ?? participantMap.participants.find((participant) => participant.speakerId === null)
     ?? null;
 }
 
+/** @param {MeetingSegment[]} segments @param {ParticipantMap} participantMap @param {number} [maxChars] */
 export function buildMeetingTimeline(segments, participantMap, maxChars = DEFAULT_TIMELINE_MAX_CHARS) {
   const lines = segments.map((segment) => {
     const participant = participantForSpeaker(participantMap, segment.speakerId);
@@ -206,10 +253,12 @@ export function buildMeetingTimeline(segments, participantMap, maxChars = DEFAUL
   const totalChars = lines.reduce((total, line) => total + line.length + 1, 0);
   if (totalChars <= maxChars) return { text: lines.join("\n"), includedSegmentIds: segments.map((segment) => segment.segmentId), truncated: false };
 
+  /** @type {Set<number>} */
   const mustInclude = new Set();
   for (const [index, segment] of segments.entries()) {
     if (segment.quality === "needs_review" || index === 0 || index === segments.length - 1) mustInclude.add(index);
-    if (index > 0 && segment.speakerId !== segments[index - 1].speakerId) {
+    const previous = segments[index - 1];
+    if (index > 0 && previous && segment.speakerId !== previous.speakerId) {
       mustInclude.add(index - 1);
       mustInclude.add(index);
     }
@@ -217,21 +266,27 @@ export function buildMeetingTimeline(segments, participantMap, maxChars = DEFAUL
   const stride = Math.max(2, Math.ceil(totalChars / maxChars));
   for (let index = 0; index < segments.length; index += stride) mustInclude.add(index);
   const selectedIndexes = [...mustInclude].sort((left, right) => left - right);
+  /** @type {string[]} */
   const selectedLines = [];
+  /** @type {string[]} */
   const includedSegmentIds = [];
   let used = 0;
   for (const index of selectedIndexes) {
     const line = lines[index];
+    const segment = segments[index];
+    if (!line || !segment) continue;
     if (used + line.length + 1 > maxChars && selectedLines.length > 0) continue;
     selectedLines.push(line);
-    includedSegmentIds.push(segments[index].segmentId);
+    includedSegmentIds.push(segment.segmentId);
     used += line.length + 1;
   }
   return { text: selectedLines.join("\n"), includedSegmentIds, truncated: true };
 }
 
+/** @param {Array<{ text: string }>} segments @param {number} [limit] */
 function frequentTerms(segments, limit = 24) {
   const stop = new Set(["这个", "那个", "然后", "就是", "我们", "你们", "他们", "一个", "可以", "还是", "不是", "没有", "什么", "怎么", "已经", "比较", "可能", "如果", "因为", "所以", "但是", "对的", "嗯嗯"]);
+  /** @type {Map<string, number>} */
   const counts = new Map();
   const text = segments.map((segment) => segment.text).join(" ");
   const terms = text.match(/[A-Za-z][A-Za-z0-9_.-]{2,}|[\p{Script=Han}]{2,6}/gu) ?? [];
@@ -242,11 +297,14 @@ function frequentTerms(segments, limit = 24) {
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || right[0].length - left[0].length).slice(0, limit).map(([term]) => term);
 }
 
+/** @param {MeetingSegment[]} segments @param {ParticipantMap} participantMap @returns {MeetingTopic[]} */
 function fallbackTopics(segments, participantMap) {
   if (segments.length === 0) return [];
+  /** @type {MeetingSegment[][]} */
   const groups = [];
+  /** @type {MeetingSegment[]} */
   let current = [];
-  let windowStart = segments[0].startSec;
+  let windowStart = segments[0]?.startSec ?? 0;
   for (const segment of segments) {
     if (current.length > 0 && segment.startSec - windowStart >= DEFAULT_TOPIC_WINDOW_SECONDS) {
       groups.push(current);
@@ -257,12 +315,15 @@ function fallbackTopics(segments, participantMap) {
   }
   if (current.length > 0) groups.push(current);
   return groups.slice(0, 16).map((group, index) => {
+    const first = group[0];
+    const last = group.at(-1);
+    if (!first || !last) throw new Error("meeting_topic_group_empty");
     const terms = frequentTerms(group, 3);
     const speakerAliases = uniqueStrings(group.map((segment) => participantForSpeaker(participantMap, segment.speakerId)?.alias));
     return {
       topicId: `topic-${String(index + 1).padStart(2, "0")}`,
       title: terms.length > 0 ? terms.join(" / ") : `时间段议题 ${index + 1}`,
-      timeRange: { startSec: group[0].startSec, endSec: group.at(-1).endSec },
+      timeRange: { startSec: first.startSec, endSec: last.endSec },
       evidenceSegmentIds: group.map((segment) => segment.segmentId),
       evidenceDensity: { segmentCount: group.length, sustained: group.length >= 3 },
       speakerAliases,
@@ -270,12 +331,21 @@ function fallbackTopics(segments, participantMap) {
       decisions: [],
       actions: [],
       risks: [],
-      openQuestions: ["该时间段的核心议题和结论待确认"],
+      openQuestions: [{
+        text: "该时间段的核心议题和结论待确认",
+        state: "open",
+        ownerSpeakerId: null,
+        dueDate: null,
+        evidenceSegmentIds: group.map((segment) => segment.segmentId),
+      }],
     };
   });
 }
 
+/** @param {{ segments: MeetingSegment[], participantMap: ParticipantMap, asrSummary?: unknown, reason?: string }} input */
 export function buildFallbackMeetingAnalysis({ segments, participantMap, asrSummary = null, reason = "model_analysis_unavailable" }) {
+  const summary = asRecord(asrSummary);
+  const diarization = asRecord(summary.speakerDiarization);
   const topicMap = fallbackTopics(segments, participantMap);
   return {
     schemaVersion: "meeting-intelligence-v1",
@@ -292,9 +362,9 @@ export function buildFallbackMeetingAnalysis({ segments, participantMap, asrSumm
       siblingForbiddenTerms: [],
       languages: uniqueStrings(segments.map((segment) => segment.language)),
       asrCapabilities: {
-        speakerLabelsAvailable: Boolean(asrSummary?.speakerDiarization?.speakerLabelsAvailable),
+        speakerLabelsAvailable: Boolean(diarization.speakerLabelsAvailable),
         speakerCountDetected: participantMap.participantCount,
-        singleMix: asrSummary?.singleMix ?? asrSummary?.speakerDiarization?.singleMix ?? null,
+        singleMix: summary.singleMix ?? diarization.singleMix ?? null,
       },
     },
     topicMap,
@@ -335,7 +405,9 @@ export function buildFallbackMeetingAnalysis({ segments, participantMap, asrSumm
   };
 }
 
+/** @param {{ segments: MeetingSegment[], participantMap: ParticipantMap, asrSummary?: unknown, userPrompt?: string, maxChars?: number }} input */
 export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummary = null, userPrompt = "", maxChars = DEFAULT_TIMELINE_MAX_CHARS }) {
+  const summary = asRecord(asrSummary);
   const timeline = buildMeetingTimeline(segments, participantMap, maxChars);
   const contract = {
     meetingType: "string",
@@ -413,10 +485,10 @@ export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummar
       "",
       "## ASR Capability Summary",
       JSON.stringify({
-        model: asrSummary?.model ?? null,
-        speakerDiarization: asrSummary?.speakerDiarization ?? null,
-        singleMix: asrSummary?.singleMix ?? null,
-        failedChunks: asrSummary?.failedChunks ?? null,
+        model: summary.model ?? null,
+        speakerDiarization: summary.speakerDiarization ?? null,
+        singleMix: summary.singleMix ?? null,
+        failedChunks: summary.failedChunks ?? null,
       }, null, 2),
       "",
       "## Output JSON Contract",
@@ -428,76 +500,87 @@ export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummar
   };
 }
 
+/** @param {unknown} text @returns {Record<string, unknown> | null} */
 function extractJson(text) {
   const value = String(text ?? "").trim();
   const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
   const candidate = fenced ?? value.slice(value.indexOf("{"), value.lastIndexOf("}") + 1);
   if (!candidate) return null;
   try {
-    return JSON.parse(candidate);
+    return asRecord(JSON.parse(candidate));
   } catch {
     return null;
   }
 }
 
+/** @param {unknown} values @param {Set<string>} validIds */
 function normalizeEvidenceIds(values, validIds) {
   return uniqueStrings(values, 200).filter((value) => validIds.has(value));
 }
 
+/** @param {MeetingSegment[]} segments @param {unknown} range */
 function segmentsForRange(segments, range) {
-  const startSec = finiteNumber(range?.startSec, Number.NaN);
-  const endSec = finiteNumber(range?.endSec, Number.NaN);
+  const record = asRecord(range);
+  const startSec = finiteNumber(record.startSec, Number.NaN);
+  const endSec = finiteNumber(record.endSec, Number.NaN);
   if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) return [];
   return segments.filter((segment) => segment.endSec >= startSec && segment.startSec <= endSec);
 }
 
+/** @param {unknown} values @param {Set<string>} validIds @param {MeetingSegment[]} segments @param {string[]} [fallbackIds] @returns {TopicClaim[]} */
 function normalizeClaimItems(values, validIds, segments, fallbackIds = []) {
   return (Array.isArray(values) ? values : [])
-    .map((value) => typeof value === "string" ? { text: value } : value)
+    .map((value) => typeof value === "string" ? { text: value } : asRecord(value))
     .map((value) => ({
-      text: String(value?.text ?? "").trim().slice(0, 600),
-      state: value?.state ? String(value.state) : undefined,
-      ownerSpeakerId: normalizeSpeakerId(value?.ownerSpeakerId),
-      dueDate: value?.dueDate ? String(value.dueDate).slice(0, 80) : null,
-      evidenceSegmentIds: normalizeEvidenceIds(value?.evidenceSegmentIds, validIds),
+      text: String(value.text ?? "").trim().slice(0, 600),
+      state: value.state ? String(value.state) : undefined,
+      ownerSpeakerId: normalizeSpeakerId(value.ownerSpeakerId),
+      dueDate: value.dueDate ? String(value.dueDate).slice(0, 80) : null,
+      evidenceSegmentIds: normalizeEvidenceIds(value.evidenceSegmentIds, validIds),
     }))
     .filter((value) => value.text)
     .map((value) => ({ ...value, evidenceSegmentIds: value.evidenceSegmentIds.length > 0 ? value.evidenceSegmentIds : fallbackIds.slice(0, 8) }));
 }
 
+/** @param {string[]} ids @param {Map<string, MeetingSegment>} byId */
 function evidenceQuality(ids, byId) {
-  const evidence = ids.map((id) => byId.get(id)).filter(Boolean);
+  const evidence = ids.flatMap((id) => {
+    const segment = byId.get(id);
+    return segment ? [segment] : [];
+  });
   if (evidence.length === 0) return "missing";
   if (evidence.every((segment) => segment.quality === "needs_review")) return "needs_review_only";
   if (evidence.some((segment) => segment.quality === "needs_review")) return "mixed";
   return "ready";
 }
 
+/** @param {unknown} values @param {Set<string>} validIds @param {{ allowedStates?: string[], limit?: number }} [options] @returns {DiscoveryItem[]} */
 function normalizeDiscoveryItems(values, validIds, options = {}) {
   const allowedStates = new Set(options.allowedStates ?? ["confirmed", "inferred", "unresolved"]);
   return (Array.isArray(values) ? values : [])
-    .map((value) => typeof value === "string" ? { text: value } : value)
+    .map((value) => typeof value === "string" ? { text: value } : asRecord(value))
     .map((value) => {
-      const text = String(value?.text ?? value?.title ?? value?.question ?? "").trim().slice(0, 800);
+      const text = String(value.text ?? value.title ?? value.question ?? "").trim().slice(0, 800);
       if (!text) return null;
-      const evidenceSegmentIds = normalizeEvidenceIds(value?.evidenceSegmentIds, validIds);
-      let state = allowedStates.has(String(value?.state)) ? String(value.state) : evidenceSegmentIds.length > 0 ? "inferred" : "unresolved";
+      const evidenceSegmentIds = normalizeEvidenceIds(value.evidenceSegmentIds, validIds);
+      let state = allowedStates.has(String(value.state)) ? String(value.state) : evidenceSegmentIds.length > 0 ? "inferred" : "unresolved";
       if (state === "confirmed" && evidenceSegmentIds.length === 0) state = "unresolved";
       return {
         text,
         state,
-        priority: ["high", "medium", "low"].includes(String(value?.priority)) ? String(value.priority) : "medium",
-        why: String(value?.why ?? value?.reason ?? "").trim().slice(0, 500),
-        blocks: uniqueStrings(value?.blocks, 12),
+        priority: ["high", "medium", "low"].includes(String(value.priority)) ? String(value.priority) : "medium",
+        why: String(value.why ?? value.reason ?? "").trim().slice(0, 500),
+        blocks: uniqueStrings(value.blocks, 12),
         evidenceSegmentIds,
       };
     })
-    .filter(Boolean)
+    .flatMap((value) => value ? [value] : [])
     .slice(0, options.limit ?? 30);
 }
 
+/** @param {Record<string, unknown>} parsed @param {Set<string>} validIds */
 function normalizeProductDiscovery(parsed, validIds) {
-  const source = parsed?.productDiscovery ?? {};
+  const source = asRecord(parsed.productDiscovery);
   const opportunitySignals = normalizeDiscoveryItems(source.opportunitySignals ?? source.potentialNeeds, validIds);
   const userProblems = normalizeDiscoveryItems(source.userProblems ?? source.painPoints, validIds);
   const targetUsers = normalizeDiscoveryItems(source.targetUsers, validIds);
@@ -533,7 +616,7 @@ function normalizeProductDiscovery(parsed, validIds) {
         prdReadiness.status === "ready" ? "generate-prd" : "draft-prd-with-open-questions",
         "generate-customer-requirement-checklist",
         "keep-meeting-minutes-only",
-      ].filter(Boolean);
+      ].flatMap((value) => value ? [value] : []);
   return {
     schemaVersion: "meeting-product-discovery-v1",
     opportunitySignals,
@@ -550,8 +633,11 @@ function normalizeProductDiscovery(parsed, validIds) {
   };
 }
 
+/** @param {MeetingTopic[]} topicMap @param {Map<string, MeetingSegment>} byId @returns {EvidenceClaim[]} */
 function buildEvidenceMap(topicMap, byId) {
+  /** @type {EvidenceClaim[]} */
   const claims = [];
+  /** @param {MeetingTopic} topic @param {string} claimType @param {string} text @param {string[]} ids @param {string | null} [status] */
   const append = (topic, claimType, text, ids, status = null) => {
     const evidenceIds = uniqueStrings(ids, 100);
     const quality = evidenceQuality(evidenceIds, byId);
@@ -578,21 +664,28 @@ function buildEvidenceMap(topicMap, byId) {
   return claims;
 }
 
+/** @param {{ content: unknown, segments: MeetingSegment[], participantMap: ParticipantMap, asrSummary?: unknown }} input */
 export function normalizeMeetingAnalysisResponse({ content, segments, participantMap, asrSummary = null }) {
-  const parsed = typeof content === "object" && content !== null ? content : extractJson(content);
-  if (!parsed || typeof parsed !== "object") return null;
+  const parsed = typeof content === "object" && content !== null ? asRecord(content) : extractJson(content);
+  if (!parsed) return null;
   const validIds = new Set(segments.map((segment) => segment.segmentId));
   const byId = new Map(segments.map((segment) => [segment.segmentId, segment]));
   const speakerAliases = new Map(participantMap.participants.map((participant) => [String(participant.speakerId), participant.alias]));
-  const topicRows = Array.isArray(parsed.topics ?? parsed.topicMap) ? (parsed.topics ?? parsed.topicMap) : [];
-  const topicMap = topicRows.map((topic, index) => {
-    const ranged = segmentsForRange(segments, topic?.timeRange);
-    const evidenceIds = normalizeEvidenceIds(topic?.evidenceSegmentIds, validIds);
+  const rawTopics = parsed.topics ?? parsed.topicMap;
+  const topicRows = asArray(rawTopics).map(asRecord);
+  /** @type {MeetingTopic[]} */
+  const topicMap = topicRows.flatMap((topic, index) => {
+    const ranged = segmentsForRange(segments, topic.timeRange);
+    const evidenceIds = normalizeEvidenceIds(topic.evidenceSegmentIds, validIds);
     const resolvedIds = evidenceIds.length > 0 ? evidenceIds : ranged.map((segment) => segment.segmentId).slice(0, 120);
-    if (resolvedIds.length === 0) return null;
-    const evidenceSegments = resolvedIds.map((id) => byId.get(id)).filter(Boolean);
-    const decisions = normalizeClaimItems(topic?.decisions, validIds, segments, resolvedIds);
-    const actions = normalizeClaimItems(topic?.actions, validIds, segments, resolvedIds).map((action) => {
+    if (resolvedIds.length === 0) return [];
+    const evidenceSegments = resolvedIds.flatMap((id) => {
+      const segment = byId.get(id);
+      return segment ? [segment] : [];
+    });
+    if (evidenceSegments.length === 0) return [];
+    const decisions = normalizeClaimItems(topic.decisions, validIds, segments, resolvedIds);
+    const actions = normalizeClaimItems(topic.actions, validIds, segments, resolvedIds).map((action) => {
       const ownerAllowed = participantMap.participants.some((participant) => String(participant.speakerId) === String(action.ownerSpeakerId));
       const quality = evidenceQuality(action.evidenceSegmentIds, byId);
       return {
@@ -602,11 +695,11 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
         dueDate: quality === "needs_review_only" ? null : action.dueDate,
       };
     });
-    const risks = normalizeClaimItems(topic?.risks, validIds, segments, resolvedIds);
-    const openQuestions = normalizeClaimItems(topic?.openQuestions, validIds, segments, resolvedIds);
-    return {
+    const risks = normalizeClaimItems(topic.risks, validIds, segments, resolvedIds);
+    const openQuestions = normalizeClaimItems(topic.openQuestions, validIds, segments, resolvedIds);
+    return [{
       topicId: `topic-${String(index + 1).padStart(2, "0")}`,
-      title: String(topic?.title ?? topic?.macroTopic ?? `议题 ${index + 1}`).trim().slice(0, 100),
+      title: String(topic.title ?? topic.macroTopic ?? `议题 ${index + 1}`).trim().slice(0, 100),
       timeRange: {
         startSec: Math.min(...evidenceSegments.map((segment) => segment.startSec)),
         endSec: Math.max(...evidenceSegments.map((segment) => segment.endSec)),
@@ -614,20 +707,22 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
       evidenceSegmentIds: resolvedIds,
       evidenceDensity: { segmentCount: resolvedIds.length, sustained: resolvedIds.length >= 3 },
       speakerAliases: uniqueStrings(evidenceSegments.map((segment) => speakerAliases.get(String(segment.speakerId))).filter(Boolean)),
-      coreJudgment: String(topic?.coreJudgment ?? "待确认").trim().slice(0, 800) || "待确认",
+      coreJudgment: String(topic.coreJudgment ?? "待确认").trim().slice(0, 800) || "待确认",
       decisions,
       actions,
       risks,
       openQuestions,
-    };
-  }).filter(Boolean).slice(0, 24);
+    }];
+  }).slice(0, 24);
   if (topicMap.length === 0) return null;
   const evidenceMap = buildEvidenceMap(topicMap, byId);
   const productDiscovery = normalizeProductDiscovery(parsed, validIds);
-  const plan = parsed.agentPlan ?? {};
+  const plan = asRecord(parsed.agentPlan);
   const suggestedDocs = uniqueStrings(plan.suggestedFollowUpDocuments, 8).filter((doc) => ["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(doc));
-  const allowedTopics = uniqueStrings(parsed.allowedTopics?.length ? parsed.allowedTopics : topicMap.map((topic) => topic.title), 80);
-  const voiceprintMatches = asrSummary?.speakerDiarization?.identityMatches ?? asrSummary?.voiceprintIdentityMatches ?? [];
+  const allowedTopics = uniqueStrings(Array.isArray(parsed.allowedTopics) && parsed.allowedTopics.length > 0 ? parsed.allowedTopics : topicMap.map((topic) => topic.title), 80);
+  const summary = asRecord(asrSummary);
+  const diarization = asRecord(summary.speakerDiarization);
+  const voiceprintMatches = diarization.identityMatches ?? summary.voiceprintIdentityMatches ?? [];
   const participants = participantMap.participants.map((participant) => {
     if (participant.nameStatus === "user_confirmed") return participant;
     const candidate = identityCandidateForSpeaker(
@@ -652,16 +747,16 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
     meetingProfile: {
       meetingType: String(parsed.meetingType ?? "会议类型待确认").trim().slice(0, 120),
       participantMap: participantResolution,
-      allowedRoles: uniqueStrings([...(parsed.allowedRoles ?? []), ...participants.map((participant) => participant.displayName)], 80),
+      allowedRoles: uniqueStrings([...asArray(parsed.allowedRoles), ...participants.map((participant) => participant.displayName)], 80),
       allowedTopics,
       allowedTerms: uniqueStrings(parsed.allowedTerms, 160),
       ambiguousTerms: uniqueStrings(parsed.ambiguousTerms, 100),
       siblingForbiddenTerms: [],
       languages: uniqueStrings(parsed.languages, 30),
       asrCapabilities: {
-        speakerLabelsAvailable: Boolean(asrSummary?.speakerDiarization?.speakerLabelsAvailable),
+        speakerLabelsAvailable: Boolean(diarization.speakerLabelsAvailable),
         speakerCountDetected: participantMap.participantCount,
-        singleMix: asrSummary?.singleMix ?? asrSummary?.speakerDiarization?.singleMix ?? null,
+        singleMix: summary.singleMix ?? diarization.singleMix ?? null,
       },
     },
     topicMap,
@@ -669,9 +764,9 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
     productDiscovery,
     agentPlan: {
       meetingComplexity: plan.meetingComplexity === "simple" ? "simple" : "complex",
-      narrativeMode: ["decision_driven", "topic_driven", "chronological"].includes(plan.narrativeMode) ? plan.narrativeMode : "topic_driven",
-      dynamicTopicHeadings: uniqueStrings(plan.dynamicTopicHeadings?.length ? plan.dynamicTopicHeadings : topicMap.map((topic) => topic.title), 30),
-      reviewStrategy: ["deterministic", "independent_model", "human_confirmation"].includes(plan.reviewStrategy) ? plan.reviewStrategy : "independent_model",
+      narrativeMode: ["decision_driven", "topic_driven", "chronological"].includes(String(plan.narrativeMode ?? "")) ? String(plan.narrativeMode) : "topic_driven",
+      dynamicTopicHeadings: uniqueStrings(Array.isArray(plan.dynamicTopicHeadings) && plan.dynamicTopicHeadings.length > 0 ? plan.dynamicTopicHeadings : topicMap.map((topic) => topic.title), 30),
+      reviewStrategy: ["deterministic", "independent_model", "human_confirmation"].includes(String(plan.reviewStrategy ?? "")) ? String(plan.reviewStrategy) : "independent_model",
       suggestedFollowUpDocuments: suggestedDocs,
       focusAreas: uniqueStrings(plan.focusAreas, 30),
       prdReadiness: productDiscovery.prdReadiness,
@@ -681,7 +776,9 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
   };
 }
 
-function topicTextCovered(markdown, topic) {
+/** @param {unknown} markdown @param {unknown} topicValue */
+function topicTextCovered(markdown, topicValue) {
+  const topic = asRecord(topicValue);
   const text = String(markdown ?? "").toLowerCase();
   const terms = frequentTerms([{ text: `${topic.title} ${topic.coreJudgment}` }], 8).filter((term) => term.length >= 2);
   if (text.includes(String(topic.title).toLowerCase())) return true;
@@ -689,30 +786,39 @@ function topicTextCovered(markdown, topic) {
   return terms.filter((term) => text.includes(term.toLowerCase())).length >= Math.min(2, terms.length);
 }
 
-function claimAppears(markdown, claim) {
+/** @param {unknown} markdown @param {unknown} claimValue */
+function claimAppears(markdown, claimValue) {
+  const claim = asRecord(claimValue);
   const text = String(markdown ?? "").toLowerCase();
-  const terms = frequentTerms([{ text: claim.text }], 6).filter((term) => term.length >= 2);
+  const terms = frequentTerms([{ text: String(claim.text ?? "") }], 6).filter((term) => term.length >= 2);
   return terms.length > 0 && terms.filter((term) => text.includes(term.toLowerCase())).length >= Math.min(2, terms.length);
 }
 
+/** @param {unknown} meetingAnalysis @param {unknown} [documents] */
 export function buildMeetingQaFindings(meetingAnalysis, documents = []) {
-  const markdown = (Array.isArray(documents) ? documents : []).map((document) => String(document?.markdown ?? document?.content ?? "")).join("\n\n");
-  const topics = meetingAnalysis?.topicMap ?? [];
-  const claims = meetingAnalysis?.evidenceMap ?? [];
+  const analysis = asRecord(meetingAnalysis);
+  const markdown = asArray(documents).map((documentValue) => {
+    const document = asRecord(documentValue);
+    return String(document.markdown ?? document.content ?? "");
+  }).join("\n\n");
+  const topics = asArray(analysis.topicMap).map(asRecord);
+  const claims = asArray(analysis.evidenceMap).map(asRecord);
   const omittedMacroTopics = topics
-    .filter((topic) => topic.evidenceDensity?.sustained === true && !topicTextCovered(markdown, topic))
-    .map((topic) => ({ topicId: topic.topicId, title: topic.title, timeRange: topic.timeRange, evidenceSegmentIds: topic.evidenceSegmentIds.slice(0, 12) }));
+    .filter((topic) => asRecord(topic.evidenceDensity).sustained === true && !topicTextCovered(markdown, topic))
+    .map((topic) => ({ topicId: topic.topicId, title: topic.title, timeRange: topic.timeRange, evidenceSegmentIds: uniqueStrings(topic.evidenceSegmentIds, 12) }));
   const uncertainEvidenceClaims = claims
-    .filter((claim) => claim.status === "unresolved" && ["decision", "action", "core_judgment"].includes(claim.claimType) && claimAppears(markdown, claim))
-    .map((claim) => ({ claimId: claim.claimId, claimType: claim.claimType, text: claim.text, evidenceQuality: claim.evidenceQuality, evidenceSegmentIds: claim.evidenceSegmentIds }));
+    .filter((claim) => claim.status === "unresolved" && ["decision", "action", "core_judgment"].includes(String(claim.claimType ?? "")) && claimAppears(markdown, claim))
+    .map((claim) => ({ claimId: claim.claimId, claimType: claim.claimType, text: claim.text, evidenceQuality: claim.evidenceQuality, evidenceSegmentIds: uniqueStrings(claim.evidenceSegmentIds, 100) }));
   const actionCoverageGaps = topics
-    .filter((topic) => topic.actions.length > 0 && !topic.actions.some((action) => claimAppears(markdown, action)))
-    .map((topic) => ({ topicId: topic.topicId, title: topic.title, actionCount: topic.actions.length }));
-  const participantAliases = new Set(meetingAnalysis?.participantResolution?.participants?.map((participant) => participant.alias) ?? []);
+    .filter((topic) => asArray(topic.actions).length > 0 && !asArray(topic.actions).some((action) => claimAppears(markdown, action)))
+    .map((topic) => ({ topicId: topic.topicId, title: topic.title, actionCount: asArray(topic.actions).length }));
+  const participantResolution = asRecord(analysis.participantResolution);
+  const participantAliases = new Set(asArray(participantResolution.participants).map((participant) => String(asRecord(participant).alias ?? "")).filter(Boolean));
   const referencedAliases = [...markdown.matchAll(/参会人\s+[A-Z]+/gu)].map((match) => match[0]);
   const unsupportedParticipantAliases = uniqueStrings(referencedAliases.filter((alias) => !participantAliases.has(alias)), 30);
-  const delegatedInvalidSegmentIds = uniqueStrings(meetingAnalysis?.delegatedReview?.invalidSegmentIds, 100);
-  const delegatedMissingEvidencePaths = uniqueStrings(meetingAnalysis?.delegatedReview?.missingEvidencePaths, 100);
+  const delegatedReview = asRecord(analysis.delegatedReview);
+  const delegatedInvalidSegmentIds = uniqueStrings(delegatedReview.invalidSegmentIds, 100);
+  const delegatedMissingEvidencePaths = uniqueStrings(delegatedReview.missingEvidencePaths, 100);
   return {
     omittedMacroTopics,
     uncertainEvidenceClaims: [

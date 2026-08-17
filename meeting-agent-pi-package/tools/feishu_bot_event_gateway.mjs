@@ -21,10 +21,24 @@ const SECRET_PATTERNS = [
   /https?:\/\/[^\s"')]+/gi,
 ];
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {import("../dist/index.js").FeishuEvent} FeishuEvent
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
+/** @param {string} name */
 function envFlag(name) {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
 }
 
+/** @param {string} hostname */
 function isLoopbackHostname(hostname) {
   const normalized = hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (normalized === "localhost" || normalized === "::1") return true;
@@ -35,10 +49,12 @@ function isLoopbackHostname(hostname) {
   return octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && octets[0] === 127;
 }
 
+/** @param {string} value */
 function redactString(value) {
   return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), value);
 }
 
+/** @param {unknown} value @returns {unknown} */
 function redactLogValue(value) {
   if (typeof value === "string") return redactString(value);
   if (Array.isArray(value)) return value.map(redactLogValue);
@@ -48,10 +64,12 @@ function redactLogValue(value) {
   return value;
 }
 
+/** @param {unknown} data @param {"log" | "warn" | "error"} [level] */
 function logJson(data, level = "log") {
   console[level](JSON.stringify(redactLogValue(data), null, 2));
 }
 
+/** @param {unknown} error */
 function errorMessage(error) {
   return redactString(error instanceof Error ? error.message : String(error));
 }
@@ -158,23 +176,26 @@ async function loadLarkSdk() {
   }
 }
 
+/** @param {unknown} content */
 function parseText(content) {
   try {
-    const parsed = JSON.parse(content || "{}");
+    const parsed = asRecord(JSON.parse(typeof content === "string" ? content : "{}"));
     return typeof parsed.text === "string" ? parsed.text.trim() : "";
   } catch {
     return "";
   }
 }
 
+/** @param {unknown} content @returns {UnknownRecord} */
 function parseContent(content) {
   try {
-    return JSON.parse(content || "{}");
+    return asRecord(JSON.parse(typeof content === "string" ? content : "{}"));
   } catch {
     return {};
   }
 }
 
+/** @param {unknown} value */
 function xmlDecode(value) {
   return String(value ?? "")
     .replace(/&lt;/g, "<")
@@ -184,6 +205,7 @@ function xmlDecode(value) {
     .replace(/&apos;/g, "'");
 }
 
+/** @param {unknown} rawContent @param {string} tagName @returns {UnknownRecord[]} */
 function xmlTagAttributes(rawContent, tagName) {
   const content = typeof rawContent === "string" ? rawContent : "";
   return [...content.matchAll(new RegExp(`<${tagName}\\b([^>]*)\\/?>`, "gi"))].map((match) =>
@@ -193,16 +215,21 @@ function xmlTagAttributes(rawContent, tagName) {
   );
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function normalizeResourceType(value, fallback = "file") {
   const normalized = String(value ?? fallback).toLowerCase();
   return ["file", "image", "audio", "video"].includes(normalized) ? normalized : "unknown";
 }
 
-function collectAttachments(message) {
+/** @param {unknown} messageValue */
+function collectAttachments(messageValue) {
+  const message = asRecord(messageValue);
   const parsed = parseContent(message.content);
+  /** @type {UnknownRecord[]} */
   const attachments = [];
   if (Array.isArray(message.attachments)) {
-    for (const [index, item] of message.attachments.entries()) {
+    for (const [index, itemValue] of message.attachments.entries()) {
+      const item = asRecord(itemValue);
       const fileKey = item.file_key ?? item.fileKey ?? item.key ?? item.image_key ?? item.imageKey;
       if (!fileKey) continue;
       attachments.push({
@@ -256,9 +283,11 @@ function collectAttachments(message) {
   return attachments;
 }
 
-function normalizeEvent(data) {
-  const message = data?.message ?? {};
-  const sender = data?.sender ?? {};
+/** @param {unknown} dataValue @returns {FeishuEvent} */
+function normalizeEvent(dataValue) {
+  const data = asRecord(dataValue);
+  const message = asRecord(data.message);
+  const sender = asRecord(data.sender);
   const messageId = message.message_id;
   const chatId = message.chat_id;
   const text = parseText(message.content);
@@ -302,11 +331,13 @@ function normalizeEvent(data) {
   });
 }
 
-function summarizeHandlerBody(body) {
-  if (typeof body?.text === "string" && body.text.trim()) return body.text.trim();
-  if (typeof body?.reply === "string" && body.reply.trim()) return body.reply.trim();
+/** @param {unknown} bodyValue */
+function summarizeHandlerBody(bodyValue) {
+  const body = asRecord(bodyValue);
+  if (typeof body.text === "string" && body.text.trim()) return body.text.trim();
+  if (typeof body.reply === "string" && body.reply.trim()) return body.reply.trim();
 
-  const status = body?.status;
+  const status = body.status;
   if (!status) return "";
 
   const lines = [];
@@ -323,11 +354,12 @@ function summarizeHandlerBody(body) {
   } else {
     lines.push(`任务状态：${status}`);
   }
-  if (status === "completed" && body?.summary) lines.push(String(body.summary));
-  if (Array.isArray(body?.documents) && body.documents.length > 0) {
+  if (status === "completed" && body.summary) lines.push(String(body.summary));
+  if (Array.isArray(body.documents) && body.documents.length > 0) {
     lines.push("");
     lines.push("文档：");
-    for (const doc of body.documents.slice(0, 6)) {
+    for (const docValue of body.documents.slice(0, 6)) {
+      const doc = asRecord(docValue);
       const title = doc.title || doc.fileName || doc.docType || "document";
       lines.push(`- ${title}: ${doc.status || "ready"}${doc.url ? ` ${doc.url}` : ""}`);
     }
@@ -335,6 +367,7 @@ function summarizeHandlerBody(body) {
   return lines.join("\n").slice(0, 3500);
 }
 
+/** @param {FeishuEvent} event */
 async function fetchHandlerResult(event) {
   const handler = handlerConfig();
   if (!handler.configured) {
@@ -359,9 +392,10 @@ async function fetchHandlerResult(event) {
       signal: controller.signal,
     });
     const text = await response.text();
+    /** @type {UnknownRecord | null} */
     let body = null;
     try {
-      body = text ? JSON.parse(text) : null;
+      body = text ? asRecord(JSON.parse(text)) : null;
     } catch {
       body = { text: redactString(text).slice(0, 2000) };
     }
@@ -390,6 +424,7 @@ async function fetchHandlerResult(event) {
   }
 }
 
+/** @param {FeishuEvent} event */
 async function buildReply(event) {
   const handler = handlerConfig();
   const mode = effectiveReplyMode(handler);
@@ -403,10 +438,12 @@ async function buildReply(event) {
   return DIAGNOSTIC_REPLY;
 }
 
+/** @param {ReturnType<typeof handlerConfig>} [handler] */
 function effectiveReplyMode(handler = handlerConfig()) {
   return process.env.FEISHU_BOT_REPLY_MODE?.trim() || (handler.configured && handler.allowed ? "http" : "diagnostic");
 }
 
+/** @param {import("@larksuiteoapi/node-sdk").Client} client @param {string} chatId @param {string} text */
 async function sendTextMessage(client, chatId, text) {
   if (!text) return;
   await client.im.v1.message.create({
@@ -425,25 +462,28 @@ async function main() {
   requireEnv();
   const Lark = await loadLarkSdk();
   const baseConfig = {
-    appId: process.env.FEISHU_APP_ID,
-    appSecret: process.env.FEISHU_APP_SECRET,
-    domain: Lark.Domain?.Feishu,
-    appType: Lark.AppType?.SelfBuild,
+    appId: String(process.env.FEISHU_APP_ID),
+    appSecret: String(process.env.FEISHU_APP_SECRET),
+    ...(Lark.Domain?.Feishu ? { domain: Lark.Domain.Feishu } : {}),
+    ...(Lark.AppType?.SelfBuild ? { appType: Lark.AppType.SelfBuild } : {}),
   };
   const client = new Lark.Client(baseConfig);
   const wsClient = new Lark.WSClient({
     ...baseConfig,
     loggerLevel: Lark.LoggerLevel?.warn ?? Lark.LoggerLevel?.info,
   });
+  /** @type {Set<string>} */
   const seen = new Set();
 
   wsClient.start({
     eventDispatcher: new Lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data) => {
         const event = normalizeEvent(data);
-        if (!event.messageId || !event.chatId) return;
-        if (seen.has(event.messageId)) return;
-        seen.add(event.messageId);
+        const messageId = typeof event.messageId === "string" ? event.messageId : "";
+        const chatId = typeof event.chatId === "string" ? event.chatId : "";
+        if (!messageId || !chatId) return;
+        if (seen.has(messageId)) return;
+        seen.add(messageId);
         if (seen.size > 1000) seen.clear();
 
         logJson(
@@ -457,14 +497,14 @@ async function main() {
             attachmentCount: event.message?.attachments?.length ?? 0,
             hasRootId: Boolean(event.rootId),
             hasParentId: Boolean(event.parentId),
-            contentKeys: Object.keys(parseContent(data?.message?.content)).slice(0, 20),
+            contentKeys: Object.keys(parseContent(asRecord(asRecord(data).message).content)).slice(0, 20),
             receivedAt: new Date().toISOString(),
           },
         );
 
         try {
           const reply = await buildReply(event);
-          await sendTextMessage(client, event.chatId, reply);
+          await sendTextMessage(client, chatId, reply);
         } catch (error) {
           logJson(
             {

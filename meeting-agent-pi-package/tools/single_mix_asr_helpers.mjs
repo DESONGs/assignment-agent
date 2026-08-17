@@ -1,11 +1,24 @@
 const DEFAULT_TEXT_CONFLICT_THRESHOLD = 0.42;
 const DEFAULT_ALIGNMENT_TOLERANCE_SECONDS = 0.15;
 
+/**
+ * @typedef {{ startSec?: unknown, endSec?: unknown, speakerId?: unknown, chunkIndex?: unknown, text?: unknown, [key: string]: unknown }} MixSegment
+ * @typedef {{ chunkIndex: number | null, startSec: number, endSec: number, speakerId: unknown, text: string }} CompactMixSegment
+ * @typedef {{ primary: MixSegment, review: MixSegment[] }} SegmentAlignment
+ * @typedef {{
+ *   startSec: number, endSec: number, severity: string, reasons: string[], textSimilarity?: number | null,
+ *   primarySegmentIndexes: number[], primary: CompactMixSegment[], review: CompactMixSegment[],
+ *   model?: unknown, [key: string]: unknown
+ * }} MixReviewItem
+ */
+
+/** @param {unknown} value @param {number} [fallback] */
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
+/** @param {unknown} value */
 function normalizeText(value) {
   return String(value ?? "")
     .normalize("NFKC")
@@ -13,13 +26,16 @@ function normalizeText(value) {
     .replace(/[\p{P}\p{S}\s]+/gu, "");
 }
 
+/** @param {string} value @returns {string[]} */
 function bigrams(value) {
   if (value.length < 2) return value ? [value] : [];
+  /** @type {string[]} */
   const result = [];
   for (let index = 0; index < value.length - 1; index += 1) result.push(value.slice(index, index + 2));
   return result;
 }
 
+/** @param {unknown} left @param {unknown} right */
 export function textSimilarity(left, right) {
   const a = normalizeText(left);
   const b = normalizeText(right);
@@ -29,6 +45,7 @@ export function textSimilarity(left, right) {
   if (Math.min(a.length, b.length) >= 2 && (a.includes(b) || b.includes(a))) return 0.8;
   if (a.length === 1 || b.length === 1) return a === b ? 1 : 0;
   const aPairs = bigrams(a);
+  /** @type {Map<string, number>} */
   const bCounts = new Map();
   for (const pair of bigrams(b)) bCounts.set(pair, (bCounts.get(pair) ?? 0) + 1);
   let intersection = 0;
@@ -41,18 +58,21 @@ export function textSimilarity(left, right) {
   return (2 * intersection) / (aPairs.length + bigrams(b).length);
 }
 
+/** @param {MixSegment} segment */
 function interval(segment) {
   const startSec = finiteNumber(segment?.startSec);
   const endSec = Math.max(startSec, finiteNumber(segment?.endSec, startSec));
   return { startSec, endSec };
 }
 
+/** @param {MixSegment} left @param {MixSegment} right */
 function overlapSeconds(left, right) {
   const a = interval(left);
   const b = interval(right);
   return Math.max(0, Math.min(a.endSec, b.endSec) - Math.max(a.startSec, b.startSec));
 }
 
+/** @param {MixSegment} left @param {MixSegment} right */
 function segmentDistance(left, right) {
   const a = interval(left);
   const b = interval(right);
@@ -61,11 +81,14 @@ function segmentDistance(left, right) {
   return a.startSec - b.endSec;
 }
 
+/** @param {unknown} value */
 function speakerKey(value) {
   return value === null || value === undefined ? null : String(value);
 }
 
+/** @param {MixSegment[]} primarySegments @param {MixSegment[]} reviewSegments */
 function buildSpeakerMap(primarySegments, reviewSegments) {
+  /** @type {Map<string, Map<string, number>>} */
   const weights = new Map();
   for (const review of reviewSegments) {
     const reviewSpeaker = speakerKey(review.speakerId);
@@ -77,24 +100,31 @@ function buildSpeakerMap(primarySegments, reviewSegments) {
       const overlap = overlapSeconds(primary, review);
       if (overlap <= 0) continue;
       const row = weights.get(reviewSpeaker);
+      if (!row) continue;
       row.set(primarySpeaker, (row.get(primarySpeaker) ?? 0) + overlap);
     }
   }
+  /** @type {Record<string, string>} */
   const mapping = {};
   for (const [reviewSpeaker, candidates] of weights.entries()) {
     const sorted = [...candidates.entries()].sort((left, right) => right[1] - left[1]);
-    if (sorted.length > 0) mapping[reviewSpeaker] = sorted[0][0];
+    const selected = sorted[0]?.[0];
+    if (selected) mapping[reviewSpeaker] = selected;
   }
   return mapping;
 }
 
+/** @param {MixSegment[]} segments @param {unknown} model @returns {MixReviewItem[]} */
 function explicitOverlapItems(segments, model) {
+  /** @type {MixReviewItem[]} */
   const items = [];
   const sorted = [...segments].sort((left, right) => finiteNumber(left.startSec) - finiteNumber(right.startSec));
   for (let leftIndex = 0; leftIndex < sorted.length; leftIndex += 1) {
     const left = sorted[leftIndex];
+    if (!left) continue;
     for (let rightIndex = leftIndex + 1; rightIndex < sorted.length; rightIndex += 1) {
       const right = sorted[rightIndex];
+      if (!right) continue;
       if (finiteNumber(right.startSec) >= finiteNumber(left.endSec)) break;
       const overlap = overlapSeconds(left, right);
       if (overlap < 0.08 || speakerKey(left.speakerId) === speakerKey(right.speakerId)) continue;
@@ -104,11 +134,8 @@ function explicitOverlapItems(segments, model) {
         severity: "high",
         reasons: ["simultaneous_speech_timestamps"],
         model,
-        primarySegmentIndexes: [left.chunkIndex, right.chunkIndex].filter(Number.isInteger),
-        primary: [left, right].map((segment) => ({
-          speakerId: segment.speakerId ?? null,
-          text: String(segment.text ?? ""),
-        })),
+        primarySegmentIndexes: [left.chunkIndex, right.chunkIndex].flatMap((value) => typeof value === "number" && Number.isInteger(value) ? [value] : []),
+        primary: [left, right].map(compactSegment),
         review: [],
       });
     }
@@ -116,8 +143,11 @@ function explicitOverlapItems(segments, model) {
   return items;
 }
 
+/** @param {MixSegment[]} primarySegments @param {MixSegment[]} reviewSegments @param {number} toleranceSeconds */
 function alignSegments(primarySegments, reviewSegments, toleranceSeconds) {
+  /** @type {SegmentAlignment[]} */
   const alignments = [];
+  /** @type {Set<number>} */
   const matchedReview = new Set();
   for (const primary of primarySegments) {
     const candidates = reviewSegments
@@ -135,9 +165,10 @@ function alignSegments(primarySegments, reviewSegments, toleranceSeconds) {
   };
 }
 
+/** @param {MixSegment} segment @returns {CompactMixSegment} */
 function compactSegment(segment) {
   return {
-    chunkIndex: Number.isInteger(segment?.chunkIndex) ? segment.chunkIndex : null,
+    chunkIndex: typeof segment.chunkIndex === "number" && Number.isInteger(segment.chunkIndex) ? segment.chunkIndex : null,
     startSec: finiteNumber(segment?.startSec),
     endSec: finiteNumber(segment?.endSec),
     speakerId: segment?.speakerId ?? null,
@@ -145,6 +176,7 @@ function compactSegment(segment) {
   };
 }
 
+/** @param {SegmentAlignment} alignment @param {Record<string, string>} speakerMap @param {number} threshold @returns {MixReviewItem | null} */
 function reviewItemForAlignment(alignment, speakerMap, threshold) {
   const primary = alignment.primary;
   const review = alignment.review;
@@ -153,10 +185,10 @@ function reviewItemForAlignment(alignment, speakerMap, threshold) {
   const similarity = textSimilarity(primary.text, reviewText);
   const mappedSpeakers = [...new Set(review
     .map((segment) => speakerKey(segment.speakerId))
-    .filter((value) => value !== null)
-    .map((value) => speakerMap[value] ?? null)
-    .filter((value) => value !== null))];
+    .flatMap((value) => value === null ? [] : [value])
+    .flatMap((value) => speakerMap[value] ? [speakerMap[value]] : []))];
   const primarySpeaker = speakerKey(primary.speakerId);
+  /** @type {string[]} */
   const reasons = [];
   if (similarity < threshold) reasons.push("cross_model_text_conflict");
   if (primarySpeaker !== null && mappedSpeakers.length > 0 && mappedSpeakers.some((speaker) => speaker !== primarySpeaker)) {
@@ -171,12 +203,13 @@ function reviewItemForAlignment(alignment, speakerMap, threshold) {
     severity: similarity < 0.2 || reasons.includes("speaker_attribution_conflict") ? "high" : "medium",
     reasons,
     textSimilarity: Number(similarity.toFixed(3)),
-    primarySegmentIndexes: Number.isInteger(primary.chunkIndex) ? [primary.chunkIndex] : [],
+    primarySegmentIndexes: typeof primary.chunkIndex === "number" && Number.isInteger(primary.chunkIndex) ? [primary.chunkIndex] : [],
     primary: [compactSegment(primary)],
     review: review.map(compactSegment),
   };
 }
 
+/** @param {MixSegment} segment @returns {MixReviewItem} */
 function unmatchedReviewItem(segment) {
   return {
     startSec: finiteNumber(segment.startSec),
@@ -190,7 +223,9 @@ function unmatchedReviewItem(segment) {
   };
 }
 
+/** @param {CompactMixSegment[]} segments @returns {CompactMixSegment[]} */
 function uniqueSegments(segments) {
+  /** @type {Set<string>} */
   const seen = new Set();
   return segments.filter((segment) => {
     const key = [segment.chunkIndex, segment.startSec, segment.endSec, segment.speakerId, segment.text].join("|");
@@ -200,7 +235,9 @@ function uniqueSegments(segments) {
   });
 }
 
+/** @param {MixReviewItem[]} items @returns {MixReviewItem[]} */
 function mergeReviewItems(items) {
+  /** @type {MixReviewItem[]} */
   const merged = [];
   for (const item of [...items].sort((left, right) => left.startSec - right.startSec || left.endSec - right.endSec)) {
     const previous = merged.at(-1);
@@ -214,12 +251,13 @@ function mergeReviewItems(items) {
     previous.primarySegmentIndexes = [...new Set([...(previous.primarySegmentIndexes ?? []), ...(item.primarySegmentIndexes ?? [])])];
     previous.primary = uniqueSegments([...(previous.primary ?? []), ...(item.primary ?? [])]);
     previous.review = uniqueSegments([...(previous.review ?? []), ...(item.review ?? [])]);
-    const similarities = [previous.textSimilarity, item.textSimilarity].filter((value) => Number.isFinite(value));
+    const similarities = [previous.textSimilarity, item.textSimilarity].flatMap((value) => typeof value === "number" && Number.isFinite(value) ? [value] : []);
     previous.textSimilarity = similarities.length > 0 ? Math.min(...similarities) : null;
   }
   return merged;
 }
 
+/** @param {unknown} value */
 export function normalizeSingleMixMode(value) {
   if (value === false || /^(0|false|no|off|disabled)$/i.test(String(value ?? "").trim())) return "disabled";
   return "robust";
@@ -227,8 +265,8 @@ export function normalizeSingleMixMode(value) {
 
 /**
  * @param {{
- *   primarySegments?: any[],
- *   reviewSegments?: any[],
+ *   primarySegments?: MixSegment[],
+ *   reviewSegments?: MixSegment[],
  *   primaryModel?: string,
  *   reviewModel?: string,
  *   reviewStatus?: string,
@@ -254,7 +292,10 @@ export function buildSingleMixAnalysis({
   ];
   const { alignments, unmatchedReview } = alignSegments(primarySegments, reviewSegments, alignmentToleranceSeconds);
   const conflictItems = reviewStatus === "completed"
-    ? alignments.map((alignment) => reviewItemForAlignment(alignment, speakerMap, textConflictThreshold)).filter(Boolean)
+    ? alignments.flatMap((alignment) => {
+        const item = reviewItemForAlignment(alignment, speakerMap, textConflictThreshold);
+        return item ? [item] : [];
+      })
     : [];
   const missingItems = reviewStatus === "completed" ? unmatchedReview.map(unmatchedReviewItem) : [];
   const reviewItems = mergeReviewItems([...explicitItems, ...conflictItems, ...missingItems])

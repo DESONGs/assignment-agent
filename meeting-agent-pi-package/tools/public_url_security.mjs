@@ -18,11 +18,38 @@ export const DEFAULT_PUBLIC_URL_LIMITS = Object.freeze({
 const SENSITIVE_QUERY_KEY = /(?:^|[_-])(?:access[_-]?key|api[_-]?key|auth|authorization|credential|expires?|policy|signature|sig|security[_-]?token|session|token|x-amz-.+|x-oss-.+)(?:$|[_-])/i;
 const BLOCKED_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa", ".lan"];
 
+/**
+ * @typedef {import("node:dns").LookupAddress} LookupAddress
+ * @typedef {import("node:http").IncomingMessage} IncomingMessage
+ * @typedef {(hostname: string, options: { all: true, verbatim: true }) => Promise<LookupAddress[] | LookupAddress>} PublicLookupFn
+ * @typedef {{
+ *   lookupFn?: PublicLookupFn | undefined,
+ *   maxRedirects?: number | undefined,
+ *   maxBytes?: number | undefined,
+ *   timeoutMs?: number | undefined,
+ *   method?: string | undefined,
+ *   userAgent?: string | undefined,
+ *   accept?: string | undefined,
+ *   rangeProbe?: boolean | undefined
+ * }} PublicRequestOptions
+ * @typedef {{ status: "ready", url: URL, addresses: LookupAddress[] } | { status: "blocked", reason: string, url?: string, error?: string }} PublicUrlValidation
+ * @typedef {{ response: IncomingMessage, finalUrl: URL, redirectCount: number, statusCode: number }} PublicResponse
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
+/** @param {unknown} text */
 export function extractPublicUrls(text) {
   const matches = String(text ?? "").match(/https?:\/\/[^\s<>"']+/gi) ?? [];
   return [...new Set(matches.map((value) => value.replace(/[),.;!?，。；！？）》】]+$/u, "")))];
 }
 
+/** @param {unknown} value */
 export function sanitizeUrlForArtifact(value) {
   try {
     const url = new URL(String(value ?? ""));
@@ -38,12 +65,14 @@ export function sanitizeUrlForArtifact(value) {
   }
 }
 
+/** @param {unknown} value */
 export function redactSensitiveUrlsInText(value) {
   let text = String(value ?? "");
   for (const url of extractPublicUrls(text)) text = text.replaceAll(url, sanitizeUrlForArtifact(url));
   return text;
 }
 
+/** @param {unknown} value */
 export function classifyPublicUrl(value) {
   let url;
   try {
@@ -68,12 +97,15 @@ export function classifyPublicUrl(value) {
   return { platform: "web", kind: "web_page" };
 }
 
+/** @param {string} address */
 function ipv4Number(address) {
   const parts = address.split(".").map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-  return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3]) >>> 0;
+  const [first = 0, second = 0, third = 0, fourth = 0] = parts;
+  return (((first * 256 + second) * 256 + third) * 256 + fourth) >>> 0;
 }
 
+/** @param {string} address @param {string} base @param {number} prefix */
 function ipv4InCidr(address, base, prefix) {
   const value = ipv4Number(address);
   const start = ipv4Number(base);
@@ -82,16 +114,19 @@ function ipv4InCidr(address, base, prefix) {
   return (value & mask) === (start & mask);
 }
 
+/** @param {unknown} address */
 export function isBlockedNetworkAddress(address) {
-  const normalized = String(address ?? "").toLowerCase().replace(/^\[|\]$/g, "").split("%")[0];
+  const normalized = String(address ?? "").toLowerCase().replace(/^\[|\]$/g, "").split("%")[0] ?? "";
   const version = isIP(normalized);
   if (version === 4) {
-    return [
+    /** @type {Array<[string, number]>} */
+    const blockedCidrs = [
       ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
       ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
       ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
       ["224.0.0.0", 4], ["240.0.0.0", 4],
-    ].some(([base, prefix]) => ipv4InCidr(normalized, base, prefix));
+    ];
+    return blockedCidrs.some(([base, prefix]) => ipv4InCidr(normalized, base, prefix));
   }
   if (version === 6) {
     if (normalized === "::" || normalized === "::1") return true;
@@ -102,6 +137,7 @@ export function isBlockedNetworkAddress(address) {
   return true;
 }
 
+/** @param {unknown} value */
 function normalizedPublicUrl(value) {
   const url = new URL(String(value ?? ""));
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("public_url_scheme_blocked");
@@ -113,6 +149,7 @@ function normalizedPublicUrl(value) {
   return url;
 }
 
+/** @param {unknown} value @param {PublicRequestOptions} [options] @returns {Promise<PublicUrlValidation>} */
 export async function validatePublicUrl(value, options = {}) {
   let url;
   try {
@@ -122,6 +159,7 @@ export async function validatePublicUrl(value, options = {}) {
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const lookupFn = options.lookupFn ?? dnsLookup;
+  /** @type {LookupAddress[] | LookupAddress} */
   let addresses;
   try {
     addresses = isIP(host)
@@ -135,7 +173,7 @@ export async function validatePublicUrl(value, options = {}) {
       error: error instanceof Error ? error.message : String(error),
     };
   }
-  const normalizedAddresses = (Array.isArray(addresses) ? addresses : [addresses]).filter((item) => item?.address);
+  const normalizedAddresses = (Array.isArray(addresses) ? addresses : [addresses]).filter((item) => typeof item?.address === "string" && item.address.length > 0);
   if (normalizedAddresses.length === 0) return { status: "blocked", reason: "public_url_dns_empty", url: sanitizeUrlForArtifact(url) };
   if (normalizedAddresses.some((item) => isBlockedNetworkAddress(item.address))) {
     return { status: "blocked", reason: "public_url_private_address_blocked", url: sanitizeUrlForArtifact(url) };
@@ -143,6 +181,7 @@ export async function validatePublicUrl(value, options = {}) {
   return { status: "ready", url, addresses: normalizedAddresses };
 }
 
+/** @param {unknown} from @param {unknown} location @param {PublicRequestOptions} [options] @returns {Promise<PublicUrlValidation>} */
 export async function validatePublicRedirect(from, location, options = {}) {
   let target;
   try {
@@ -151,12 +190,22 @@ export async function validatePublicRedirect(from, location, options = {}) {
     return { status: "blocked", reason: "public_url_redirect_invalid" };
   }
   const validated = await validatePublicUrl(target, options);
-  if (validated.status !== "ready") return { ...validated, reason: `public_url_redirect_${validated.reason}` };
+  if (validated.status !== "ready") {
+    return {
+      status: "blocked",
+      reason: `public_url_redirect_${validated.reason}`,
+      ...(validated.url === undefined ? {} : { url: validated.url }),
+      ...(validated.error === undefined ? {} : { error: validated.error }),
+    };
+  }
   return validated;
 }
 
+/** @param {unknown} headers @param {number} maxBytes */
 export function enforceContentLength(headers, maxBytes) {
-  const raw = headers?.["content-length"] ?? headers?.get?.("content-length") ?? null;
+  const record = asRecord(headers);
+  const get = typeof record.get === "function" ? record.get.bind(headers) : null;
+  const raw = record["content-length"] ?? (get ? get("content-length") : null);
   const size = Number(raw);
   if (Number.isFinite(size) && size > Number(maxBytes)) {
     return { status: "blocked", reason: "public_url_size_limit_exceeded", contentLength: size, maxBytes: Number(maxBytes) };
@@ -164,21 +213,30 @@ export function enforceContentLength(headers, maxBytes) {
   return { status: "ready", contentLength: Number.isFinite(size) ? size : null, maxBytes: Number(maxBytes) };
 }
 
+/** @param {LookupAddress[]} addresses */
 function pinnedLookup(addresses) {
+  /**
+   * @param {string} _hostname
+   * @param {{ all?: boolean }} options
+   * @param {(error: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void} callback
+   */
   return (_hostname, options, callback) => {
     if (options?.all) return callback(null, addresses);
     const selected = addresses[0];
+    if (!selected) return callback(Object.assign(new Error("public_url_dns_empty"), { code: "ENOTFOUND" }), "", 0);
     return callback(null, selected.address, selected.family);
   };
 }
 
+/** @param {unknown} value @param {PublicRequestOptions} [options] @param {number} [redirectCount] @returns {Promise<PublicResponse>} */
 async function openPublicResponse(value, options = {}, redirectCount = 0) {
   const maxRedirects = Number(options.maxRedirects ?? DEFAULT_PUBLIC_URL_LIMITS.maxRedirects);
   const validated = await validatePublicUrl(value, options);
   if (validated.status !== "ready") throw Object.assign(new Error(validated.reason), { diagnostic: validated });
   const url = validated.url instanceof URL ? validated.url : new URL(String(validated.url));
   const requestImpl = url.protocol === "https:" ? httpsRequest : httpRequest;
-  const response = await new Promise((resolveRequest, rejectRequest) => {
+  /** @type {Promise<IncomingMessage>} */
+  const responsePromise = new Promise((resolveRequest, rejectRequest) => {
     const req = requestImpl(url, {
       method: options.method ?? "GET",
       headers: {
@@ -187,12 +245,13 @@ async function openPublicResponse(value, options = {}, redirectCount = 0) {
         "accept-encoding": "identity",
         ...(options.rangeProbe ? { range: "bytes=0-0" } : {}),
       },
-      lookup: pinnedLookup(validated.addresses),
+      lookup: /** @type {import("node:net").LookupFunction} */ (pinnedLookup(validated.addresses)),
     }, resolveRequest);
     req.setTimeout(Number(options.timeoutMs ?? DEFAULT_PUBLIC_URL_LIMITS.timeoutMs), () => req.destroy(new Error("public_url_request_timeout")));
     req.on("error", rejectRequest);
     req.end();
   });
+  const response = await responsePromise;
   const statusCode = Number(response.statusCode ?? 0);
   if ([301, 302, 303, 307, 308].includes(statusCode) && response.headers.location) {
     response.resume();
@@ -205,12 +264,24 @@ async function openPublicResponse(value, options = {}, redirectCount = 0) {
   return { response, finalUrl: url, redirectCount, statusCode };
 }
 
+/** @param {unknown} error */
+function errorDiagnostic(error) {
+  return asRecord(error).diagnostic ?? null;
+}
+
+/** @param {IncomingMessage["headers"]} headers @param {string} name */
+function responseHeader(headers, name) {
+  const value = headers[name];
+  return Array.isArray(value) ? value[0] ?? "" : String(value ?? "");
+}
+
+/** @param {unknown} value @param {PublicRequestOptions} [options] */
 export async function probePublicResource(value, options = {}) {
   let opened;
   try {
     opened = await openPublicResponse(value, { ...options, method: "HEAD" });
   } catch (error) {
-    return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: error?.diagnostic ?? null };
+    return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: errorDiagnostic(error) };
   }
   let { response, finalUrl, redirectCount, statusCode } = opened;
   if ([405, 501].includes(statusCode)) {
@@ -219,7 +290,7 @@ export async function probePublicResource(value, options = {}) {
       opened = await openPublicResponse(value, { ...options, method: "GET", rangeProbe: true });
       ({ response, finalUrl, redirectCount, statusCode } = opened);
     } catch (error) {
-      return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: error?.diagnostic ?? null };
+      return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: errorDiagnostic(error) };
     }
   }
   response.destroy();
@@ -234,19 +305,20 @@ export async function probePublicResource(value, options = {}) {
   return {
     status: "ready",
     finalUrl: sanitizeUrlForArtifact(finalUrl),
-    contentType: String(response.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase(),
+    contentType: (responseHeader(response.headers, "content-type").split(";")[0] ?? "").trim().toLowerCase(),
     contentLength: size.contentLength,
     redirectCount,
   };
 }
 
+/** @param {unknown} value @param {PublicRequestOptions} [options] */
 export async function fetchPublicResource(value, options = {}) {
   const maxBytes = Number(options.maxBytes ?? DEFAULT_PUBLIC_URL_LIMITS.maxPageBytes);
   let opened;
   try {
     opened = await openPublicResponse(value, { ...options, method: "GET" });
   } catch (error) {
-    return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: error?.diagnostic ?? null };
+    return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: errorDiagnostic(error) };
   }
   const { response, finalUrl, redirectCount, statusCode } = opened;
   if (statusCode < 200 || statusCode >= 300) {
@@ -258,16 +330,18 @@ export async function fetchPublicResource(value, options = {}) {
     response.destroy();
     return { ...size, finalUrl: sanitizeUrlForArtifact(finalUrl) };
   }
+  /** @type {Buffer[]} */
   const chunks = [];
   let bytes = 0;
   try {
     for await (const chunk of response) {
-      bytes += chunk.length;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
       if (bytes > maxBytes) {
         response.destroy();
         return { status: "blocked", reason: "public_url_size_limit_exceeded", maxBytes, bytesRead: bytes, finalUrl: sanitizeUrlForArtifact(finalUrl) };
       }
-      chunks.push(chunk);
+      chunks.push(buffer);
     }
   } catch (error) {
     return { status: "blocked", reason: "public_url_read_failed", error: error instanceof Error ? error.message : String(error), finalUrl: sanitizeUrlForArtifact(finalUrl) };
@@ -275,20 +349,21 @@ export async function fetchPublicResource(value, options = {}) {
   return {
     status: "completed",
     finalUrl: sanitizeUrlForArtifact(finalUrl),
-    contentType: String(response.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase(),
+    contentType: (responseHeader(response.headers, "content-type").split(";")[0] ?? "").trim().toLowerCase(),
     contentLength: bytes,
     body: Buffer.concat(chunks),
     redirectCount,
   };
 }
 
+/** @param {unknown} value @param {string} destination @param {PublicRequestOptions} [options] */
 export async function downloadPublicResource(value, destination, options = {}) {
   const maxBytes = Number(options.maxBytes ?? DEFAULT_PUBLIC_URL_LIMITS.maxMediaBytes);
   let opened;
   try {
     opened = await openPublicResponse(value, { ...options, method: "GET" });
   } catch (error) {
-    return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: error?.diagnostic ?? null };
+    return { status: "blocked", reason: error instanceof Error ? error.message : String(error), diagnostic: errorDiagnostic(error) };
   }
   const { response, finalUrl, redirectCount, statusCode } = opened;
   if (statusCode < 200 || statusCode >= 300) {
@@ -305,23 +380,27 @@ export async function downloadPublicResource(value, destination, options = {}) {
   const hash = createHash("sha256");
   let bytes = 0;
   try {
-    await new Promise((resolveWrite, rejectWrite) => {
+    /** @type {Promise<void>} */
+    const writePromise = new Promise((resolveWrite, rejectWrite) => {
       const output = createWriteStream(partial, { flags: "w", mode: 0o600 });
+      /** @param {unknown} error */
       const fail = (error) => {
         response.destroy();
         output.destroy();
         rejectWrite(error);
       };
       response.on("data", (chunk) => {
-        bytes += chunk.length;
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bytes += buffer.length;
         if (bytes > maxBytes) return fail(new Error("public_url_size_limit_exceeded"));
-        hash.update(chunk);
+        hash.update(buffer);
       });
       response.on("error", fail);
       output.on("error", fail);
       output.on("finish", () => resolveWrite());
       response.pipe(output);
     });
+    await writePromise;
     renameSync(partial, destination);
   } catch (error) {
     try { unlinkSync(partial); } catch {}
@@ -339,7 +418,7 @@ export async function downloadPublicResource(value, destination, options = {}) {
     sizeBytes: bytes,
     sha256: hash.digest("hex"),
     finalUrl: sanitizeUrlForArtifact(finalUrl),
-    contentType: String(response.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase(),
+    contentType: (responseHeader(response.headers, "content-type").split(";")[0] ?? "").trim().toLowerCase(),
     redirectCount,
   };
 }

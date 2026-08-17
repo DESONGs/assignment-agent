@@ -4,9 +4,9 @@
     "noEmit": true,
     "allowJs": true,
     "checkJs": true,
-    "strict": false,
-    "noUncheckedIndexedAccess": false,
-    "exactOptionalPropertyTypes": false
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
   },
   "files": [
     "tools/asr_diarization_helpers.mjs",

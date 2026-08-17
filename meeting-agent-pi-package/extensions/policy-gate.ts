@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,34 @@ const CONFIRMATION_REQUIRED = new Set<ActionIntent>([
 const DOCS_RESEARCH_CLASSES = new Set(["docs_or_sdk_research", "sdk_docs", "official_docs", "api_docs"]);
 const FEISHU_WRITE_INTENTS = new Set<ActionIntent>(["write_private", "publish_customer_visible"]);
 
+const POLICY_GATE_CHECK_PARAMETERS = Type.Object({
+  actionIntent: ACTION_INTENT,
+  capabilityId: Type.Optional(Type.String()),
+  audience: Type.Optional(Type.String()),
+  payloadClass: Type.Optional(Type.String()),
+  provider: Type.Optional(Type.String()),
+  riskLevel: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+  artifacts: Type.Optional(Type.Array(Type.String())),
+  userConfirmed: Type.Optional(Type.Boolean()),
+  externalWebAllowed: Type.Optional(Type.Boolean()),
+  sourceRecordRequired: Type.Optional(Type.Boolean()),
+  containsSecrets: Type.Optional(Type.Boolean()),
+  rawMediaExternalUpload: Type.Optional(Type.Boolean()),
+  asrStage: Type.Optional(Type.Boolean()),
+  rawMediaExternalUploadDefault: Type.Optional(Type.String()),
+  rawTranscriptIncluded: Type.Optional(Type.Boolean()),
+  meetingFactsContext: Type.Optional(Type.Boolean()),
+  feishuInbound: Type.Optional(Type.Boolean()),
+  channel: Type.Optional(Type.Union([Type.Literal("feishu"), Type.Literal("wechat"), Type.Literal("local")])),
+  explicitUserRequest: Type.Optional(Type.Boolean()),
+  userRequestedAction: Type.Optional(Type.Boolean()),
+  destructiveAction: Type.Optional(Type.Boolean()),
+  modifyExistingDocument: Type.Optional(Type.Boolean()),
+  targetSpecified: Type.Optional(Type.Boolean()),
+});
+
+type PolicyGateCheckParams = Static<typeof POLICY_GATE_CHECK_PARAMETERS>;
+
 function defaultOutputRoot() {
   return join(workspaceDir, "runtime-runs");
 }
@@ -89,7 +117,7 @@ function isDocsResearch(payloadClass?: string) {
   return Boolean(payloadClass && DOCS_RESEARCH_CLASSES.has(payloadClass));
 }
 
-function isFeishuExplicitWriteAllowed(params: any, actionIntent: ActionIntent) {
+function isFeishuExplicitWriteAllowed(params: PolicyGateCheckParams, actionIntent: ActionIntent) {
   if (!FEISHU_WRITE_INTENTS.has(actionIntent)) return false;
   if (params.feishuInbound !== true && params.channel !== "feishu") return false;
   if (params.explicitUserRequest !== true && params.userRequestedAction !== true) return false;
@@ -98,7 +126,7 @@ function isFeishuExplicitWriteAllowed(params: any, actionIntent: ActionIntent) {
   return true;
 }
 
-function explicitTargetedActionAllowed(params: any, actionIntent: ActionIntent) {
+function explicitTargetedActionAllowed(params: PolicyGateCheckParams, actionIntent: ActionIntent) {
   if (params.explicitUserRequest !== true && params.userRequestedAction !== true) return false;
   if (params.destructiveAction === true || actionIntent === "delete") return false;
   if (params.modifyExistingDocument === true && params.targetSpecified !== true) return false;
@@ -108,8 +136,8 @@ function explicitTargetedActionAllowed(params: any, actionIntent: ActionIntent) 
   return false;
 }
 
-function buildDecision(params: any) {
-  const actionIntent = params.actionIntent as ActionIntent;
+function buildDecision(params: PolicyGateCheckParams) {
+  const actionIntent = params.actionIntent;
   const reasons: string[] = [];
   let status: "pass" | "needs_confirmation" | "blocked" = "pass";
   let requiredUserConfirmation = false;
@@ -201,6 +229,20 @@ function buildDecision(params: any) {
   };
 }
 
+type PolicyGateDecision = ReturnType<typeof buildDecision>;
+type PolicyGateBlocked = {
+  status: "blocked";
+  reason: string;
+  runId?: string;
+  rawSecretsReturned: false;
+};
+type PolicyWriteSuccess = {
+  ok: true;
+  runId: string;
+  policyGatePath: string;
+  rawSecretsReturned: false;
+};
+
 function writePolicyDecision(runId: string, decision: unknown, outputRoot?: string) {
   const path = policyPath(runId, outputRoot);
   mkdirSync(dirname(path), { recursive: true });
@@ -213,37 +255,13 @@ export default function (pi: ExtensionAPI) {
     name: "policy_gate_check",
     label: "Policy Gate Check",
     description: "Check whether an action intent can proceed, needs confirmation, or is blocked.",
-    parameters: Type.Object({
-      actionIntent: ACTION_INTENT,
-      capabilityId: Type.Optional(Type.String()),
-      audience: Type.Optional(Type.String()),
-      payloadClass: Type.Optional(Type.String()),
-      provider: Type.Optional(Type.String()),
-      riskLevel: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
-      artifacts: Type.Optional(Type.Array(Type.String())),
-      userConfirmed: Type.Optional(Type.Boolean()),
-      externalWebAllowed: Type.Optional(Type.Boolean()),
-      sourceRecordRequired: Type.Optional(Type.Boolean()),
-      containsSecrets: Type.Optional(Type.Boolean()),
-      rawMediaExternalUpload: Type.Optional(Type.Boolean()),
-      asrStage: Type.Optional(Type.Boolean()),
-      rawMediaExternalUploadDefault: Type.Optional(Type.String()),
-      rawTranscriptIncluded: Type.Optional(Type.Boolean()),
-      meetingFactsContext: Type.Optional(Type.Boolean()),
-      feishuInbound: Type.Optional(Type.Boolean()),
-      channel: Type.Optional(Type.Union([Type.Literal("feishu"), Type.Literal("wechat"), Type.Literal("local")])),
-      explicitUserRequest: Type.Optional(Type.Boolean()),
-      userRequestedAction: Type.Optional(Type.Boolean()),
-      destructiveAction: Type.Optional(Type.Boolean()),
-      modifyExistingDocument: Type.Optional(Type.Boolean()),
-      targetSpecified: Type.Optional(Type.Boolean()),
-    }),
-    async execute(_toolCallId, params): Promise<any> {
+    parameters: POLICY_GATE_CHECK_PARAMETERS,
+    async execute(_toolCallId, params): Promise<AgentToolResult<PolicyGateDecision | PolicyGateBlocked>> {
       try {
         const details = buildDecision(params);
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {
-        const blocked = { status: "blocked", reason: error instanceof Error ? error.message : String(error), rawSecretsReturned: false };
+        const blocked: PolicyGateBlocked = { status: "blocked", reason: error instanceof Error ? error.message : String(error), rawSecretsReturned: false };
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
       }
     },
@@ -258,13 +276,13 @@ export default function (pi: ExtensionAPI) {
       decision: Type.Unknown(),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<PolicyWriteSuccess | PolicyGateBlocked>> {
       try {
         const path = writePolicyDecision(params.runId, params.decision, params.outputRoot);
-        const details = { ok: true, runId: safeRunId(params.runId), policyGatePath: path, rawSecretsReturned: false };
+        const details: PolicyWriteSuccess = { ok: true, runId: safeRunId(params.runId), policyGatePath: path, rawSecretsReturned: false };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {
-        const blocked = { status: "blocked", reason: error instanceof Error ? error.message : String(error), runId: params.runId };
+        const blocked: PolicyGateBlocked = { status: "blocked", reason: error instanceof Error ? error.message : String(error), runId: params.runId, rawSecretsReturned: false };
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
       }
     },

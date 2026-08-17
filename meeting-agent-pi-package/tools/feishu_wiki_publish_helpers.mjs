@@ -7,25 +7,51 @@ export const WIKI_PUBLISH_RESULT_FILE = "wiki-publish.json";
 export const WIKI_TARGET_REGISTRY_FILE = "feishu-wiki-target-registry.json";
 const TAXONOMY_TREE_POLICY_MARKER = "project_workspace_canonical";
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {import("../dist/index.js").FeishuTask} FeishuTask
+ * @typedef {{ runDir: string, artifactsDir: string }} WikiPaths
+ * @typedef {{ docType: string, title?: string, fileName?: string | null, localPath: string, markdown?: string }} PublishDocument
+ * @typedef {{ publishMode: string, publishAs?: string, publishTarget?: string, cliTimeoutMs: number, wikiSpaceId?: string | null, wikiRootNodeToken?: string | null, wikiSpaceResolved?: boolean, projectWikiSpaceName?: string, projectWikiRootTitle?: string, folderToken?: string }} WikiOptions
+ * @typedef {{ exitCode: number, stdout: string, stderr: string, timedOut?: boolean, [key: string]: unknown }} CommandResult
+ * @typedef {(command: string, args: string[], options: { timeoutMs: number }) => Promise<CommandResult>} RunCommand
+ * @typedef {{ level: string, title: string, reuseKey: string, parentReuseKey: string | null, docType?: string }} WikiNodePlan
+ * @typedef {{ docType: string, title: string, fileName: string | null, localPath: string | null, targetParentReuseKey: string, documentReuseKey: string }} WikiDocumentPlan
+ * @typedef {{ schemaVersion: string, taxonomyRef: string | null, rootMode: string, spaceId: string | null, rootNodeToken: string | null, nodes: WikiNodePlan[], documents: WikiDocumentPlan[], [key: string]: unknown }} WikiPlan
+ * @typedef {{ schemaVersion: string, updatedAt: unknown, spaces: Record<string, UnknownRecord>, projectNodes: Record<string, UnknownRecord>, rootNodes: Record<string, UnknownRecord>, runNodes: Record<string, UnknownRecord>, categoryNodes: Record<string, UnknownRecord>, documentNodes: Record<string, UnknownRecord>, rawSecretsReturned: false }} WikiRegistry
+ * @typedef {UnknownRecord & { status: string, plannedCommands: string[][], nodes: UnknownRecord[], documents: UnknownRecord[], fallbackReason: string | null }} WikiPublishResult
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   return path;
 }
 
+/** @param {string} path @returns {UnknownRecord | null} */
 function loadJsonIfExists(path) {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
+/** @param {unknown} value */
 function hashLike(value) {
   let hash = 0;
   const text = String(value ?? "");
@@ -35,6 +61,7 @@ function hashLike(value) {
   return Math.abs(hash).toString(36).slice(0, 8).padStart(4, "0");
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function normalizeKey(value, fallback = "item") {
   const ascii = String(value ?? "")
     .normalize("NFKD")
@@ -47,32 +74,37 @@ function normalizeKey(value, fallback = "item") {
   return `${ascii || fallback}-${hashLike(value)}`;
 }
 
+/** @param {FeishuTask} task */
 function dateFromTask(task) {
-  const raw = Number(task?.sourceEvent?.message?.createTime);
+  const raw = Number(task.sourceEvent.message.createTime);
   const date = Number.isFinite(raw) && raw > 0
     ? new Date(raw > 10_000_000_000 ? raw : raw * 1000)
     : new Date();
   return date.toISOString().slice(0, 10);
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeTitle(value, fallback = "待确认") {
   return String(value ?? fallback).replace(/[\/\\:*?"<>|]/g, "_").replace(/\s+/g, " ").trim().slice(0, 90) || fallback;
 }
 
+/** @param {unknown} docType */
 function docCategory(docType) {
-  return DOC_CATEGORY_LABELS[docType] ?? taxonomyDocCategory(docType);
+  return DOC_CATEGORY_LABELS[String(docType ?? "")] ?? taxonomyDocCategory(docType);
 }
 
+/** @param {FeishuTask} task @param {PublishDocument[]} documents @param {UnknownRecord | null} titlePlan */
 function inferProjectTitle(task, documents, titlePlan) {
   if (titlePlan?.projectTitle) return safeTitle(titlePlan.projectTitle, "待确认项目");
   const title = documents.find((doc) => doc.title)?.title ?? "";
   const parts = String(title).split("｜").map((part) => part.trim()).filter(Boolean);
   if (parts.length >= 2) return safeTitle(parts[1], "待确认项目");
-  const prompt = String(task?.sourceEvent?.message?.text ?? "").replace(/https?:\/\/\S+/g, " ");
+  const prompt = String(task.sourceEvent.message.text ?? "").replace(/https?:\/\/\S+/g, " ");
   const match = prompt.match(/([\u4e00-\u9fa5A-Za-z0-9]{2,40})(?:的)?(?:PRD|技术架构|Checklist|会议纪要|运营方案)/i);
   return safeTitle(match?.[1] ?? "待确认项目", "待确认项目");
 }
 
+/** @param {PublishDocument[]} documents */
 function inferRunTopic(documents) {
   const types = [...new Set(documents.map((doc) => doc.docType).filter(Boolean))];
   if (types.length === 1 && types[0] === "meeting-minutes") return "会议纪要";
@@ -80,30 +112,34 @@ function inferRunTopic(documents) {
   return "文档生成";
 }
 
+/** @param {WikiPaths} paths */
 export function wikiPlanPath(paths) {
   return join(paths.artifactsDir, WIKI_PUBLISH_PLAN_FILE);
 }
 
+/** @param {WikiPaths} paths */
 export function wikiPublishPath(paths) {
   return join(paths.runDir, WIKI_PUBLISH_RESULT_FILE);
 }
 
+/** @param {WikiPaths} paths */
 export function wikiTargetRegistryPath(paths) {
   return join(dirname(dirname(paths.runDir)), WIKI_TARGET_REGISTRY_FILE);
 }
 
+/** @param {WikiPaths} paths @returns {WikiRegistry} */
 export function loadWikiTargetRegistry(paths) {
   const registry = loadJsonIfExists(wikiTargetRegistryPath(paths));
   if (registry?.schemaVersion === "feishu-wiki-target-registry-v1") {
     return {
       schemaVersion: "feishu-wiki-target-registry-v1",
       updatedAt: registry.updatedAt ?? null,
-      spaces: registry.spaces ?? {},
-      projectNodes: registry.projectNodes ?? {},
-      rootNodes: registry.rootNodes ?? {},
-      runNodes: registry.runNodes ?? {},
-      categoryNodes: registry.categoryNodes ?? {},
-      documentNodes: registry.documentNodes ?? {},
+      spaces: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.spaces)),
+      projectNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.projectNodes)),
+      rootNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.rootNodes)),
+      runNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.runNodes)),
+      categoryNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.categoryNodes)),
+      documentNodes: /** @type {Record<string, UnknownRecord>} */ (asRecord(registry.documentNodes)),
       rawSecretsReturned: false,
     };
   }
@@ -120,6 +156,7 @@ export function loadWikiTargetRegistry(paths) {
   };
 }
 
+/** @param {WikiPaths} paths @param {WikiRegistry} registry */
 export function saveWikiTargetRegistry(paths, registry) {
   return writeJson(wikiTargetRegistryPath(paths), {
     ...registry,
@@ -128,6 +165,7 @@ export function saveWikiTargetRegistry(paths, registry) {
   });
 }
 
+/** @param {{ task: FeishuTask, documents: PublishDocument[], paths: WikiPaths, options: WikiOptions, workspaceDir: string, taxonomyPlan?: ReturnType<typeof buildPublishTaxonomy> | null }} input @returns {WikiPlan} */
 export function buildWikiPublishPlan({ task, documents, paths, options, workspaceDir, taxonomyPlan = null }) {
   const titlePlan = loadJsonIfExists(join(paths.artifactsDir, "document-title-plan.json"));
   const taxonomy = taxonomyPlan ?? buildPublishTaxonomy({
@@ -136,7 +174,7 @@ export function buildWikiPublishPlan({ task, documents, paths, options, workspac
     paths,
     options,
     workspaceDir,
-    legacySessionKey: null,
+    legacySessionKey: "",
     writeFile: true,
   });
   const projectTitle = taxonomy?.projectTitle ? safeTitle(taxonomy.projectTitle, "待确认项目") : inferProjectTitle(task, documents, titlePlan);
@@ -155,6 +193,7 @@ export function buildWikiPublishPlan({ task, documents, paths, options, workspac
   const categoryReuseKeys = new Map();
 
   const projectNodeTitle = taxonomy?.wiki?.projectTitle ?? projectTitle;
+  /** @type {WikiNodePlan[]} */
   const nodes = [];
   if (!rootNodeToken && !spaceId) {
     nodes.push({ level: "root", title: rootTitle, reuseKey: rootReuseKey, parentReuseKey: null });
@@ -198,20 +237,24 @@ export function buildWikiPublishPlan({ task, documents, paths, options, workspac
   };
 }
 
+/** @param {unknown} text @returns {unknown} */
 function parseJsonOutput(text) {
   try {
-    return text?.trim() ? JSON.parse(text) : null;
+    return typeof text === "string" && text.trim() ? JSON.parse(text) : null;
   } catch {
     return null;
   }
 }
 
+/** @param {unknown} value @param {string[]} keys @returns {string | null} */
 function findToken(value, keys) {
   if (!value || typeof value !== "object") return null;
+  const record = asRecord(value);
   for (const key of keys) {
-    if (typeof value[key] === "string" && value[key]) return value[key];
+    const entry = record[key];
+    if (typeof entry === "string" && entry) return entry;
   }
-  for (const child of Object.values(value)) {
+  for (const child of Object.values(record)) {
     if (Array.isArray(child)) {
       for (const item of child) {
         const found = findToken(item, keys);
@@ -225,19 +268,24 @@ function findToken(value, keys) {
   return null;
 }
 
-function stderrTail(result) {
+/** @param {unknown} resultValue */
+function stderrTail(resultValue) {
+  const result = asRecord(resultValue);
   return String(result?.stderr ?? "").slice(-2000);
 }
 
+/** @param {unknown} value @returns {UnknownRecord[]} */
 function listedSpaces(value) {
-  const data = value?.data ?? value;
-  if (Array.isArray(data?.spaces)) return data.spaces;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(value?.spaces)) return value.spaces;
-  if (Array.isArray(value?.items)) return value.items;
+  const root = asRecord(value);
+  const data = asRecord(root.data ?? root);
+  if (Array.isArray(data.spaces)) return data.spaces.map(asRecord);
+  if (Array.isArray(data.items)) return data.items.map(asRecord);
+  if (Array.isArray(root.spaces)) return root.spaces.map(asRecord);
+  if (Array.isArray(root.items)) return root.items.map(asRecord);
   return [];
 }
 
+/** @param {{ options: WikiOptions, publishAs: string, runCommand: RunCommand, timeoutMs: number }} input */
 async function ensureProjectWikiSpace({ options, publishAs, runCommand, timeoutMs }) {
   if (options.wikiSpaceId || options.wikiRootNodeToken) {
     return {
@@ -292,6 +340,7 @@ async function ensureProjectWikiSpace({ options, publishAs, runCommand, timeoutM
   };
 }
 
+/** @param {CommandResult} result */
 function classifyWikiFailure(result) {
   const text = `${result?.stderr ?? ""}\n${result?.stdout ?? ""}`;
   if (/99991672|action_scope_required|wiki|permission|Access denied|forbidden|HTTP 403/i.test(text)) {
@@ -302,17 +351,20 @@ function classifyWikiFailure(result) {
   return "wiki_cli_failed";
 }
 
+/** @param {{ task: FeishuTask, documents: PublishDocument[], paths: WikiPaths, options: WikiOptions, workspaceDir: string, runCommand: RunCommand, writeText: (path: string, text: string) => unknown, taxonomyPlan?: ReturnType<typeof buildPublishTaxonomy> | null }} input */
 export async function publishDocumentsToWiki({ task, documents, paths, options, workspaceDir, runCommand, writeText, taxonomyPlan = null }) {
   const publishAs = options.publishAs ?? "user";
   const spaceEnsure = options.publishMode === "live"
     ? await ensureProjectWikiSpace({ options, publishAs, runCommand, timeoutMs: options.cliTimeoutMs })
     : null;
-  const effectiveOptions = spaceEnsure?.spaceId && !options.wikiSpaceId && !options.wikiRootNodeToken
-    ? { ...options, wikiSpaceId: spaceEnsure.spaceId, wikiSpaceResolved: true }
+  const ensuredSpaceId = typeof spaceEnsure?.spaceId === "string" ? spaceEnsure.spaceId : null;
+  const effectiveOptions = ensuredSpaceId && !options.wikiSpaceId && !options.wikiRootNodeToken
+    ? { ...options, wikiSpaceId: ensuredSpaceId, wikiSpaceResolved: true }
     : options;
   const plan = buildWikiPublishPlan({ task, documents, paths, options: effectiveOptions, workspaceDir, taxonomyPlan });
   writeJson(wikiPlanPath(paths), plan);
   const registry = loadWikiTargetRegistry(paths);
+  /** @type {WikiPublishResult} */
   const result = {
     schemaVersion: "feishu-wiki-publish-v1",
     runId: task.runId,
@@ -360,7 +412,7 @@ export async function publishDocumentsToWiki({ task, documents, paths, options, 
       result.nodes.push({ ...node, status: "planned" });
     }
     for (const doc of plan.documents) {
-      const createCommand = ["lark-cli", "markdown", "+create", "--as", publishAs, "--file", doc.localPath, "--name", doc.fileName ?? `${doc.title}.md`];
+      const createCommand = ["lark-cli", "markdown", "+create", "--as", publishAs, "--file", doc.localPath ?? "<missing-local-path>", "--name", doc.fileName ?? `${doc.title}.md`];
       const moveCommand = ["lark-cli", "wiki", "+move", "--as", publishAs, "--obj-token", "<created-doc-token>", "--obj-type", "docx"];
       if (plan.spaceId) moveCommand.push("--target-space-id", plan.spaceId);
       moveCommand.push("--target-parent-token", `<${doc.targetParentReuseKey}>`);
@@ -372,11 +424,13 @@ export async function publishDocumentsToWiki({ task, documents, paths, options, 
     return result;
   }
 
+  /** @type {Map<string, string>} */
   const nodeTokens = new Map();
   if (plan.rootNodeToken) nodeTokens.set("configured-root", plan.rootNodeToken);
   for (const node of plan.nodes) {
     const cacheMap = node.level === "root" ? registry.rootNodes : node.level === "project" ? registry.projectNodes : node.level === "run" ? registry.runNodes : registry.categoryNodes;
-    let nodeToken = cacheMap[node.reuseKey]?.nodeToken ?? null;
+    const cachedNodeToken = cacheMap[node.reuseKey]?.nodeToken;
+    let nodeToken = typeof cachedNodeToken === "string" ? cachedNodeToken : null;
     if (!nodeToken) {
       const args = ["wiki", "+node-create", "--as", publishAs, "--title", node.title, "--obj-type", "docx"];
       const parentToken = node.parentReuseKey ? nodeTokens.get(node.parentReuseKey) : null;
@@ -405,6 +459,7 @@ export async function publishDocumentsToWiki({ task, documents, paths, options, 
 
   for (const [index, doc] of documents.entries()) {
     const planned = plan.documents[index];
+    if (!planned) throw new Error("wiki_document_plan_missing");
     const fileName = planned.fileName ?? `${planned.title}.md`;
     const localPath = resolve(doc.localPath);
     writeText(localPath, String(doc.markdown ?? ""));
@@ -413,6 +468,7 @@ export async function publishDocumentsToWiki({ task, documents, paths, options, 
     const created = await runCommand("lark-cli", createArgs, { timeoutMs: options.cliTimeoutMs });
     const createJson = parseJsonOutput(created.stdout);
     const objToken = findToken(createJson, ["file_token", "token", "obj_token"]);
+    /** @type {UnknownRecord & { status: string, nodeToken?: string | null }} */
     const docResult = {
       ...planned,
       status: created.exitCode === 0 && objToken ? "created" : "failed",

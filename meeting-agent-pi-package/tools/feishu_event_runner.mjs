@@ -31,6 +31,22 @@ const SECRET_PATTERNS = [
   /\b(FEISHU_APP_SECRET|DEEPSEEK_API_KEY|XIAOMI_TOKEN_PLAN_SGP_API_KEY)\b/gi,
 ];
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {{ _: string[], [key: string]: string | boolean | string[] | undefined }} CliArgs
+ * @typedef {{ resourceType: unknown, fileKey: unknown, name: unknown, localPath?: unknown, mimeType?: unknown, resolvedFromXmlFileTag?: boolean }} EventAttachment
+ * @typedef {{ schemaVersion: string, eventId: string, eventType: string, source: string, receivedAt: string, message: UnknownRecord & { messageId: string, chatId: string, msgType: string, attachments: EventAttachment[] }, sender: UnknownRecord, rawEventStored: boolean, rawEventPath: string | null, rawSecretsReturned: false }} NormalizedEvent
+ * @typedef {{ outputRoot: string, handlerUrl: string, handlerTimeoutMs: number, dryRun: boolean, source: string, eventKey?: string, asIdentity: string, maxEvents?: string | boolean | string[], timeout?: string | boolean | string[], quiet: boolean }} RunnerOptions
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
+/** @param {string} name */
 function envFlag(name) {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
 }
@@ -39,10 +55,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string[]} argv @returns {CliArgs} */
 function parseArgs(argv) {
+  /** @type {CliArgs} */
   const args = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
+    if (item === undefined) continue;
     if (!item.startsWith("--")) {
       args._.push(item);
       continue;
@@ -63,13 +82,15 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} input */
 function safeOutputRoot(input) {
-  const root = resolve(input ?? DEFAULT_OUTPUT_ROOT);
+  const root = resolve(typeof input === "string" ? input : DEFAULT_OUTPUT_ROOT);
   if (!isInside(workspaceDir, root)) {
     throw new Error("feishu_event_runner_output_root_outside_workspace_blocked");
   }
@@ -77,6 +98,7 @@ function safeOutputRoot(input) {
   return root;
 }
 
+/** @param {string} hostname */
 function isLoopbackHostname(hostname) {
   const normalized = hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (normalized === "localhost" || normalized === "::1") return true;
@@ -84,8 +106,9 @@ function isLoopbackHostname(hostname) {
   return octets.length === 4 && octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && octets[0] === 127;
 }
 
+/** @param {unknown} raw */
 function validateHandlerUrl(raw) {
-  const url = new URL(raw || DEFAULT_HANDLER_URL);
+  const url = new URL(typeof raw === "string" && raw ? raw : DEFAULT_HANDLER_URL);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("feishu_agent_handler_url_protocol_blocked");
   }
@@ -98,14 +121,17 @@ function validateHandlerUrl(raw) {
   return url.toString();
 }
 
+/** @param {unknown} value */
 function redactString(value) {
-  return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), value);
+  return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), String(value ?? ""));
 }
 
+/** @param {unknown} value @param {string} [key] @returns {unknown} */
 function sanitize(value, key = "") {
   if (typeof value === "string") return redactString(value).slice(0, 12000);
   if (Array.isArray(value)) return value.map((item) => sanitize(item));
   if (value && typeof value === "object") {
+    /** @type {UnknownRecord} */
     const output = {};
     for (const [entryKey, entryValue] of Object.entries(value)) {
       if (entryKey === "rawSecretsReturned" || entryKey === "rawMediaExternalUpload") {
@@ -121,10 +147,12 @@ function sanitize(value, key = "") {
   return value;
 }
 
+/** @param {unknown} value */
 function hashJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+/** @param {unknown} value @returns {unknown} */
 function parseJsonMaybe(value) {
   if (typeof value !== "string") return value ?? {};
   try {
@@ -134,13 +162,15 @@ function parseJsonMaybe(value) {
   }
 }
 
+/** @param {unknown} content */
 function parseText(content) {
-  const parsed = parseJsonMaybe(content);
-  if (typeof parsed?.text === "string") return parsed.text.trim();
+  const parsed = asRecord(parseJsonMaybe(content));
+  if (typeof parsed.text === "string") return parsed.text.trim();
   if (typeof content === "string") return content.trim();
   return "";
 }
 
+/** @param {unknown} value */
 function xmlDecode(value) {
   return String(value ?? "")
     .replace(/&lt;/g, "<")
@@ -150,6 +180,7 @@ function xmlDecode(value) {
     .replace(/&apos;/g, "'");
 }
 
+/** @param {unknown} rawContent @param {string} tagName @returns {UnknownRecord[]} */
 function xmlTagAttributes(rawContent, tagName) {
   const content = typeof rawContent === "string" ? rawContent : "";
   return [...content.matchAll(new RegExp(`<${tagName}\\b([^>]*)\\/?>`, "gi"))].map((match) =>
@@ -159,16 +190,22 @@ function xmlTagAttributes(rawContent, tagName) {
   );
 }
 
-function collectAttachments(message, content) {
-  const parsed = parseJsonMaybe(content);
-  const existing = Array.isArray(message?.attachments) ? message.attachments : [];
-  const attachments = existing.map((item) => ({
+/** @param {unknown} messageValue @param {unknown} content @returns {EventAttachment[]} */
+function collectAttachments(messageValue, content) {
+  const message = asRecord(messageValue);
+  const parsed = asRecord(parseJsonMaybe(content));
+  const existing = Array.isArray(message.attachments) ? message.attachments : [];
+  /** @type {EventAttachment[]} */
+  const attachments = existing.map((itemValue) => {
+    const item = asRecord(itemValue);
+    return ({
     resourceType: item.resourceType ?? item.type ?? "unknown",
     fileKey: item.fileKey ?? item.file_key ?? item.image_key ?? item.key ?? "",
     name: item.name ?? item.file_name ?? item.filename ?? "",
     localPath: item.localPath ?? item.local_path,
     mimeType: item.mimeType ?? item.mime_type,
-  }));
+    });
+  });
 
   for (const [index, attrs] of xmlTagAttributes(content, "file").entries()) {
     const fileKey = attrs.key ?? attrs.file_key ?? attrs.fileKey;
@@ -214,18 +251,20 @@ function collectAttachments(message, content) {
   return attachments.filter((item) => item.fileKey || item.localPath);
 }
 
+/** @param {unknown} rawInput @param {string} source @returns {NormalizedEvent} */
 function normalizeEvent(rawInput, source) {
-  const raw = sanitize(rawInput);
-  const envelope = raw?.event ?? raw?.data?.event ?? raw?.data ?? raw;
-  const message = envelope?.message ?? raw?.message ?? {};
-  const sender = envelope?.sender ?? raw?.sender ?? {};
-  const eventType = raw?.event_type ?? raw?.eventType ?? envelope?.event_type ?? "im.message.receive_v1";
-  const content = message?.content ?? raw?.content ?? "";
-  const text = raw?.text ?? message?.text ?? parseText(content);
-  const eventId = String(raw?.event_id ?? raw?.eventId ?? envelope?.event_id ?? message?.message_id ?? hashJson(raw).slice(0, 24));
-  const messageId = String(message?.message_id ?? message?.messageId ?? raw?.messageId ?? "");
-  const chatId = String(message?.chat_id ?? message?.chatId ?? raw?.chatId ?? "");
-  const msgType = String(message?.message_type ?? message?.msgType ?? raw?.msgType ?? "text");
+  const raw = asRecord(sanitize(rawInput));
+  const rawData = asRecord(raw.data);
+  const envelope = asRecord(raw.event ?? rawData.event ?? raw.data ?? raw);
+  const message = asRecord(envelope.message ?? raw.message);
+  const sender = asRecord(envelope.sender ?? raw.sender);
+  const eventType = String(raw.event_type ?? raw.eventType ?? envelope.event_type ?? "im.message.receive_v1");
+  const content = message.content ?? raw.content ?? "";
+  const text = raw.text ?? message.text ?? parseText(content);
+  const eventId = String(raw.event_id ?? raw.eventId ?? envelope.event_id ?? message.message_id ?? hashJson(raw).slice(0, 24));
+  const messageId = String(message.message_id ?? message.messageId ?? raw.messageId ?? "");
+  const chatId = String(message.chat_id ?? message.chatId ?? raw.chatId ?? "");
+  const msgType = String(message.message_type ?? message.msgType ?? raw.msgType ?? "text");
   const attachments = collectAttachments(message, content);
   return {
     schemaVersion: "feishu-event-v1",
@@ -256,26 +295,30 @@ function normalizeEvent(rawInput, source) {
   };
 }
 
+/** @param {string} outputRoot */
 function dedupePath(outputRoot) {
   return join(outputRoot, ".feishu-event-runner-dedupe.json");
 }
 
+/** @param {string} outputRoot @returns {Set<string>} */
 function loadSeen(outputRoot) {
   const path = dedupePath(outputRoot);
   if (!existsSync(path)) return new Set();
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
-    return new Set(Array.isArray(data.seenEventIds) ? data.seenEventIds.slice(-5000) : []);
+    return new Set(Array.isArray(data.seenEventIds) ? data.seenEventIds.map(String).slice(-5000) : []);
   } catch {
     return new Set();
   }
 }
 
+/** @param {string} outputRoot @param {Set<string>} seen */
 function saveSeen(outputRoot, seen) {
   const values = [...seen].slice(-5000);
   writeFileSync(dedupePath(outputRoot), `${JSON.stringify({ seenEventIds: values, updatedAt: nowIso() }, null, 2)}\n`, "utf8");
 }
 
+/** @param {string} outputRoot @param {NormalizedEvent} event @param {unknown} raw */
 async function appendEventLog(outputRoot, event, raw) {
   const date = new Date().toISOString().slice(0, 10);
   const dir = join(outputRoot, "events");
@@ -287,6 +330,7 @@ async function appendEventLog(outputRoot, event, raw) {
   await appendFile(normalizedPath, `${JSON.stringify(sanitize(event))}\n`, "utf8");
 }
 
+/** @param {string} handlerUrl @param {NormalizedEvent} event @param {number} timeoutMs */
 async function postToHandler(handlerUrl, event, timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -310,6 +354,7 @@ async function postToHandler(handlerUrl, event, timeoutMs) {
   }
 }
 
+/** @param {unknown} raw @param {RunnerOptions} options @param {Set<string>} seen */
 async function processRawEvent(raw, options, seen) {
   const event = normalizeEvent(raw, options.source);
   await appendEventLog(options.outputRoot, event, raw);
@@ -337,6 +382,7 @@ async function processRawEvent(raw, options, seen) {
   };
 }
 
+/** @param {string} text @returns {unknown[]} */
 function parseJsonEventsText(text) {
   const trimmed = text.trim();
   if (!trimmed) return [];
@@ -352,12 +398,13 @@ function parseJsonEventsText(text) {
   return trimmed.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+/** @param {string} path */
 async function readJsonEventsFromFile(path) {
   return parseJsonEventsText(readFileSync(resolve(path), "utf8"));
 }
 
 async function readJsonEventsFromStdin() {
-  const input = await new Promise((resolveInput) => {
+  const input = await new Promise((/** @type {(value: string) => void} */ resolveInput) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => {
@@ -368,8 +415,10 @@ async function readJsonEventsFromStdin() {
   return parseJsonEventsText(input);
 }
 
+/** @param {unknown[]} events @param {RunnerOptions} options */
 async function processStaticEvents(events, options) {
   const seen = loadSeen(options.outputRoot);
+  /** @type {unknown[]} */
   const results = [];
   for (const raw of events) {
     results.push(await processRawEvent(raw, options, seen));
@@ -377,6 +426,7 @@ async function processStaticEvents(events, options) {
   return results;
 }
 
+/** @param {RunnerOptions} options */
 async function consumeLarkCli(options) {
   if (!options.eventKey) {
     throw new Error("FEISHU_EVENT_KEY or --event-key is required for lark-cli event consume");
@@ -390,7 +440,9 @@ async function consumeLarkCli(options) {
   const child = spawn("lark-cli", args, { cwd: workspaceDir, stdio: ["pipe", "pipe", "pipe"], shell: false });
   const seen = loadSeen(options.outputRoot);
   const rl = createInterface({ input: child.stdout });
+  /** @type {unknown[]} */
   const results = [];
+  /** @type {Set<Promise<void>>} */
   const pending = new Set();
   rl.on("line", (line) => {
     if (!line.trim()) return;
@@ -401,7 +453,7 @@ async function consumeLarkCli(options) {
         results.push(result);
         if (!options.quiet) console.log(JSON.stringify(result));
       } catch (error) {
-        console.error(JSON.stringify({ status: "event_parse_failed", error: redactString(error.message), rawSecretsReturned: false }));
+        console.error(JSON.stringify({ status: "event_parse_failed", error: redactString(error instanceof Error ? error.message : error), rawSecretsReturned: false }));
       }
     })();
     pending.add(task);
@@ -410,7 +462,7 @@ async function consumeLarkCli(options) {
   child.stderr.on("data", (chunk) => {
     if (!options.quiet) process.stderr.write(redactString(chunk.toString("utf8")));
   });
-  return await new Promise((resolveRunner) => {
+  return await new Promise((/** @type {(value: unknown) => void} */ resolveRunner) => {
     child.on("error", (error) => {
       const errorCode = "code" in error ? error.code : null;
       resolveRunner({ status: "blocked", reason: errorCode === "ENOENT" ? "lark_cli_not_found" : redactString(error.message), results });
@@ -426,20 +478,23 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const outputRoot = safeOutputRoot(args["output-root"] ?? process.env.FEISHU_EVENT_RUNNER_OUTPUT_ROOT);
   const handlerUrl = validateHandlerUrl(args["handler-url"] ?? process.env.FEISHU_AGENT_HANDLER_URL ?? DEFAULT_HANDLER_URL);
+  const eventKey = args["event-key"] ?? process.env.FEISHU_EVENT_KEY;
+  /** @type {RunnerOptions} */
   const options = {
     outputRoot,
     handlerUrl,
     handlerTimeoutMs: Number(args["handler-timeout-ms"] ?? process.env.FEISHU_AGENT_HANDLER_TIMEOUT_MS ?? 120000),
     dryRun: args["dry-run"] === true,
     source: args.fixture ? "fixture" : args.stdin ? "stdin" : "lark-cli-event-consume",
-    eventKey: args["event-key"] ?? process.env.FEISHU_EVENT_KEY,
-    asIdentity: args.as ?? process.env.FEISHU_EVENT_AS ?? "bot",
-    maxEvents: args["max-events"],
-    timeout: args.timeout,
+    ...(typeof eventKey === "string" ? { eventKey } : {}),
+    asIdentity: typeof args.as === "string" ? args.as : process.env.FEISHU_EVENT_AS ?? "bot",
+    ...(args["max-events"] === undefined ? {} : { maxEvents: args["max-events"] }),
+    ...(args.timeout === undefined ? {} : { timeout: args.timeout }),
     quiet: args.quiet === true,
   };
 
   if (args.fixture) {
+    if (typeof args.fixture !== "string") throw new Error("feishu_event_fixture_path_invalid");
     const events = await readJsonEventsFromFile(args.fixture);
     console.log(JSON.stringify({ status: "completed", results: await processStaticEvents(events, options), rawSecretsReturned: false }, null, 2));
     return;
@@ -453,6 +508,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(JSON.stringify({ status: "blocked", reason: redactString(error.message), rawSecretsReturned: false }, null, 2));
+  console.error(JSON.stringify({ status: "blocked", reason: redactString(error instanceof Error ? error.message : error), rawSecretsReturned: false }, null, 2));
   process.exit(2);
 });
