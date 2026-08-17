@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 export const PUBLISH_TAXONOMY_FILE = "publish-taxonomy.json";
 export const PROJECT_WIKI_ROOT_TITLE = "PI Agent 项目知识库";
 
+/** @type {Readonly<Record<string, string>>} */
 export const DOC_CATEGORY_LABELS = {
   "meeting-minutes": "会议纪要",
   prd: "PRD",
@@ -14,6 +15,17 @@ export const DOC_CATEGORY_LABELS = {
   "todo-list": "To-do",
   checklist: "To-do",
 };
+
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {{ runId: string, sourceEvent: { message: Record<string, unknown> } }} PublishTask
+ * @typedef {{ artifactsDir: string, runDir?: string }} ArtifactPaths
+ * @typedef {{ normalizedTitleBase?: unknown, projectName?: unknown, subject?: unknown, sourceTitle?: unknown }} DocumentIdentity
+ * @typedef {{ docType?: unknown, title?: unknown, fileName?: unknown, localPath?: unknown, documentIdentity?: DocumentIdentity, titleBasis?: { projectTitle?: unknown } }} PublishDocument
+ * @typedef {{ title: string, basis: string, priority: number, accepted: boolean }} ProjectCandidate
+ * @typedef {{ task: PublishTask, documents: PublishDocument[], titlePlan: { projectTitle?: unknown } | null, contextManifest: { documentIdentity?: DocumentIdentity } | null }} ProjectCandidateInput
+ * @typedef {{ task: PublishTask, documents: unknown, paths: ArtifactPaths, options?: { projectWikiRootTitle?: string, folderToken?: string }, workspaceDir?: string, legacySessionKey?: string, writeFile?: boolean }} BuildPublishTaxonomyInput
+ */
 
 const UNKNOWN_PROJECT_TITLE = "待确认项目";
 const BAD_PROJECT_TITLE_PATTERNS = [
@@ -50,29 +62,35 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {unknown} value */
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
+/** @param {string} path @returns {UnknownRecord | null} */
 function loadJsonIfExists(path) {
   if (!path || !existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   return path;
 }
 
+/** @param {ArtifactPaths} paths */
 export function publishTaxonomyPath(paths) {
   return join(paths.artifactsDir, PUBLISH_TAXONOMY_FILE);
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 export function safePublishTitle(value, fallback = UNKNOWN_PROJECT_TITLE) {
   const cleaned = String(value ?? "")
     .replace(/https?:\/\/\S+/g, " ")
@@ -84,10 +102,12 @@ export function safePublishTitle(value, fallback = UNKNOWN_PROJECT_TITLE) {
   return cleaned || fallback;
 }
 
+/** @param {unknown} value */
 function stripMarkdownSuffix(value) {
   return String(value ?? "").replace(/\.(md|markdown|docx?|pdf|wav|mp3|m4a|aac|flac|ogg)$/i, "").trim();
 }
 
+/** @param {unknown} title */
 function projectTitleFromDocumentTitle(title) {
   const clean = safePublishTitle(stripMarkdownSuffix(title), "");
   const parts = clean.split("｜").map((part) => part.trim()).filter(Boolean);
@@ -95,6 +115,7 @@ function projectTitleFromDocumentTitle(title) {
   return clean;
 }
 
+/** @param {unknown} value */
 function isWeakProjectTitle(value) {
   const title = safePublishTitle(value, "");
   if (!title || title.length < 2) return true;
@@ -105,6 +126,7 @@ function isWeakProjectTitle(value) {
   return false;
 }
 
+/** @param {unknown} title @param {string} [legacySessionKey] */
 function normalizeProjectKey(title, legacySessionKey = "") {
   const asciiSlug = String(title ?? "")
     .normalize("NFKD")
@@ -118,28 +140,35 @@ function normalizeProjectKey(title, legacySessionKey = "") {
   return `project:${asciiSlug || "project"}-${hashText(seed).slice(0, 10)}`;
 }
 
+/** @param {unknown} docType */
 export function docCategory(docType) {
-  return DOC_CATEGORY_LABELS[docType] ?? safePublishTitle(docType, "文档");
+  return DOC_CATEGORY_LABELS[String(docType ?? "")] ?? safePublishTitle(docType, "文档");
 }
 
+/** @param {PublishTask} task */
 function dateFromTask(task) {
-  const raw = Number(task?.sourceEvent?.message?.createTime);
+  const raw = Number(task.sourceEvent.message.createTime);
   const date = Number.isFinite(raw) && raw > 0
     ? new Date(raw > 10_000_000_000 ? raw : raw * 1000)
     : new Date();
   return date.toISOString().slice(0, 10);
 }
 
+/** @param {ArtifactPaths} paths */
 function contextManifestPath(paths) {
   return join(paths.artifactsDir, "source-context", "context-manifest.json");
 }
 
+/** @param {ArtifactPaths} paths */
 function documentTitlePlanPath(paths) {
   return join(paths.artifactsDir, "document-title-plan.json");
 }
 
+/** @param {ProjectCandidateInput} input @returns {ProjectCandidate[]} */
 function collectProjectCandidates({ task, documents, titlePlan, contextManifest }) {
+  /** @type {ProjectCandidate[]} */
   const candidates = [];
+  /** @param {unknown} value @param {string} basis @param {number} priority */
   const push = (value, basis, priority) => {
     const title = safePublishTitle(stripMarkdownSuffix(value), "");
     if (!title) return;
@@ -159,13 +188,14 @@ function collectProjectCandidates({ task, documents, titlePlan, contextManifest 
     push(projectTitleFromDocumentTitle(doc?.fileName), "document.fileName", 40);
   }
 
-  const prompt = String(task?.sourceEvent?.message?.text ?? "").replace(/https?:\/\/\S+/g, " ");
+  const prompt = String(task.sourceEvent.message.text ?? "").replace(/https?:\/\/\S+/g, " ");
   const promptMatch = prompt.match(/([\u4e00-\u9fa5A-Za-z0-9 _-]{2,40})(?:的)?(?:PRD|技术架构|Checklist|checklist|会议纪要|运营方案|to do|todo|待办)/i);
   if (promptMatch) push(promptMatch[1], "task_prompt_keyword", 55);
 
   return candidates.sort((left, right) => right.priority - left.priority);
 }
 
+/** @param {ProjectCandidateInput} params */
 function chooseProjectIdentity(params) {
   const candidates = collectProjectCandidates(params);
   const accepted = candidates.find((candidate) => candidate.accepted);
@@ -185,15 +215,17 @@ function chooseProjectIdentity(params) {
   };
 }
 
+/** @param {PublishTask} task @param {string} legacySessionKey */
 function sourceThreadKey(task, legacySessionKey) {
-  const message = task?.sourceEvent?.message ?? {};
+  const message = task.sourceEvent.message;
   const seed = [
     message.chatId || "unknown_chat",
-    message.threadId || message.rootId || message.parentId || message.messageId || legacySessionKey || task?.runId || "unknown_thread",
+    message.threadId || message.rootId || message.parentId || message.messageId || legacySessionKey || task.runId || "unknown_thread",
   ].join(":");
   return `source-thread:${hashText(seed).slice(0, 16)}`;
 }
 
+/** @param {BuildPublishTaxonomyInput} input */
 export function buildPublishTaxonomy({
   task,
   documents,
@@ -203,13 +235,18 @@ export function buildPublishTaxonomy({
   legacySessionKey = "",
   writeFile = true,
 }) {
-  const taxonomyOptions = /** @type {{ projectWikiRootTitle?: string, folderToken?: string }} */ (options);
+  const taxonomyOptions = options;
   const titlePlan = loadJsonIfExists(documentTitlePlanPath(paths));
   const contextManifest = loadJsonIfExists(contextManifestPath(paths));
-  const docs = Array.isArray(documents) ? documents : [];
-  const identity = chooseProjectIdentity({ task, documents: docs, titlePlan, contextManifest });
+  const docs = /** @type {PublishDocument[]} */ (Array.isArray(documents) ? documents : []);
+  const identity = chooseProjectIdentity({
+    task,
+    documents: docs,
+    titlePlan: /** @type {{ projectTitle?: unknown } | null} */ (titlePlan),
+    contextManifest: /** @type {{ documentIdentity?: DocumentIdentity } | null} */ (contextManifest),
+  });
   const projectTitle = identity.projectTitle;
-  const projectKey = normalizeProjectKey(projectTitle, legacySessionKey || task?.runId);
+  const projectKey = normalizeProjectKey(projectTitle, legacySessionKey || task.runId);
   const date = dateFromTask(task);
   const categories = new Map();
   const documentPlans = docs.map((doc, index) => {
@@ -222,10 +259,10 @@ export function buildPublishTaxonomy({
       docType,
       title: safePublishTitle(doc?.title ?? doc?.fileName ?? docType, "文档"),
       fileName: doc?.fileName ?? null,
-      localPath: doc?.localPath && workspaceDir ? relative(workspaceDir, resolve(doc.localPath)) : null,
+      localPath: typeof doc.localPath === "string" && workspaceDir ? relative(workspaceDir, resolve(doc.localPath)) : null,
       categoryTitle,
       targetCategoryReuseKey: categoryReuseKey,
-      documentReuseKey: `document:${projectKey}:${task?.runId ?? "run"}:${docType}:${index}`,
+      documentReuseKey: `document:${projectKey}:${task.runId}:${String(docType)}:${index}`,
     };
   });
   const taxonomy = {
@@ -240,10 +277,10 @@ export function buildPublishTaxonomy({
     legacySessionKey: legacySessionKey || null,
     sourceThreadKey: sourceThreadKey(task, legacySessionKey),
     sourceLineage: {
-      runId: task?.runId ?? null,
-      chatIdHash: task?.sourceEvent?.message?.chatId ? hashText(task.sourceEvent.message.chatId).slice(0, 16) : null,
-      threadIdPresent: Boolean(task?.sourceEvent?.message?.threadId || task?.sourceEvent?.message?.rootId || task?.sourceEvent?.message?.parentId),
-      messageIdHash: task?.sourceEvent?.message?.messageId ? hashText(task.sourceEvent.message.messageId).slice(0, 16) : null,
+      runId: task.runId,
+      chatIdHash: task.sourceEvent.message.chatId ? hashText(task.sourceEvent.message.chatId).slice(0, 16) : null,
+      threadIdPresent: Boolean(task.sourceEvent.message.threadId || task.sourceEvent.message.rootId || task.sourceEvent.message.parentId),
+      messageIdHash: task.sourceEvent.message.messageId ? hashText(task.sourceEvent.message.messageId).slice(0, 16) : null,
       date,
     },
     wiki: {
@@ -265,11 +302,15 @@ export function buildPublishTaxonomy({
     rawMediaExternalUpload: false,
   };
 
-  if (writeFile && paths?.artifactsDir) writeJson(publishTaxonomyPath(paths), taxonomy);
+  if (writeFile && paths.artifactsDir) writeJson(publishTaxonomyPath(paths), taxonomy);
   return taxonomy;
 }
 
-export function extractLegacySessionKeyFromPublishTarget(publishTarget) {
+/** @param {unknown} publishTargetValue */
+export function extractLegacySessionKeyFromPublishTarget(publishTargetValue) {
+  const publishTarget = publishTargetValue && typeof publishTargetValue === "object" && !Array.isArray(publishTargetValue)
+    ? /** @type {UnknownRecord} */ (publishTargetValue)
+    : null;
   if (publishTarget && typeof publishTarget === "object") {
     if (typeof publishTarget.sessionKey === "string" && publishTarget.sessionKey && publishTarget.sessionKey !== "[redacted]") {
       return publishTarget.sessionKey;

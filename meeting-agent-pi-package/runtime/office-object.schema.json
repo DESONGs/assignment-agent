@@ -1,33 +1,160 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://meeting-agent.local/schemas/office-object.schema.json",
-  "title": "Office Object",
   "type": "object",
-  "required": ["schemaVersion", "version", "objectId", "objectType", "channel", "context", "sourceRun", "pointers", "rawSecretsReturned"],
+  "required": [
+    "schemaVersion",
+    "version",
+    "objectId",
+    "objectType",
+    "title",
+    "channel",
+    "context",
+    "sourceRun",
+    "visibility",
+    "pointers",
+    "rawSecretsReturned",
+    "rawMediaExternalUpload"
+  ],
   "properties": {
-    "schemaVersion": { "const": "office-object-v1" },
-    "version": { "type": "string", "minLength": 1 },
-    "objectId": { "type": "string", "minLength": 1 },
-    "objectType": {
-      "enum": ["document", "file", "meeting", "transcript_summary", "task", "calendar_event", "contact", "project", "customer", "preference", "run"]
+    "schemaVersion": {
+      "type": "string",
+      "const": "office-object-v1"
     },
-    "title": { "type": ["string", "null"] },
-    "channel": { "enum": ["feishu", "wechat", "local"] },
-    "context": { "$ref": "office-context.schema.json#/properties/context" },
-    "sourceRun": { "$ref": "office-context.schema.json#/properties/sourceRun" },
-    "visibility": { "enum": ["private", "conversation", "workspace", "customer_visible"] },
-    "pointers": {
+    "version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "objectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objectType": {
+      "enum": [
+        "document",
+        "file",
+        "meeting",
+        "transcript_summary",
+        "task",
+        "calendar_event",
+        "contact",
+        "project",
+        "customer",
+        "preference",
+        "run"
+      ]
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "channel": {
+      "enum": [
+        "feishu",
+        "wechat",
+        "local"
+      ]
+    },
+    "context": {
       "type": "object",
+      "required": [
+        "contextId",
+        "actor",
+        "conversation",
+        "workspace",
+        "permissions"
+      ],
       "properties": {
-        "artifactPointer": { "type": ["string", "null"] },
-        "summaryPointer": { "type": ["string", "null"] },
-        "metadataPointer": { "type": ["string", "null"] },
-        "sourcePointer": { "type": ["string", "null"] }
+        "contextId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "conversation": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "workspace": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "replyTarget": {},
+        "permissions": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "sourceRun": {
+      "type": "object",
+      "required": [
+        "runId",
+        "version",
+        "artifactPointer"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactPointer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       },
       "additionalProperties": false
     },
-    "rawSecretsReturned": { "const": false },
-    "rawMediaExternalUpload": { "const": false }
+    "visibility": {
+      "enum": [
+        "private",
+        "conversation",
+        "workspace",
+        "customer_visible"
+      ]
+    },
+    "pointers": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {}
+      }
+    },
+    "rawSecretsReturned": {
+      "type": "boolean",
+      "const": false
+    },
+    "rawMediaExternalUpload": {
+      "type": "boolean",
+      "const": false
+    }
   },
-  "additionalProperties": true
+  "$id": "https://meeting-agent.local/schemas/office-object.schema.json",
+  "title": "Office Object",
+  "additionalProperties": false
 }

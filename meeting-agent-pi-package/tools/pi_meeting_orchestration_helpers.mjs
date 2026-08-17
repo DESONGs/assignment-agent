@@ -10,35 +10,57 @@ const PI_ENV_ALLOWLIST = new Set([
   "PI_REVIEW_MODEL",
 ]);
 
+/**
+ * @typedef {{ provider: string, model: string, role: string }} ProviderCandidate
+ * @typedef {{ workspaceDir: string, packageDir: string, planPath: string, provider: string, model: string, piCodingAgentDir: string }} PiInvocationInput
+ * @typedef {{ role?: unknown, content?: Array<{ type?: unknown, text?: unknown }>, errorMessage?: unknown }} PiMessage
+ * @typedef {{ status?: unknown, reason?: unknown, result?: unknown, assistantSummary?: unknown }} DelegationResult
+ * @typedef {{ mode?: unknown, executor?: { tool?: unknown } }} OrchestrationPlan
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
+/** @param {unknown} text @returns {Record<string, string>} */
 function parseDotenv(text) {
+  /** @type {Record<string, string>} */
   const values = {};
   for (const rawLine of String(text ?? "").split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!match || !PI_ENV_ALLOWLIST.has(match[1])) continue;
+    const key = match?.[1];
+    if (!key || !PI_ENV_ALLOWLIST.has(key)) continue;
     let value = match[2] ?? "";
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     } else {
       value = value.replace(/\s+#.*$/, "").trim();
     }
-    if (value) values[match[1]] = value;
+    if (value) values[key] = value;
   }
   return values;
 }
 
+/** @param {string} workspaceDir @param {NodeJS.ProcessEnv} [baseEnv] */
 export function loadPiMeetingOrchestrationEnv(workspaceDir, baseEnv = process.env) {
   const envPath = join(workspaceDir, ".env.local");
   const local = existsSync(envPath) ? parseDotenv(readFileSync(envPath, "utf8")) : {};
   const env = { ...baseEnv };
+  /** @type {string[]} */
   const loadedKeys = [];
   for (const [key, value] of Object.entries(local)) {
     if (env[key]) continue;
     env[key] = value;
     loadedKeys.push(key);
   }
+  /** @type {ProviderCandidate[]} */
   const candidates = [];
+  /** @param {unknown} providerValue @param {unknown} modelValue @param {string} role */
   const addCandidate = (providerValue, modelValue, role) => {
     const provider = String(providerValue ?? "").trim();
     const model = String(modelValue ?? "").trim();
@@ -48,9 +70,12 @@ export function loadPiMeetingOrchestrationEnv(workspaceDir, baseEnv = process.en
   addCandidate(env.PI_REVIEW_PROVIDER, env.PI_REVIEW_MODEL, "review");
   addCandidate(env.PI_PROVIDER, env.PI_MODEL, "primary");
   addCandidate("deepseek", "deepseek-v4-pro", "default");
-  return { env, provider: candidates[0].provider, model: candidates[0].model, candidates, loadedKeys };
+  const selected = candidates[0];
+  if (!selected) throw new Error("pi_meeting_provider_candidate_missing");
+  return { env, provider: selected.provider, model: selected.model, candidates, loadedKeys };
 }
 
+/** @param {PiInvocationInput} input */
 export function buildPiMeetingOrchestrationInvocation({
   workspaceDir,
   packageDir,
@@ -89,37 +114,42 @@ export function buildPiMeetingOrchestrationInvocation({
   };
 }
 
+/** @param {unknown} message */
 function messageText(message) {
-  if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return "";
-  return message.content
+  const normalized = /** @type {PiMessage} */ (asRecord(message));
+  if (normalized.role !== "assistant" || !Array.isArray(normalized.content)) return "";
+  return normalized.content
     .filter((item) => item?.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n")
     .trim();
 }
 
+/** @param {unknown} stdout @param {string} expectedTool */
 export function parsePiMeetingOrchestrationOutput(stdout, expectedTool) {
+  /** @type {Array<Record<string, unknown>>} */
   const events = [];
+  /** @type {Array<{ line: number, preview: string }>} */
   const parseErrors = [];
   for (const [index, rawLine] of String(stdout ?? "").split(/\r?\n/).entries()) {
     const line = rawLine.trim();
     if (!line) continue;
     try {
-      events.push(JSON.parse(line));
+      events.push(asRecord(JSON.parse(line)));
     } catch {
       parseErrors.push({ line: index + 1, preview: line.slice(0, 160) });
     }
   }
-  const toolEvents = events.filter((event) => event?.type === "tool_execution_end");
+  const toolEvents = events.filter((event) => event.type === "tool_execution_end");
   const requested = toolEvents.filter((event) => event.toolName === expectedTool);
   const toolEvent = requested.at(-1) ?? null;
   const assistantMessages = events
-    .filter((event) => event?.type === "message_end")
+    .filter((event) => event.type === "message_end")
     .map((event) => messageText(event.message))
     .filter(Boolean);
   const errorMessages = [...new Set(events
-    .filter((event) => event?.type === "message_end" && event?.message?.role === "assistant" && event.message.errorMessage)
-    .map((event) => String(event.message.errorMessage).slice(0, 1000)))];
+    .filter((event) => event.type === "message_end" && asRecord(event.message).role === "assistant" && asRecord(event.message).errorMessage)
+    .map((event) => String(asRecord(event.message).errorMessage).slice(0, 1000)))];
   if (!toolEvent) {
     return {
       status: "blocked",
@@ -153,23 +183,28 @@ const CLAIM_COLLECTION_KEYS = new Set([
   "unresolved",
 ]);
 
+/** @param {unknown} delegation @param {unknown[]} [knownSegmentIds] */
 export function reconcilePiMeetingOrchestrationResult(delegation, knownSegmentIds = []) {
+  const normalizedDelegation = /** @type {DelegationResult} */ (asRecord(delegation));
   const known = new Set((Array.isArray(knownSegmentIds) ? knownSegmentIds : []).map((value) => String(value)));
-  if (delegation?.status !== "completed") {
+  if (normalizedDelegation.status !== "completed") {
     return {
-      status: delegation?.status ?? "blocked",
-      toolRunStatus: delegation?.status ?? "blocked",
+      status: normalizedDelegation.status ?? "blocked",
+      toolRunStatus: normalizedDelegation.status ?? "blocked",
       evidenceScopeSatisfied: false,
       referencedSegmentIds: [],
       invalidSegmentIds: [],
       missingEvidencePaths: [],
-      qaPriorities: [delegation?.reason ?? "delegated_review_unavailable"],
+      qaPriorities: [normalizedDelegation.reason ?? "delegated_review_unavailable"],
       result: null,
     };
   }
+  /** @type {Set<string>} */
   const referenced = new Set();
+  /** @type {string[]} */
   const missingEvidencePaths = [];
   const segmentPattern = /\b[A-Za-z][A-Za-z0-9_.-]*:(?:chunk|segment)-[A-Za-z0-9_.-]+\b/g;
+  /** @param {unknown} value @param {string} [path] @param {string} [parentKey] */
   const walk = (value, path = "$", parentKey = "") => {
     if (typeof value === "string") {
       for (const match of value.matchAll(segmentPattern)) referenced.add(match[0]);
@@ -179,7 +214,8 @@ export function reconcilePiMeetingOrchestrationResult(delegation, knownSegmentId
       if (CLAIM_COLLECTION_KEYS.has(parentKey)) {
         value.forEach((item, index) => {
           if (!item || typeof item !== "object" || Array.isArray(item)) return;
-          const evidenceIds = Array.isArray(item.evidenceSegmentIds) ? item.evidenceSegmentIds.filter(Boolean) : [];
+          const record = asRecord(item);
+          const evidenceIds = Array.isArray(record.evidenceSegmentIds) ? record.evidenceSegmentIds.filter(Boolean) : [];
           if (evidenceIds.length === 0) missingEvidencePaths.push(`${path}[${index}]`);
         });
       }
@@ -190,13 +226,13 @@ export function reconcilePiMeetingOrchestrationResult(delegation, knownSegmentId
       for (const [key, item] of Object.entries(value)) walk(item, `${path}.${key}`, key);
     }
   };
-  walk({ result: delegation.result, assistantSummary: delegation.assistantSummary });
+  walk({ result: normalizedDelegation.result, assistantSummary: normalizedDelegation.assistantSummary });
   const referencedSegmentIds = [...referenced];
   const invalidSegmentIds = referencedSegmentIds.filter((segmentId) => !known.has(segmentId));
   const evidenceScopeSatisfied = invalidSegmentIds.length === 0 && missingEvidencePaths.length === 0;
   return {
     status: evidenceScopeSatisfied ? "accepted" : "needs_review",
-    toolRunStatus: delegation.status,
+    toolRunStatus: normalizedDelegation.status,
     evidenceScopeSatisfied,
     referencedSegmentIds,
     invalidSegmentIds,
@@ -205,15 +241,17 @@ export function reconcilePiMeetingOrchestrationResult(delegation, knownSegmentId
       ...(invalidSegmentIds.length > 0 ? [`委派结果引用了 ${invalidSegmentIds.length} 个不属于当前 transcript 的 segment id。`] : []),
       ...(missingEvidencePaths.length > 0 ? [`委派结果有 ${missingEvidencePaths.length} 个事实性发现缺少 evidenceSegmentIds。`] : []),
     ],
-    result: evidenceScopeSatisfied ? delegation.result : null,
+    result: evidenceScopeSatisfied ? normalizedDelegation.result : null,
   };
 }
 
+/** @param {unknown} plan @param {{ meetingAgenticDelegation?: unknown }} [options] @param {NodeJS.ProcessEnv} [env] */
 export function shouldRunPiMeetingOrchestration(plan, options = {}, env = process.env) {
+  const normalizedPlan = /** @type {OrchestrationPlan} */ (asRecord(plan));
   const setting = String(options.meetingAgenticDelegation ?? env.MEETING_AGENTIC_DELEGATION ?? "auto").toLowerCase();
   if (["0", "false", "off", "disabled"].includes(setting)) return { run: false, reason: "meeting_agentic_delegation_disabled" };
-  if (!plan || plan.mode === "direct") return { run: false, reason: "parent_direct_mode" };
-  if (!["single_subagent", "dynamic_workflow"].includes(plan.mode)) return { run: false, reason: "unsupported_orchestration_mode" };
-  if (!["subagent", "workflow"].includes(plan.executor?.tool)) return { run: false, reason: "unsupported_orchestration_tool" };
+  if (!plan || normalizedPlan.mode === "direct") return { run: false, reason: "parent_direct_mode" };
+  if (!["single_subagent", "dynamic_workflow"].includes(String(normalizedPlan.mode ?? ""))) return { run: false, reason: "unsupported_orchestration_mode" };
+  if (!["subagent", "workflow"].includes(String(normalizedPlan.executor?.tool ?? ""))) return { run: false, reason: "unsupported_orchestration_tool" };
   return { run: true, reason: "product_owner_enabled" };
 }

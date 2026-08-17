@@ -2,7 +2,11 @@
   "schemaVersion": "assignment-agent-runtime-contracts-v1",
   "generatedFrom": [
     "src/contracts/task-contracts.ts",
-    "src/contracts/runtime-boundary-contracts.ts"
+    "src/contracts/runtime-boundary-contracts.ts",
+    "src/contracts/qa-contracts.ts",
+    "src/contracts/source-context-contracts.ts",
+    "src/contracts/document-runtime-contracts.ts",
+    "src/contracts/office-artifact-contracts.ts"
   ],
   "task": {
     "taskTypes": [
@@ -160,5 +164,65 @@
       "unpinned",
       "would_move"
     ]
+  },
+  "qa": {
+    "schemaVersion": "qa-gate-v2",
+    "profiles": [
+      "source_pack",
+      "meeting_minutes",
+      "office_document",
+      "document_revision"
+    ],
+    "statuses": [
+      "pass",
+      "needs_fix",
+      "blocked"
+    ]
+  },
+  "sourceContext": {
+    "schemaVersion": "source-context-v3/context-manifest",
+    "gateStatuses": [
+      "pass",
+      "needs_fix",
+      "blocked"
+    ]
+  },
+  "documentRuntime": {
+    "checkpointSchemaVersion": "document-workflow-checkpoint-v2",
+    "checkpointStatuses": [
+      "running",
+      "completed",
+      "needs_fix",
+      "blocked",
+      "failed"
+    ],
+    "workerStatuses": [
+      "completed",
+      "needs_fix",
+      "blocked"
+    ]
+  },
+  "officeArtifacts": {
+    "channels": [
+      "feishu",
+      "wechat",
+      "local"
+    ],
+    "objectTypes": [
+      "document",
+      "file",
+      "meeting",
+      "transcript_summary",
+      "task",
+      "calendar_event",
+      "contact",
+      "project",
+      "customer",
+      "preference",
+      "run"
+    ],
+    "retrievalIndexSchemaVersion": "retrieval-index-v1",
+    "documentLifecycleSchemaVersion": "document-lifecycle-v1",
+    "officeObjectSchemaVersion": "office-object-v1"
   }
 }

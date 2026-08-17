@@ -36,6 +36,10 @@ type PromptBatchDetails = {
   rawSecretsReturned: boolean;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
@@ -247,7 +251,7 @@ function renderWorkItem(params: {
     throw new Error("document_prompt_input_placeholder_count_invalid");
   }
   const workUnits = Array.isArray(params.workUnits)
-    ? params.workUnits.filter((unit: any) => String(unit?.docType ?? "").toLowerCase() === record.docType)
+    ? params.workUnits.filter((unit) => isRecord(unit) && String(unit.docType ?? "").toLowerCase() === record.docType)
     : [];
   if (workUnits.length === 0) {
     throw new Error("context_work_units_required");

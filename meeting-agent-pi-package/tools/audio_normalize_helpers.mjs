@@ -16,27 +16,41 @@ export const TARGET_AUDIO_SPEC = {
 export const SUPPORTED_AUDIO_EXTENSIONS = new Set(CLOUD_ASR_MEDIA_EXTENSIONS);
 const TRANSCODER_TIMEOUT_MS = 20 * 60 * 1000;
 
+/**
+ * @typedef {{ tool: "ffmpeg" | "afconvert", path: string }} AudioTranscoder
+ * @typedef {{ path: string, name?: unknown, sha256?: string }} AudioInput
+ * @typedef {{ transcoder?: string, workspaceDir?: string, timeoutMs?: number }} AudioNormalizeOptions
+ * @typedef {{ cwd?: string, env?: NodeJS.ProcessEnv, timeoutMs?: number }} CommandOptions
+ * @typedef {{ exitCode: number, stdout: string, stderr: string, timedOut: boolean, error?: string }} CommandResult
+ * @typedef {{ audioFormat: number, channels: number, sampleRate: number, bitsPerSample: number }} WavFormat
+ * @typedef {WavFormat & { hasData: boolean }} WavHeader
+ */
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeSegment(value, fallback = "audio") {
   const cleaned = String(value || fallback).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
   if (!cleaned || cleaned === "." || cleaned === "..") return fallback;
   return cleaned;
 }
 
+/** @param {unknown} value */
 function redactString(value) {
   return String(value ?? "")
     .replace(/(app_secret|client_secret|refresh_token|access_token|authorization|cookie|session)\s*[:=]\s*["']?[^"',\s]+/gi, "[redacted]")
     .replace(/bearer\s+[A-Za-z0-9._-]+/gi, "[redacted]");
 }
 
+/** @param {string} path */
 function sha256File(path) {
   const hash = createHash("sha256");
   const fd = openSync(path, "r");
@@ -53,6 +67,7 @@ function sha256File(path) {
   return hash.digest("hex");
 }
 
+/** @param {string | null | undefined} command */
 function executablePath(command) {
   if (!command) return null;
   if (command.includes("/")) {
@@ -77,6 +92,7 @@ function executablePath(command) {
   return null;
 }
 
+/** @param {AudioNormalizeOptions} [options] @returns {AudioTranscoder | null} */
 export function selectAudioTranscoder(options = {}) {
   const requested = options.transcoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER;
   const disabled = /^(1|true|yes|on)$/i.test(process.env.FEISHU_AGENT_AUDIO_NORMALIZE_DISABLE_TRANSCODER ?? "");
@@ -93,6 +109,7 @@ export function selectAudioTranscoder(options = {}) {
   return null;
 }
 
+/** @param {string} command @param {string[]} args @param {CommandOptions} [options] @returns {Promise<CommandResult>} */
 function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand) => {
     let stdout = "";
@@ -129,6 +146,7 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+/** @param {string} path @returns {WavHeader} */
 export function readWavHeader(path) {
   const fd = openSync(path, "r");
   const header = Buffer.alloc(128 * 1024);
@@ -142,6 +160,7 @@ export function readWavHeader(path) {
     throw new Error("wav_header_invalid");
   }
   let offset = 12;
+  /** @type {WavFormat | null} */
   let fmt = null;
   let hasData = false;
   while (offset + 8 <= bytesRead) {
@@ -164,6 +183,7 @@ export function readWavHeader(path) {
   return { ...fmt, hasData };
 }
 
+/** @param {WavHeader} header */
 function targetSpecMatches(header) {
   return (
     header.audioFormat === 1 &&
@@ -174,6 +194,7 @@ function targetSpecMatches(header) {
   );
 }
 
+/** @param {string} path */
 function validateNormalizedWav(path) {
   const header = readWavHeader(path);
   const valid = targetSpecMatches(header);
@@ -185,6 +206,7 @@ function validateNormalizedWav(path) {
   };
 }
 
+/** @param {AudioTranscoder} transcoder @param {string} inputPath @param {string} outputPath */
 function transcodeArgs(transcoder, inputPath, outputPath) {
   if (transcoder.tool === "ffmpeg") {
     return ["-hide_banner", "-nostdin", "-y", "-i", inputPath, "-vn", "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", outputPath];
@@ -192,6 +214,7 @@ function transcodeArgs(transcoder, inputPath, outputPath) {
   return ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", inputPath, outputPath];
 }
 
+/** @param {string} reason @param {Record<string, unknown>} [details] */
 function blockedArtifact(reason, details = {}) {
   return {
     schemaVersion: AUDIO_NORMALIZE_VERSION,
@@ -208,6 +231,7 @@ function blockedArtifact(reason, details = {}) {
   };
 }
 
+/** @param {AudioInput[]} audios @param {string} outputDir @param {AudioNormalizeOptions} [options] */
 export async function normalizeAudioBatch(audios, outputDir, options = {}) {
   const workspaceDir = options.workspaceDir ? resolve(options.workspaceDir) : null;
   const normalizedDir = resolve(outputDir);
@@ -216,7 +240,9 @@ export async function normalizeAudioBatch(audios, outputDir, options = {}) {
   }
   mkdirSync(normalizedDir, { recursive: true });
   const startedAt = nowIso();
+  /** @type {Array<Record<string, unknown>>} */
   const normalizedAudios = [];
+  /** @type {AudioTranscoder | null} */
   let selectedTranscoder = null;
 
   for (const [index, audio] of audios.entries()) {
@@ -234,6 +260,7 @@ export async function normalizeAudioBatch(audios, outputDir, options = {}) {
     }
     const outputPath = join(normalizedDir, `${String(index).padStart(2, "0")}-${TARGET_AUDIO_SPEC.fileName}`);
     let action = "transcoded";
+    /** @type {ReturnType<typeof validateNormalizedWav> | null} */
     let validationBefore = null;
 
     if (ext === ".wav") {

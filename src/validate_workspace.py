@@ -1163,7 +1163,7 @@ def validate_extensions() -> None:
         "duplicate_event",
         "source-events.ndjson",
         "trimmed.startsWith(\"{\")",
-        "message?.text",
+        "raw.text ?? message.text ?? parseText(content)",
         "rootId",
     ):
         if marker not in runner_text:
@@ -1678,7 +1678,9 @@ def validate_extensions() -> None:
         "document_worker_deadline_exhausted",
         "fallbackSkippedReason",
         "deadline_budget_insufficient_or_primary_timeout",
-        "document-workflow-checkpoint-v1",
+        "document-workflow-checkpoint-v2",
+        "document_workflow_already_running",
+        "projection_write_failed",
         "retry-ledger.ndjson",
         "workflowStrategy",
         "resumeFromCheckpoint",
@@ -2083,7 +2085,20 @@ def validate_runtime_configs() -> None:
 
     qa_gate = load_json(runtime_root / "qa-gate.schema.json")
     qa_gate_text = json.dumps(qa_gate, ensure_ascii=False)
-    for marker in ("omittedMacroTopics", "unsupportedEntities", "crossMeetingTerms", "publishAllowed", "documentOutputs", "requiredSections", "unsupportedClaims", "openQuestions", "primaryDeliveryStatus", "overallStatus", "blocksDelivery", "follow_up"):
+    for marker in (
+        "qa-gate-v2",
+        "evaluationId",
+        "inputHash",
+        "profile",
+        "publishIntent",
+        "checks",
+        "issues",
+        "fieldPath",
+        "recovery",
+        "publishAllowed",
+        "primaryDeliveryStatus",
+        "overallStatus",
+    ):
         if marker not in qa_gate_text:
             fail(f"qa gate schema missing marker: {marker}")
 
@@ -2149,7 +2164,7 @@ def validate_runtime_configs() -> None:
         "office-object.schema.json": ("office-object-v1", "version", "objectType", "channel", "context", "sourceRun", "pointers", "artifactPointer", "rawMediaExternalUpload"),
         "document-lifecycle.schema.json": ("document-lifecycle-v1", "version", "documentId", "channel", "context", "sourceRun", "lifecycleEvents", "diffPointer", "destructiveActionsAllowed", "rawMediaExternalUpload"),
         "retrieval-index.schema.json": ("retrieval-index-v1", "version", "channel", "context", "sourceRun", "pointerOnly", "entries", "artifactPointer", "summaryPointer", "embeddingPointer", "boundedPreview", "rawMediaExternalUpload"),
-        "source-context.schema.json": ("source-context-v2/context-manifest", "runtime-context-plane-v1", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "taskStatePath", "documentIdentity", "outputContract", "document-output-contract-v1", "retrievalPlanPath", "contextPackId", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "retrievalReasons", "vectorStoreUsed", "contextStrategy", "repeatedFullTranscriptInjection"),
+        "source-context.schema.json": ("source-context-v3/context-manifest", "runtime-context-plane-v1", "sourceRecordsPath", "sourceSegmentsPath", "sourceStructurePath", "taskStatePath", "documentIdentity", "outputContract", "document-output-contract-v1", "retrievalPlanPath", "contextPackId", "contextPackHash", "artifactHashes", "sourceSegmentIds", "sourceBlockIds", "tableBlockCount", "promptBudgetChars", "retrievalReasons", "vectorStoreUsed", "contextStrategy", "repeatedFullTranscriptInjection", "fieldPath", "recovery"),
         "asr-providers.schema.json": ("asr-providers-v1", "local_qwen3", "aliyun_dashscope_paraformer", "rawMediaExternalUpload", "languageHints"),
     }.items():
         schema_text = json.dumps(load_json(runtime_root / schema_name), ensure_ascii=False)

@@ -24,15 +24,38 @@ import {
 
 const DEFAULT_WORKSPACE_ROOT = process.env.LOCAL_DOCKER_WORKSPACE_ROOT || process.cwd();
 
+/**
+ * @typedef {Record<string, string | boolean>} WorkerArgs
+ * @typedef {{ statePath: string, agentOutputPath: string, [key: string]: unknown }} WorkerPaths
+ * @typedef {{
+ *   schemaVersion: string, runId: string | null, status: string, updatedAt: string,
+ *   steps: Array<Record<string, unknown>>, rawSecretsReturned: false, rawMediaExternalUpload: false
+ * }} WorkerRunState
+ * @typedef {{
+ *   schemaVersion: string, jobId: string, runDirRelative: string, taskPathRelative: string,
+ *   resultKey: string, executionProfile?: unknown
+ * }} DockerJob
+ * @typedef {{ workspaceRoot?: string, workerId?: string, documentWorkerMode?: string, [key: string]: unknown }} WorkerOptions
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string[]} argv @returns {WorkerArgs} */
 function parseArgs(argv) {
+  /** @type {WorkerArgs} */
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
-    if (!item.startsWith("--")) continue;
+    if (!item || !item.startsWith("--")) continue;
     const key = item.slice(2);
     if (["once", "quiet"].includes(key)) {
       args[key] = true;
@@ -49,11 +72,13 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} relativePath @param {string} [workspaceRoot] */
 function workspacePath(relativePath, workspaceRoot = DEFAULT_WORKSPACE_ROOT) {
   const resolvedRoot = resolve(workspaceRoot);
   const resolved = resolve(resolvedRoot, String(relativePath ?? ""));
@@ -63,18 +88,22 @@ function workspacePath(relativePath, workspaceRoot = DEFAULT_WORKSPACE_ROOT) {
   return resolved;
 }
 
+/** @param {string} path @returns {unknown} */
 function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(sanitizeForDocker(value), null, 2)}\n`, "utf8");
 }
 
+/** @param {WorkerPaths} paths @param {string} name @param {string} status @param {Record<string, unknown>} [details] */
 function appendWorkerStep(paths, name, status, details = {}) {
+  /** @type {WorkerRunState} */
   const state = existsSync(paths.statePath)
-    ? loadJson(paths.statePath)
+    ? /** @type {WorkerRunState} */ (loadJson(paths.statePath))
     : {
         schemaVersion: "feishu-run-state-v1",
         runId: null,
@@ -85,7 +114,7 @@ function appendWorkerStep(paths, name, status, details = {}) {
         rawMediaExternalUpload: false,
       };
   state.steps = Array.isArray(state.steps) ? state.steps : [];
-  state.steps.push({ name, status, at: nowIso(), ...sanitizeForDocker(details) });
+  state.steps.push({ name, status, at: nowIso(), ...asRecord(sanitizeForDocker(details)) });
   state.status = status === "failed" ? "failed" : status === "blocked" ? "blocked" : state.status || "running";
   state.updatedAt = nowIso();
   state.rawSecretsReturned = false;
@@ -93,24 +122,28 @@ function appendWorkerStep(paths, name, status, details = {}) {
   writeJson(paths.statePath, state);
 }
 
+/** @param {ReturnType<typeof localDockerQueueConfig>} config @param {DockerJob} job @param {Record<string, unknown>} result */
 async function publishWorkerResult(config, job, result) {
   await redisCommand(config, ["RPUSH", job.resultKey, JSON.stringify({
     schemaVersion: LOCAL_DOCKER_RESULT_SCHEMA_VERSION,
-    ...sanitizeForDocker(result),
+    ...asRecord(sanitizeForDocker(result)),
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
   })], 10000);
   await redisCommand(config, ["EXPIRE", job.resultKey, String(Number(process.env.FEISHU_AGENT_DOCKER_RESULT_TTL_SECONDS ?? 3600))], 10000);
 }
 
+/** @param {unknown} job @returns {asserts job is DockerJob} */
 function validateJob(job) {
-  if (!job || typeof job !== "object") throw new Error("local_docker_worker_job_invalid");
-  if (job.schemaVersion !== LOCAL_DOCKER_JOB_SCHEMA_VERSION) throw new Error("local_docker_worker_job_schema_invalid");
-  if (!job.jobId || !job.runDirRelative || !job.taskPathRelative || !job.resultKey) {
+  const record = asRecord(job);
+  if (Object.keys(record).length === 0) throw new Error("local_docker_worker_job_invalid");
+  if (record.schemaVersion !== LOCAL_DOCKER_JOB_SCHEMA_VERSION) throw new Error("local_docker_worker_job_schema_invalid");
+  if (![record.jobId, record.runDirRelative, record.taskPathRelative, record.resultKey].every((value) => typeof value === "string" && value.length > 0)) {
     throw new Error("local_docker_worker_job_missing_required_fields");
   }
 }
 
+/** @param {unknown} job @param {WorkerOptions} [options] */
 async function processJob(job, options = {}) {
   validateJob(job);
   const config = localDockerQueueConfig({ documentWorkerMode: "docker", ...options });
@@ -121,21 +154,22 @@ async function processJob(job, options = {}) {
   const workerId = options.workerId ?? `${process.pid}`;
 
   try {
-    const task = loadJson(taskPath);
+    const task = asRecord(loadJson(taskPath));
     if (!isLocalDockerDocumentWorkerEligible(task)) {
       throw new Error("local_docker_worker_task_not_eligible");
     }
+    const taskIntent = asRecord(task.taskIntent);
     appendWorkerStep(paths, "local_docker_worker_started", "running", {
       jobId: job.jobId,
       workerId,
-      executionProfile: task.taskIntent?.executionProfile ?? job.executionProfile ?? null,
+      executionProfile: taskIntent.executionProfile ?? job.executionProfile ?? null,
       boundedArtifactsOnly: true,
     });
     const result = await runTaskExecutionPipeline(task, paths, {
       ...options,
       documentWorkerMode: "host",
       progressReply: async () => ({ status: "skipped", reason: "worker_has_no_channel_reply", rawSecretsReturned: false }),
-      onStep: async (name, status, details = {}) => {
+      onStep: async (/** @type {string} */ name, /** @type {string} */ status, /** @type {Record<string, unknown>} */ details = {}) => {
         appendWorkerStep(paths, name, status, {
           ...details,
           dockerWorker: true,
@@ -144,14 +178,17 @@ async function processJob(job, options = {}) {
         });
       },
     });
-    appendWorkerStep(paths, "local_docker_worker_completed", result.status === "completed" ? "completed" : result.status ?? "blocked", {
+    const normalizedResult = asRecord(result);
+    const normalizedOutput = asRecord(normalizedResult.output);
+    const normalizedDetails = asRecord(normalizedOutput.details);
+    appendWorkerStep(paths, "local_docker_worker_completed", normalizedResult.status === "completed" ? "completed" : String(normalizedResult.status ?? "blocked"), {
       jobId: job.jobId,
       workerId,
       artifact: paths.agentOutputPath,
     });
     await publishWorkerResult(config, job, {
-      status: result.status,
-      reason: result.output?.details?.reason ?? null,
+      status: normalizedResult.status,
+      reason: normalizedDetails.reason ?? null,
       workerId,
       agentOutputPath: relative(workspaceRoot, paths.agentOutputPath),
       completedAt: nowIso(),
@@ -205,6 +242,7 @@ async function processJob(job, options = {}) {
   }
 }
 
+/** @param {number} slot @param {WorkerArgs} args */
 async function pollWorkerLoop(slot, args) {
   const config = localDockerQueueConfig({
     documentWorkerMode: "docker",
@@ -220,7 +258,9 @@ async function pollWorkerLoop(slot, args) {
       if (args.once) return handled;
       continue;
     }
-    const job = JSON.parse(response[1]);
+    const serializedJob = response[1];
+    if (typeof serializedJob !== "string") continue;
+    const job = JSON.parse(serializedJob);
     await processJob(job, {
       workspaceRoot: DEFAULT_WORKSPACE_ROOT,
       workerId,

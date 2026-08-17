@@ -26,14 +26,16 @@ test("one independent review axis uses one fresh subagent", () => {
     topicMap: [{ topicId: "topic-01", title: "行动安排", evidenceDensity: { sustained: true, segmentCount: 8 }, decisions: [], actions: [{ text: "跟进" }], risks: [], openQuestions: [] }],
     evidenceMap: [],
   }, paths);
+  const request = plan.executor.request;
+  assert.ok(request);
   assert.equal(plan.mode, "single_subagent");
   assert.equal(plan.executor.package, "pi-subagents");
-  assert.equal(plan.executor.request.context, "fresh");
-  assert.equal(plan.executor.request.async, false);
-  assert.equal(plan.executor.request.mission, false);
-  assert.match(plan.executor.request.workflowScript, /runs\.run\("meeting-review"/);
-  assert.equal("agent" in plan.executor.request, false);
-  assert.equal(plan.executor.request.outputSchema.type, "object");
+  assert.equal(request.context, "fresh");
+  assert.equal(request.async, false);
+  assert.equal(request.mission, false);
+  assert.match(request.workflowScript, /runs\.run\("meeting-review"/);
+  assert.equal("agent" in request, false);
+  assert.equal(request.outputSchema.type, "object");
 });
 
 test("complex meeting produces bounded dynamic workflow specialists", () => {
@@ -58,11 +60,11 @@ test("complex meeting produces bounded dynamic workflow specialists", () => {
   assert.equal(plan.executor.package, "@quintinshaw/pi-dynamic-workflows");
   assert.ok(plan.specialists.length >= 4);
   assert.ok(plan.specialists.length <= 6);
-  assert.equal(plan.executor.concurrency <= 4, true);
-  assert.match(plan.executor.script, /parallel\(/);
-  assert.match(plan.executor.script, /completenessCheck\(/);
-  assert.match(plan.executor.script, /verify\(/);
-  assert.match(plan.executor.script, /schema:/);
+  assert.equal(Number(plan.executor.concurrency) <= 4, true);
+  assert.match(String(plan.executor.script), /parallel\(/);
+  assert.match(String(plan.executor.script), /completenessCheck\(/);
+  assert.match(String(plan.executor.script), /verify\(/);
+  assert.match(String(plan.executor.script), /schema:/);
 });
 
 test("workflow script references run artifacts instead of duplicating transcript payloads", () => {
@@ -74,6 +76,8 @@ test("workflow script references run artifacts instead of duplicating transcript
 
 test("pi-subagents 0.46 request uses workflowScript and safely encodes meeting text", () => {
   const request = buildPiSubagentRequest({
+    id: "meeting-review",
+    label: "会议证据核验",
     agentType: "meeting-evidence-analyst",
     prompt: "核验引号 \"、反引号 `、换行\n和分隔符\u2028不会改变 workflowScript 结构。",
   });

@@ -1,5 +1,29 @@
 const MAX_SPECIALISTS = 6;
 
+/**
+ * @typedef {{
+ *   topicId?: unknown,
+ *   title?: unknown,
+ *   coreJudgment?: unknown,
+ *   evidenceSegmentIds?: unknown[],
+ *   evidenceDensity?: { segmentCount?: unknown, sustained?: boolean },
+ *   decisions?: unknown[],
+ *   actions?: unknown[],
+ *   risks?: unknown[],
+ *   openQuestions?: unknown[]
+ * }} MeetingTopic
+ * @typedef {{ status?: unknown, evidenceQuality?: unknown }} MeetingClaim
+ * @typedef {{
+ *   topicMap?: MeetingTopic[],
+ *   evidenceMap?: MeetingClaim[],
+ *   status?: unknown,
+ *   analysisMode?: unknown,
+ *   participantResolution?: { participantCount?: unknown }
+ * }} MeetingAnalysis
+ * @typedef {{ meetingAnalysisPath?: unknown, transcriptPath?: unknown, participantMapPath?: unknown }} EvidencePaths
+ * @typedef {{ id: string, label: string, agentType: string, prompt: string }} Specialist
+ */
+
 const SINGLE_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
   properties: {
@@ -23,31 +47,45 @@ const SINGLE_REVIEW_OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
+/** @template T @param {T[] | unknown} value @returns {T[]} */
 function list(value) {
   return Array.isArray(value) ? value : [];
 }
 
+/** @param {unknown} values @param {number} [limit] */
 function uniqueStrings(values, limit = 100) {
   return [...new Set(list(values).map((value) => String(value ?? "").trim()).filter(Boolean))].slice(0, limit);
 }
 
+/** @param {unknown} value @param {number} [maxChars] */
 function compactText(value, maxChars = 320) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maxChars);
 }
 
+/** @param {unknown} value */
 function jsStringLiteral(value) {
   return JSON.stringify(String(value ?? ""))
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
 }
 
-function claimCount(topics, field) {
-  return topics.reduce((total, topic) => total + list(topic?.[field]).length, 0);
+/** @param {unknown} value @returns {MeetingAnalysis} */
+function asMeetingAnalysis(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {MeetingAnalysis} */ (value)
+    : {};
 }
 
+/** @param {MeetingTopic[]} topics @param {"decisions" | "actions" | "risks" | "openQuestions"} field */
+function claimCount(topics, field) {
+  return topics.reduce((total, topic) => total + list(topic[field]).length, 0);
+}
+
+/** @param {unknown} meetingAnalysis */
 function meetingSignals(meetingAnalysis) {
-  const topics = list(meetingAnalysis?.topicMap);
-  const evidence = list(meetingAnalysis?.evidenceMap);
+  const analysis = asMeetingAnalysis(meetingAnalysis);
+  const topics = list(analysis.topicMap);
+  const evidence = list(analysis.evidenceMap);
   const decisionCount = claimCount(topics, "decisions");
   const actionCount = claimCount(topics, "actions");
   const riskCount = claimCount(topics, "risks");
@@ -62,7 +100,7 @@ function meetingSignals(meetingAnalysis) {
   if (actionCount > 0) score += 1;
   if (riskCount + openQuestionCount > 2) score += 1;
   if (unresolvedClaimCount > 0) score += 2;
-  if (meetingAnalysis?.status !== "complete" || meetingAnalysis?.analysisMode !== "model_reasoned_validated") score += 2;
+  if (analysis.status !== "complete" || analysis.analysisMode !== "model_reasoned_validated") score += 2;
   return {
     topicCount: topics.length,
     sustainedTopicCount,
@@ -71,11 +109,12 @@ function meetingSignals(meetingAnalysis) {
     riskCount,
     openQuestionCount,
     unresolvedClaimCount,
-    participantCount: Number(meetingAnalysis?.participantResolution?.participantCount ?? 0),
+    participantCount: Number(analysis.participantResolution?.participantCount ?? 0),
     score,
   };
 }
 
+/** @param {EvidencePaths} paths */
 function evidenceInstruction(paths) {
   return [
     `会议分析：${paths.meetingAnalysisPath}`,
@@ -87,10 +126,13 @@ function evidenceInstruction(paths) {
   ].filter(Boolean).join("\n");
 }
 
+/** @param {unknown} meetingAnalysis @param {EvidencePaths} paths @returns {Specialist[]} */
 function specialistTasks(meetingAnalysis, paths) {
-  const topics = list(meetingAnalysis?.topicMap);
+  const analysis = asMeetingAnalysis(meetingAnalysis);
+  const topics = list(analysis.topicMap);
   const signals = meetingSignals(meetingAnalysis);
   const common = evidenceInstruction(paths);
+  /** @type {Specialist[]} */
   const tasks = [];
   if (topics.length >= 2) {
     const prioritized = [...topics]
@@ -127,7 +169,7 @@ function specialistTasks(meetingAnalysis, paths) {
       prompt: `${common}\n逐项核验行动内容、owner 和 due date；只保留有明确语音证据的归属与期限。`,
     });
   }
-  if (signals.unresolvedClaimCount > 0 || meetingAnalysis?.status !== "complete") {
+  if (signals.unresolvedClaimCount > 0 || analysis.status !== "complete") {
     tasks.push({
       id: "uncertainty-review",
       label: "低置信与遗漏核验",
@@ -138,6 +180,7 @@ function specialistTasks(meetingAnalysis, paths) {
   return tasks.slice(0, MAX_SPECIALISTS);
 }
 
+/** @param {Specialist | undefined} specialist @param {EvidencePaths} [paths] */
 export function buildPiSubagentRequest(specialist, paths = {}) {
   const agent = specialist?.agentType ?? "meeting-evidence-analyst";
   const task = specialist?.prompt ?? evidenceInstruction(paths);
@@ -216,6 +259,7 @@ return await agent(
 )`;
 }
 
+/** @param {unknown} meetingAnalysis @param {EvidencePaths} [paths] */
 export function buildMeetingOrchestrationPlan(meetingAnalysis, paths = {}) {
   const signals = meetingSignals(meetingAnalysis);
   const specialists = specialistTasks(meetingAnalysis, paths);

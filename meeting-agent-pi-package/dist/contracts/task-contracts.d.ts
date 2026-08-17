@@ -63,6 +63,9 @@ export interface LedgerEvent {
     at: string;
     actor: string;
     operationId?: string | null;
+    reason?: string | null;
+    artifactRef?: string | null;
+    recovery?: string | null;
 }
 export interface LedgerStep {
     stepId: string;

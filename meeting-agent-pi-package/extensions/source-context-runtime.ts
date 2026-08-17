@@ -1,9 +1,26 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  ContextPackSchema,
+  ContractValidationError,
+  SourceContextManifestSchema,
+  SourceSegmentSchema,
+  isRecord,
+  parseContextPack,
+  parseSourceContextGateResult,
+  parseSourceContextManifest,
+  parseSourceRecordsArtifact,
+  parseSourceSegments,
+  stableStringify,
+  type SourceContextGateResult,
+  type SourceContextManifest,
+  type SourceContextWorkUnit as WorkUnit,
+  type SourceSegment,
+} from "../dist/index.js";
 
 type SourceRecord = {
   sourceId: string;
@@ -14,27 +31,6 @@ type SourceRecord = {
   status: string;
   extractionQuality: "ready" | "partial" | "low" | "missing";
   privacyClass: string;
-  metadata: Record<string, unknown>;
-};
-
-type SourceSegment = {
-  segmentId: string;
-  sourceId: string;
-  sourceType: string;
-  title: string;
-  text: string;
-  segmentKind?: "text" | "table" | "mixed";
-  charStart: number | null;
-  charEnd: number | null;
-  heading?: string | null;
-  page?: number | null;
-  sheet?: string | null;
-  startSec?: number | null;
-  endSec?: number | null;
-  speakerId?: string | number | null;
-  speakerLabel?: string | null;
-  channelId?: string | number | null;
-  quality: string;
   metadata: Record<string, unknown>;
 };
 
@@ -97,27 +93,6 @@ type OutputContract = {
   publishBlockingRules: string[];
 };
 
-type WorkUnit = {
-  workUnitId: string;
-  docType: string;
-  sections: string[];
-  contextPackRef: string;
-  contextPackId: string;
-  contextPackHash: string;
-  sourceSegmentIds: string[];
-  sourceBlockIds: string[];
-  tableBlockCount: number;
-  promptBudgetChars: number;
-  evidenceBudgetChars: number;
-  retrievalReasons: string[];
-  outputContractVersion: string;
-  documentIdentityConfidence: "high" | "medium" | "low";
-  taskStateRef: string;
-  sourceRecordsRef: string;
-  sourceSegmentsRef: string;
-  sourceStructureRef: string;
-};
-
 type PromptRecord = {
   docType: string;
   promptFile: string;
@@ -127,12 +102,45 @@ type PromptRecord = {
   requiredSections: string[];
 };
 
+type JsonObject = Record<string, unknown>;
+
+type SourceContextParams = {
+  runId?: unknown;
+  outputRoot?: unknown;
+  taskPrompt?: unknown;
+  userPrompt?: unknown;
+  requestedDocuments?: unknown;
+  sourcePreparation?: unknown;
+  fileContexts?: unknown;
+  transcriptPath?: string;
+  evidenceIndexPath?: string;
+  asrSummaryPath?: string;
+  reviewContext?: unknown;
+  meetingAnalysis?: unknown;
+  operation?: unknown;
+  revisionMode?: unknown;
+  sectionsPerUnit?: unknown;
+  sectionsPerBatch?: unknown;
+};
+
+type RetrievalPlanEntry = {
+  workUnitId: string;
+  docType: string;
+  sections: string[];
+  contextPackRef: string | null;
+  contextPackId: string;
+  sourceSegmentIds: string[];
+  sourceBlockIds: string[];
+  tableBlockCount: number;
+  retrievalReasons: string[];
+};
+
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
 const promptRegistryPath = join(packageDir, "runtime", "document-prompt-registry.json");
 
-const SOURCE_CONTEXT_VERSION = "source-context-v2";
+const SOURCE_CONTEXT_VERSION = "source-context-v3";
 const SEGMENT_TARGET_CHARS = 1200;
 const SEGMENT_MAX_CHARS = 1500;
 const SEGMENT_OVERLAP_CHARS = 120;
@@ -166,6 +174,18 @@ const SECRET_PATTERNS = [
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function asObject(value: unknown): JsonObject {
+  return isRecord(value) ? value : {};
+}
+
+function objectArray(value: unknown): JsonObject[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function valuesArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function isInside(parent: string, child: string) {
@@ -216,10 +236,20 @@ function safeWorkspacePath(path?: string | null) {
   return resolved;
 }
 
-function readJson(path?: string | null) {
+function readJson(path?: string | null): unknown {
   const resolved = safeWorkspacePath(path);
   if (!resolved || !existsSync(resolved)) return null;
   return JSON.parse(readFileSync(resolved, "utf8"));
+}
+
+function readJsonl(path?: string | null): unknown[] {
+  const resolved = safeWorkspacePath(path);
+  if (!resolved || !existsSync(resolved)) return [];
+  return readFileSync(resolved, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as unknown);
 }
 
 function writeJson(path: string, value: unknown) {
@@ -236,6 +266,37 @@ function writeJsonl(path: string, rows: unknown[]) {
 
 function sha256(value: unknown) {
   return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value ?? null)).digest("hex");
+}
+
+function sha256File(path: string) {
+  const resolved = safeWorkspacePath(path);
+  if (!resolved || !existsSync(resolved)) {
+    throw new Error("source_context_artifact_missing");
+  }
+  return createHash("sha256").update(readFileSync(resolved)).digest("hex");
+}
+
+function sourceSegmentFingerprint(segment: SourceSegment) {
+  return sha256({
+    segmentId: segment.segmentId,
+    sourceId: segment.sourceId,
+    sourceType: segment.sourceType,
+    title: segment.title,
+    text: segment.text,
+    segmentKind: segment.segmentKind ?? null,
+    charStart: segment.charStart,
+    charEnd: segment.charEnd,
+    heading: segment.heading ?? null,
+    page: segment.page ?? null,
+    sheet: segment.sheet ?? null,
+    startSec: segment.startSec ?? null,
+    endSec: segment.endSec ?? null,
+    speakerId: segment.speakerId ?? null,
+    speakerLabel: segment.speakerLabel ?? null,
+    channelId: segment.channelId ?? null,
+    quality: segment.quality,
+    metadata: segment.metadata,
+  });
 }
 
 function redactString(value: unknown) {
@@ -638,9 +699,9 @@ function extractMarkdownTableBlocks(record: SourceRecord, rawText: string, segme
   return blocks;
 }
 
-function extractCommentAnchorBlocks(reviewContext: any, segments: SourceSegment[], startIndex: number) {
-  const comments = Array.isArray(reviewContext?.comments) ? reviewContext.comments : [];
-  return comments.slice(0, 200).map((comment: any, index: number): SourceBlock => {
+function extractCommentAnchorBlocks(reviewContext: unknown, segments: SourceSegment[], startIndex: number) {
+  const comments = objectArray(asObject(reviewContext).comments);
+  return comments.slice(0, 200).map((comment, index): SourceBlock => {
     const preview = normalizeText(comment.bodyAnchorPreview ?? comment.anchorPreview ?? comment.quote ?? comment.commentText ?? "").slice(0, 360);
     return {
       blockId: `review-01:block-${String(startIndex + index + 1).padStart(4, "0")}`,
@@ -659,7 +720,7 @@ function extractCommentAnchorBlocks(reviewContext: any, segments: SourceSegment[
   });
 }
 
-function buildSourceStructure(records: SourceRecord[], segments: SourceSegment[], rawTextBySourceId: Map<string, string>, reviewContext: any): SourceStructure {
+function buildSourceStructure(records: SourceRecord[], segments: SourceSegment[], rawTextBySourceId: Map<string, string>, reviewContext: unknown): SourceStructure {
   const headings: SourceBlock[] = [];
   const tables: SourceBlock[] = [];
   for (const record of records) {
@@ -695,80 +756,85 @@ function sourceBlocksForSegments(structure: SourceStructure, selected: SourceSeg
     .slice(0, 24);
 }
 
-function compactMeetingAnalysis(analysis: any, selectedSegmentIds: string[] = []) {
-  if (!analysis) return null;
+function compactMeetingAnalysis(analysis: unknown, selectedSegmentIds: string[] = []) {
+  if (!isRecord(analysis)) return null;
   const selected = new Set(selectedSegmentIds);
-  const compactItems = (values: any, limit = 4) => (Array.isArray(values) ? values : []).slice(0, limit).map((item: any) => ({
-    text: String(item?.text ?? item ?? "").slice(0, 320),
-    state: item?.state ?? null,
-    ownerAlias: item?.ownerAlias ?? null,
-    dueDate: item?.dueDate ?? null,
-    evidenceSegmentIds: (item?.evidenceSegmentIds ?? []).slice(0, 8),
-  }));
-  const allTopics = (Array.isArray(analysis.topicMap) ? analysis.topicMap : []).slice(0, 24);
-  const relevantTopics = allTopics.filter((topic: any) => selected.size === 0 || (topic.evidenceSegmentIds ?? []).some((id: string) => selected.has(String(id))));
-  const topics = (relevantTopics.length > 0 ? relevantTopics : allTopics.slice(0, 4)).slice(0, 8).map((topic: any) => ({
+  const compactItems = (values: unknown, limit = 4) => valuesArray(values).slice(0, limit).map((item) => {
+    const record = asObject(item);
+    return {
+      text: String(record.text ?? item ?? "").slice(0, 320),
+      state: record.state ?? null,
+      ownerAlias: record.ownerAlias ?? null,
+      dueDate: record.dueDate ?? null,
+      evidenceSegmentIds: valuesArray(record.evidenceSegmentIds).slice(0, 8).map(String),
+    };
+  });
+  const allTopics = objectArray(analysis.topicMap).slice(0, 24);
+  const relevantTopics = allTopics.filter((topic) => selected.size === 0 || valuesArray(topic.evidenceSegmentIds).some((id) => selected.has(String(id))));
+  const topics = (relevantTopics.length > 0 ? relevantTopics : allTopics.slice(0, 4)).slice(0, 8).map((topic) => ({
     topicId: topic.topicId,
     title: String(topic.title ?? "").slice(0, 120),
     timeRange: topic.timeRange ?? null,
     evidenceDensity: topic.evidenceDensity ?? null,
-    evidenceSegmentIds: (topic.evidenceSegmentIds ?? []).slice(0, 12),
-    speakerAliases: (topic.speakerAliases ?? []).slice(0, 20),
+    evidenceSegmentIds: valuesArray(topic.evidenceSegmentIds).slice(0, 12).map(String),
+    speakerAliases: valuesArray(topic.speakerAliases).slice(0, 20).map(String),
     coreJudgment: String(topic.coreJudgment ?? "").slice(0, 500),
     decisions: compactItems(topic.decisions),
     actions: compactItems(topic.actions),
     risks: compactItems(topic.risks),
     openQuestions: compactItems(topic.openQuestions),
   }));
-  const relevantClaims = (Array.isArray(analysis.evidenceMap) ? analysis.evidenceMap : [])
-    .filter((claim: any) => selected.size === 0 || (claim.evidenceSegmentIds ?? []).some((id: string) => selected.has(String(id))))
+  const relevantClaims = objectArray(analysis.evidenceMap)
+    .filter((claim) => selected.size === 0 || valuesArray(claim.evidenceSegmentIds).some((id) => selected.has(String(id))))
     .slice(0, 30)
-    .map((claim: any) => ({
+    .map((claim) => ({
       claimId: claim.claimId,
       topicId: claim.topicId,
       claimType: claim.claimType,
       text: String(claim.text ?? "").slice(0, 400),
       status: claim.status,
       evidenceQuality: claim.evidenceQuality,
-      evidenceSegmentIds: (claim.evidenceSegmentIds ?? []).slice(0, 8),
+      evidenceSegmentIds: valuesArray(claim.evidenceSegmentIds).slice(0, 8).map(String),
     }));
+  const meetingProfile = asObject(analysis.meetingProfile);
+  const productDiscovery = asObject(analysis.productDiscovery);
   return {
     status: analysis.status,
     analysisMode: analysis.analysisMode,
-    meetingProfile: analysis.meetingProfile
+    meetingProfile: isRecord(analysis.meetingProfile)
       ? {
-          meetingType: analysis.meetingProfile.meetingType,
-          participantMap: analysis.meetingProfile.participantMap,
-          allowedRoles: (analysis.meetingProfile.allowedRoles ?? []).slice(0, 60),
-          allowedTopics: (analysis.meetingProfile.allowedTopics ?? []).slice(0, 60),
-          allowedTerms: (analysis.meetingProfile.allowedTerms ?? []).slice(0, 100),
-          ambiguousTerms: (analysis.meetingProfile.ambiguousTerms ?? []).slice(0, 80),
-          languages: (analysis.meetingProfile.languages ?? []).slice(0, 30),
-          asrCapabilities: analysis.meetingProfile.asrCapabilities ?? null,
+          meetingType: meetingProfile.meetingType,
+          participantMap: meetingProfile.participantMap,
+          allowedRoles: valuesArray(meetingProfile.allowedRoles).slice(0, 60),
+          allowedTopics: valuesArray(meetingProfile.allowedTopics).slice(0, 60),
+          allowedTerms: valuesArray(meetingProfile.allowedTerms).slice(0, 100),
+          ambiguousTerms: valuesArray(meetingProfile.ambiguousTerms).slice(0, 80),
+          languages: valuesArray(meetingProfile.languages).slice(0, 30),
+          asrCapabilities: meetingProfile.asrCapabilities ?? null,
         }
       : null,
     topicMap: topics,
-    topicIndex: allTopics.map((topic: any) => ({
+    topicIndex: allTopics.map((topic) => ({
       topicId: topic.topicId,
       title: String(topic.title ?? "").slice(0, 120),
       timeRange: topic.timeRange ?? null,
       evidenceDensity: topic.evidenceDensity ?? null,
     })),
     evidenceMap: relevantClaims,
-    productDiscovery: analysis.productDiscovery
+    productDiscovery: isRecord(analysis.productDiscovery)
       ? {
-          schemaVersion: analysis.productDiscovery.schemaVersion,
-          opportunitySignals: (analysis.productDiscovery.opportunitySignals ?? []).slice(0, 12),
-          userProblems: (analysis.productDiscovery.userProblems ?? []).slice(0, 12),
-          targetUsers: (analysis.productDiscovery.targetUsers ?? []).slice(0, 12),
-          workflows: (analysis.productDiscovery.workflows ?? []).slice(0, 12),
-          desiredOutcomes: (analysis.productDiscovery.desiredOutcomes ?? []).slice(0, 12),
-          constraints: (analysis.productDiscovery.constraints ?? []).slice(0, 12),
-          assumptions: (analysis.productDiscovery.assumptions ?? []).slice(0, 12),
-          acceptanceSignals: (analysis.productDiscovery.acceptanceSignals ?? []).slice(0, 12),
-          clarificationQuestions: (analysis.productDiscovery.clarificationQuestions ?? []).slice(0, 20),
-          prdReadiness: analysis.productDiscovery.prdReadiness ?? null,
-          nextStepOptions: (analysis.productDiscovery.nextStepOptions ?? []).slice(0, 8),
+          schemaVersion: productDiscovery.schemaVersion,
+          opportunitySignals: valuesArray(productDiscovery.opportunitySignals).slice(0, 12),
+          userProblems: valuesArray(productDiscovery.userProblems).slice(0, 12),
+          targetUsers: valuesArray(productDiscovery.targetUsers).slice(0, 12),
+          workflows: valuesArray(productDiscovery.workflows).slice(0, 12),
+          desiredOutcomes: valuesArray(productDiscovery.desiredOutcomes).slice(0, 12),
+          constraints: valuesArray(productDiscovery.constraints).slice(0, 12),
+          assumptions: valuesArray(productDiscovery.assumptions).slice(0, 12),
+          acceptanceSignals: valuesArray(productDiscovery.acceptanceSignals).slice(0, 12),
+          clarificationQuestions: valuesArray(productDiscovery.clarificationQuestions).slice(0, 20),
+          prdReadiness: productDiscovery.prdReadiness ?? null,
+          nextStepOptions: valuesArray(productDiscovery.nextStepOptions).slice(0, 8),
         }
       : null,
     agentPlan: analysis.agentPlan,
@@ -804,7 +870,7 @@ function buildDocumentIdentity(params: {
   sourceRecords: SourceRecord[];
   sourceSegments: SourceSegment[];
   sourceStructure: SourceStructure;
-  reviewContext: any;
+  reviewContext: unknown;
 }): DocumentIdentity {
   const warnings: string[] = [];
   const sourceHeading = params.sourceStructure.headings
@@ -812,10 +878,10 @@ function buildDocumentIdentity(params: {
     .find((heading) => heading && !looksLikeGenericUploadName(heading));
   const sourceTitle = sourceHeading ? String(sourceHeading) : null;
   const sourceProject = projectTitleFromDocumentTitle(sourceHeading);
-  const reviewTitle = params.reviewContext?.sourceDocuments
-    ?.map((source: any) => source.title ?? source.fileName)
-    ?.map((title: unknown) => projectTitleFromDocumentTitle(title) || stripExtensionForTitle(title))
-    ?.find((title: string) => title && !looksLikeGenericUploadName(title)) ?? "";
+  const reviewTitle = objectArray(asObject(params.reviewContext).sourceDocuments)
+    .map((source) => source.title ?? source.fileName)
+    .map((title) => projectTitleFromDocumentTitle(title) || stripExtensionForTitle(title))
+    .find((title) => title && !looksLikeGenericUploadName(title)) ?? "";
   const promptProject = inferProjectTitleFromPrompt(params.taskPrompt);
   const dominantHeading = params.sourceStructure.headings
     .map((block) => projectTitleFromDocumentTitle(block.textPreview) || cleanTitlePart(block.textPreview, ""))
@@ -860,38 +926,42 @@ function buildDocumentIdentity(params: {
   };
 }
 
-function sourceRecordsFromFileContexts(fileContexts: any): SourceRecord[] {
-  const contexts = Array.isArray(fileContexts?.contexts) ? fileContexts.contexts : [];
-  return contexts.map((context: any, index: number): SourceRecord => {
+function sourceRecordsFromFileContexts(fileContexts: unknown): SourceRecord[] {
+  const contexts = objectArray(asObject(fileContexts).contexts);
+  return contexts.map((context, index): SourceRecord => {
+    const extraction = asObject(context.extraction);
+    const sourcePath = typeof context.sourcePath === "string" ? context.sourcePath : null;
+    const extractedTextPath = typeof context.extractedTextPath === "string" ? context.extractedTextPath : null;
     const sourceId = `file-${String(index + 1).padStart(2, "0")}`;
-    const extractionStatus = String(context.extraction?.status ?? context.status ?? "unknown");
-    const chars = Number(context.extraction?.chars ?? 0);
+    const extractionStatus = String(extraction.status ?? context.status ?? "unknown");
+    const chars = Number(extraction.chars ?? 0);
     return {
       sourceId,
       sourceType: String(context.fileType ?? "file"),
       title: String(context.fileName ?? context.sourcePath ?? sourceId),
-      artifactPath: context.sourcePath ?? null,
-      extractedTextPath: context.extractedTextPath ?? null,
+      artifactPath: sourcePath,
+      extractedTextPath,
       status: String(context.status ?? "ready"),
       extractionQuality: extractionStatus === "completed" && chars > 0 ? "ready" : chars > 0 ? "partial" : "missing",
       privacyClass: "meeting_content_available",
       metadata: {
         extension: context.extension ?? null,
         contextMode: context.contextMode ?? null,
-        sourcePath: workspaceRelative(context.sourcePath),
-        extractedTextPath: workspaceRelative(context.extractedTextPath),
+        sourcePath: workspaceRelative(sourcePath),
+        extractedTextPath: workspaceRelative(extractedTextPath),
         extraction: context.extraction ?? null,
       },
     };
   });
 }
 
-function audioRecordsAndSegments(params: any) {
-  const transcript = readJson(params.transcriptPath);
-  const evidence = readJson(params.evidenceIndexPath);
-  const summary = readJson(params.asrSummaryPath) ?? {};
-  const sourceRows = Array.isArray(evidence?.sources) ? evidence.sources : [];
-  const records: SourceRecord[] = sourceRows.map((source: any, index: number) => ({
+function audioRecordsAndSegments(params: SourceContextParams) {
+  const transcript = asObject(readJson(params.transcriptPath));
+  const evidence = asObject(readJson(params.evidenceIndexPath));
+  const summary = asObject(readJson(params.asrSummaryPath));
+  const transcription = asObject(transcript.transcription);
+  const sourceRows = objectArray(evidence.sources);
+  const records: SourceRecord[] = sourceRows.map((source, index) => ({
     sourceId: `audio-${String(index + 1).padStart(2, "0")}`,
     sourceType: "audio_transcript",
     title: String(source.basename ?? source.fileName ?? `audio-${index + 1}`),
@@ -906,27 +976,31 @@ function audioRecordsAndSegments(params: any) {
       privacy: source.privacy ?? null,
       transcriptPath: workspaceRelative(params.transcriptPath),
       evidenceIndexPath: workspaceRelative(params.evidenceIndexPath),
-      speakerDiarization: transcript?.transcription?.speakerDiarization ?? summary.speakerDiarization ?? null,
+      speakerDiarization: transcription.speakerDiarization ?? summary.speakerDiarization ?? null,
     },
   }));
-  const transcriptSegments = (transcript?.transcriptSegments ?? evidence?.transcriptSegments ?? [])
-    .filter((segment: any) => String(segment?.text ?? "").trim())
+  const transcriptSegments = objectArray(transcript.transcriptSegments ?? evidence.transcriptSegments)
+    .filter((segment) => String(segment.text ?? "").trim())
     .slice(0, 1200);
-  const participantBySpeaker = new Map<string, any>(
-    (params.meetingAnalysis?.participantResolution?.participants ?? [])
-      .filter((participant: any) => participant?.speakerId !== null && participant?.speakerId !== undefined)
-      .map((participant: any) => [String(participant.speakerId), participant]),
+  const participantResolution = asObject(asObject(params.meetingAnalysis).participantResolution);
+  const participantBySpeaker = new Map<string, JsonObject>(
+    objectArray(participantResolution.participants)
+      .filter((participant) => participant.speakerId !== null && participant.speakerId !== undefined)
+      .map((participant) => [String(participant.speakerId), participant]),
   );
-  const segments: SourceSegment[] = transcriptSegments.map((segment: any, index: number) => {
-    const sourceIndex = Number.isInteger(segment.sourceIndex) ? segment.sourceIndex : 0;
+  const segments: SourceSegment[] = transcriptSegments.map((segment, index) => {
+    const sourceIndex = Number.isInteger(Number(segment.sourceIndex)) ? Number(segment.sourceIndex) : 0;
     const sourceId = records[sourceIndex]?.sourceId ?? records[0]?.sourceId ?? "audio-01";
     const title = records.find((record) => record.sourceId === sourceId)?.title ?? sourceId;
-    const speakerId = segment.speakerId ?? segment.speaker_id ?? null;
-    const channelId = segment.channelId ?? segment.channel_id ?? null;
+    const rawSpeakerId = segment.speakerId ?? segment.speaker_id ?? null;
+    const rawChannelId = segment.channelId ?? segment.channel_id ?? null;
+    const speakerId = typeof rawSpeakerId === "string" || typeof rawSpeakerId === "number" ? rawSpeakerId : null;
+    const channelId = typeof rawChannelId === "string" || typeof rawChannelId === "number" ? rawChannelId : null;
     const providerSpeakerLabel = segment.speakerLabel ?? (speakerId === null ? null : `speaker_${speakerId}`);
     const participant = speakerId === null ? null : participantBySpeaker.get(String(speakerId));
-    const speakerLabel = participant?.displayName ?? participant?.alias ?? providerSpeakerLabel;
-    const singleMixEvidence = segment.singleMixEvidence ?? null;
+    const speakerLabelValue = participant?.displayName ?? participant?.alias ?? providerSpeakerLabel;
+    const speakerLabel = speakerLabelValue === null || speakerLabelValue === undefined ? null : String(speakerLabelValue);
+    const singleMixEvidence = asObject(segment.singleMixEvidence);
     return {
       segmentId: `${sourceId}:chunk-${String(segment.chunkIndex ?? index).padStart(4, "0")}`,
       sourceId,
@@ -943,7 +1017,7 @@ function audioRecordsAndSegments(params: any) {
       speakerId,
       speakerLabel,
       channelId,
-      quality: singleMixEvidence?.status === "needs_review" ? "needs_review" : "ready",
+      quality: singleMixEvidence.status === "needs_review" ? "needs_review" : "ready",
       metadata: {
         chunkIndex: segment.chunkIndex ?? index,
         sourceFile: segment.sourceFile ?? null,
@@ -953,7 +1027,7 @@ function audioRecordsAndSegments(params: any) {
         speakerLabel,
         providerSpeakerLabel,
         channelId,
-        singleMixEvidence,
+        singleMixEvidence: isRecord(segment.singleMixEvidence) ? singleMixEvidence : null,
       },
     };
   });
@@ -961,13 +1035,13 @@ function audioRecordsAndSegments(params: any) {
     records,
     segments,
     audioSegmentCount: transcriptSegments.length,
-    speakerDiarization: transcript?.transcription?.speakerDiarization ?? summary.speakerDiarization ?? null,
+    speakerDiarization: transcription.speakerDiarization ?? summary.speakerDiarization ?? null,
   };
 }
 
-function reviewRecordsAndSegments(reviewContext: any) {
-  if (!reviewContext || typeof reviewContext !== "object") return { records: [] as SourceRecord[], segments: [] as SourceSegment[] };
-  const comments = Array.isArray(reviewContext.comments) ? reviewContext.comments : [];
+function reviewRecordsAndSegments(reviewContext: unknown) {
+  if (!isRecord(reviewContext)) return { records: [] as SourceRecord[], segments: [] as SourceSegment[] };
+  const comments = objectArray(reviewContext.comments);
   const record: SourceRecord = {
     sourceId: "review-01",
     sourceType: "review_context",
@@ -983,10 +1057,11 @@ function reviewRecordsAndSegments(reviewContext: any) {
       matchSummary: reviewContext.matchSummary ?? null,
     },
   };
-  const segments = comments.map((comment: any, index: number): SourceSegment => {
+  const segments = comments.map((comment, index): SourceSegment => {
+    const replies = objectArray(comment.replies);
     const text = normalizeText([
       comment.commentText ?? comment.quote ?? comment.anchorPreview ?? "",
-      Array.isArray(comment.replies) && comment.replies.length ? `Replies: ${comment.replies.map((reply: any) => reply.text ?? reply.content ?? "").join(" / ")}` : "",
+      replies.length ? `Replies: ${replies.map((reply) => String(reply.text ?? reply.content ?? "")).join(" / ")}` : "",
     ].filter(Boolean).join("\n"));
     return {
       segmentId: `review-01:comment-${String(index + 1).padStart(4, "0")}`,
@@ -1001,7 +1076,7 @@ function reviewRecordsAndSegments(reviewContext: any) {
       sheet: null,
       startSec: null,
       endSec: null,
-      quality: comment.matchStatus ?? "comment",
+      quality: String(comment.matchStatus ?? "comment"),
       metadata: {
         commentId: comment.commentId ?? null,
         sourceId: comment.sourceId ?? null,
@@ -1013,9 +1088,9 @@ function reviewRecordsAndSegments(reviewContext: any) {
   return { records: [record], segments };
 }
 
-function meetingEvidencePriorityIds(meetingAnalysis: any, sectionText: string) {
+function meetingEvidencePriorityIds(meetingAnalysis: unknown, sectionText: string) {
   const ids = new Set<string>();
-  const claims = Array.isArray(meetingAnalysis?.evidenceMap) ? meetingAnalysis.evidenceMap : [];
+  const claims = objectArray(asObject(meetingAnalysis).evidenceMap);
   const wantedTypes = /行动|待办/u.test(sectionText)
     ? new Set(["action"])
     : /风险|待确认|开放问题/u.test(sectionText)
@@ -1024,8 +1099,8 @@ function meetingEvidencePriorityIds(meetingAnalysis: any, sectionText: string) {
         ? new Set(["decision", "core_judgment"])
         : new Set(["core_judgment", "decision", "action", "risk", "open_question"]);
   for (const claim of claims) {
-    if (!wantedTypes.has(String(claim?.claimType ?? ""))) continue;
-    for (const id of Array.isArray(claim?.evidenceSegmentIds) ? claim.evidenceSegmentIds : []) ids.add(String(id));
+    if (!wantedTypes.has(String(claim.claimType ?? ""))) continue;
+    for (const id of valuesArray(claim.evidenceSegmentIds)) ids.add(String(id));
   }
   return ids;
 }
@@ -1045,11 +1120,14 @@ function scoreSegment(segment: SourceSegment, terms: Set<string>, sectionText = 
   return score;
 }
 
-function selectSegmentsForWorkUnit(segments: SourceSegment[], taskPrompt: string, docType: string, sections: string[], operation?: string, meetingAnalysis?: any) {
+function selectSegmentsForWorkUnit(segments: SourceSegment[], taskPrompt: string, docType: string, sections: string[], operation?: string, meetingAnalysis?: unknown) {
+  const analysis = asObject(meetingAnalysis);
+  const meetingProfile = asObject(analysis.meetingProfile);
+  const agentPlan = asObject(analysis.agentPlan);
   const analysisTerms = [
-    meetingAnalysis?.meetingProfile?.meetingType,
-    ...(meetingAnalysis?.meetingProfile?.allowedTopics ?? []),
-    ...(meetingAnalysis?.agentPlan?.focusAreas ?? []),
+    meetingProfile.meetingType,
+    ...valuesArray(meetingProfile.allowedTopics),
+    ...valuesArray(agentPlan.focusAreas),
   ].filter(Boolean).join(" ");
   const terms = tokenize([taskPrompt, docType, sections.join(" "), operation ?? "", analysisTerms].join("\n"));
   const sectionText = [docType, sections.join(" ")].join(" ");
@@ -1097,10 +1175,12 @@ function buildModelContext(params: {
   retrievalReasons: string[];
   operation?: string;
   speakerDiarization?: unknown;
-  meetingAnalysis?: any;
-  taskState?: any;
-  artifactIndex?: any;
+  meetingAnalysis?: unknown;
+  taskState?: unknown;
+  artifactIndex?: unknown;
 }) {
+  const artifactIndex = asObject(params.artifactIndex);
+  const meetingAnalysis = asObject(params.meetingAnalysis);
   const evidenceBlocks: string[] = [];
   let budget = DEFAULT_EVIDENCE_HARD_CAP_CHARS;
   for (const segment of params.selectedSegments) {
@@ -1151,7 +1231,7 @@ function buildModelContext(params: {
       docType: params.docType,
       targetSections: params.sections,
       completionRule: "只完成当前章节；缺失证据必须保留为待确认，不得从常识补齐。",
-      taskStateRef: params.artifactIndex?.taskState ?? null,
+      taskStateRef: artifactIndex.taskState ?? null,
     }, null, 2),
     "",
     "## Selected Source Evidence",
@@ -1166,17 +1246,17 @@ function buildModelContext(params: {
     "",
     "## Meeting Intelligence",
     "",
-    params.meetingAnalysis
+    isRecord(params.meetingAnalysis)
       ? JSON.stringify({
-          status: params.meetingAnalysis.status,
-          analysisMode: params.meetingAnalysis.analysisMode,
-          meetingProfile: params.meetingAnalysis.meetingProfile,
-          topicMap: params.meetingAnalysis.topicMap,
-          evidenceMap: params.meetingAnalysis.evidenceMap,
-          productDiscovery: params.meetingAnalysis.productDiscovery,
-          agentPlan: params.meetingAnalysis.agentPlan,
-          delegatedReview: params.meetingAnalysis.delegatedReview,
-          participantResolution: params.meetingAnalysis.participantResolution,
+          status: meetingAnalysis.status,
+          analysisMode: meetingAnalysis.analysisMode,
+          meetingProfile: meetingAnalysis.meetingProfile,
+          topicMap: meetingAnalysis.topicMap,
+          evidenceMap: meetingAnalysis.evidenceMap,
+          productDiscovery: meetingAnalysis.productDiscovery,
+          agentPlan: meetingAnalysis.agentPlan,
+          delegatedReview: meetingAnalysis.delegatedReview,
+          participantResolution: meetingAnalysis.participantResolution,
         }, null, 2)
       : "No Meeting Intelligence analysis is available; derive cautiously from selected evidence and mark gaps as 待确认.",
     "",
@@ -1222,7 +1302,7 @@ function chunkSections(sections: string[], size: number) {
   return chunks.length ? chunks : [[]];
 }
 
-function buildContextPlane(params: any) {
+function buildContextPlane(params: SourceContextParams) {
   const runId = String(params.runId ?? "run");
   const outputRoot = params.outputRoot ? String(params.outputRoot) : undefined;
   const dir = sourceContextDir(runId, outputRoot);
@@ -1233,9 +1313,12 @@ function buildContextPlane(params: any) {
   const requestedDocuments = Array.isArray(params.requestedDocuments) && params.requestedDocuments.length > 0
     ? params.requestedDocuments.map(String)
     : ["meeting-minutes"];
-  const sourcePreparation = params.sourcePreparation ?? {};
-  const meetingAnalysis = params.meetingAnalysis ?? null;
-  const operation = params.operation ?? (params.revisionMode ? "document_revision" : "create_document");
+  const sourcePreparation = asObject(params.sourcePreparation);
+  const meetingAnalysis = isRecord(params.meetingAnalysis) ? params.meetingAnalysis : null;
+  const meetingProfile = asObject(meetingAnalysis?.meetingProfile);
+  const participantResolution = asObject(meetingAnalysis?.participantResolution);
+  const agentPlan = asObject(meetingAnalysis?.agentPlan);
+  const operation = String(params.operation ?? (params.revisionMode ? "document_revision" : "create_document"));
   const sectionsPerUnit = Math.max(1, Math.min(Number(params.sectionsPerUnit ?? params.sectionsPerBatch ?? 2) || 2, 6));
 
   const fileRecords = sourceRecordsFromFileContexts(params.fileContexts);
@@ -1263,7 +1346,7 @@ function buildContextPlane(params: any) {
   if (requestRecord) rawTextBySourceId.set(requestRecord.sourceId, taskPrompt);
   const requestSegments = requestRecord ? segmentText(requestRecord, taskPrompt) : [];
   const sourceRecords = [...(requestRecord ? [requestRecord] : []), ...fileRecords, ...audio.records, ...review.records];
-  const sourceSegments = [...requestSegments, ...fileSegments, ...audio.segments, ...review.segments];
+  const sourceSegments = parseSourceSegments([...requestSegments, ...fileSegments, ...audio.segments, ...review.segments]);
   const sourceStructure = buildSourceStructure(sourceRecords, sourceSegments, rawTextBySourceId, params.reviewContext);
   const documentIdentity = buildDocumentIdentity({
     requestedDocuments,
@@ -1311,10 +1394,10 @@ function buildContextPlane(params: any) {
     meetingState: meetingAnalysis
       ? {
           status: meetingAnalysis.status,
-          meetingType: meetingAnalysis.meetingProfile?.meetingType ?? null,
-          topicCount: meetingAnalysis.topicMap?.length ?? 0,
-          unresolvedParticipantCount: meetingAnalysis.participantResolution?.unresolvedCount ?? 0,
-          identityCandidateCount: meetingAnalysis.participantResolution?.candidateCount ?? 0,
+          meetingType: meetingProfile.meetingType ?? null,
+          topicCount: valuesArray(meetingAnalysis.topicMap).length,
+          unresolvedParticipantCount: participantResolution.unresolvedCount ?? 0,
+          identityCandidateCount: participantResolution.candidateCount ?? 0,
         }
       : null,
     phase: "pending",
@@ -1339,7 +1422,7 @@ function buildContextPlane(params: any) {
   };
 
   const workUnits: WorkUnit[] = [];
-  const retrievalPlan: any[] = [];
+  const retrievalPlan: RetrievalPlanEntry[] = [];
   for (const docType of requestedDocuments) {
     const record = promptRecordFor(docType);
     const requiredSections = record?.requiredSections?.length ? record.requiredSections : ["正文"];
@@ -1403,6 +1486,10 @@ function buildContextPlane(params: any) {
           title: segment.title,
           segmentKind: segment.segmentKind ?? "text",
           heading: segment.heading ?? null,
+          charStart: segment.charStart,
+          charEnd: segment.charEnd,
+          page: segment.page ?? null,
+          sheet: segment.sheet ?? null,
           startSec: segment.startSec ?? null,
           endSec: segment.endSec ?? null,
           speakerId: segment.speakerId ?? null,
@@ -1411,6 +1498,7 @@ function buildContextPlane(params: any) {
           text: segment.text,
           textChars: segment.text.length,
           quality: segment.quality,
+          metadata: segment.metadata,
         })),
         selectedSourceBlocks: selectedSourceBlocks.map((block) => ({
           blockId: block.blockId,
@@ -1478,13 +1566,13 @@ function buildContextPlane(params: any) {
     rawMediaExternalUpload: false,
   });
 
-  const gate = buildGate({
+  const gate = parseSourceContextGateResult(buildGate({
     sourceRecords,
     sourceSegments,
     workUnits,
     operation,
     reviewContext: params.reviewContext,
-  });
+  }));
   const gatePath = join(dir, "context-gate.json");
   writeJson(gatePath, gate);
   const manifestPath = join(dir, "context-manifest.json");
@@ -1516,17 +1604,24 @@ function buildContextPlane(params: any) {
       ? {
           status: meetingAnalysis.status,
           analysisMode: meetingAnalysis.analysisMode,
-          meetingType: meetingAnalysis.meetingProfile?.meetingType ?? null,
-          participantCount: meetingAnalysis.participantResolution?.participantCount ?? 0,
-          unresolvedParticipantCount: meetingAnalysis.participantResolution?.unresolvedCount ?? 0,
-          topicCount: meetingAnalysis.topicMap?.length ?? 0,
-          narrativeMode: meetingAnalysis.agentPlan?.narrativeMode ?? null,
-          suggestedFollowUpDocuments: meetingAnalysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+          meetingType: meetingProfile.meetingType ?? null,
+          participantCount: participantResolution.participantCount ?? 0,
+          unresolvedParticipantCount: participantResolution.unresolvedCount ?? 0,
+          topicCount: valuesArray(meetingAnalysis.topicMap).length,
+          narrativeMode: agentPlan.narrativeMode ?? null,
+          suggestedFollowUpDocuments: valuesArray(agentPlan.suggestedFollowUpDocuments),
         }
       : null,
     outputContract,
     workUnitCount: workUnits.length,
     contextPackCount: workUnits.length,
+    artifactHashes: {
+      sourceRecords: sha256File(sourceRecordsPath),
+      sourceSegments: sha256File(sourceSegmentsPath),
+      sourceStructure: sha256File(sourceStructurePath),
+      retrievalPlan: sha256File(retrievalPlanPath),
+      gate: sha256File(gatePath),
+    },
     sourceSetMode: sourcePreparation.sourceSetMode ?? "consolidated",
     conflictPolicy: sourcePreparation.conflictPolicy ?? "source_attribution",
     budgetPolicy: {
@@ -1545,6 +1640,7 @@ function buildContextPlane(params: any) {
     rawMediaExternalUpload: false,
     fullContentAvailableByArtifact: true,
   };
+  parseSourceContextManifest(manifest);
   writeJson(manifestPath, manifest);
 
   const contextBrief = [
@@ -1619,8 +1715,8 @@ function buildGate(params: {
   sourceSegments: SourceSegment[];
   workUnits: WorkUnit[];
   operation?: string;
-  reviewContext?: any;
-}) {
+  reviewContext?: unknown;
+}): SourceContextGateResult {
   const warnings: string[] = [];
   const missingOrStaleInputs: string[] = [];
   if (params.sourceRecords.length === 0) {
@@ -1660,7 +1756,7 @@ function buildGate(params: {
     if (record.extractionQuality === "missing") warnings.push(`source_extraction_missing:${record.sourceId}`);
   }
   if (params.operation === "document_revision") {
-    const comments = Array.isArray(params.reviewContext?.comments) ? params.reviewContext.comments : [];
+    const comments = objectArray(asObject(params.reviewContext).comments);
     if (comments.length === 0) {
       return {
         schemaVersion: "context-gate-result-v1",
@@ -1672,7 +1768,7 @@ function buildGate(params: {
         rawMediaExternalUpload: false,
       };
     }
-    const unmatched = comments.filter((comment: any) => String(comment.matchStatus ?? "").includes("unmatched")).length;
+    const unmatched = comments.filter((comment) => String(comment.matchStatus ?? "").includes("unmatched")).length;
     if (unmatched >= comments.length) {
       return {
         schemaVersion: "context-gate-result-v1",
@@ -1698,9 +1794,290 @@ function buildGate(params: {
 }
 
 function detailsFromError(error: unknown) {
+  if (error instanceof ContractValidationError) {
+    return {
+      status: "blocked",
+      reason: error.reason,
+      fieldPath: error.fieldPath,
+      recovery: error.recovery,
+      rawSecretsReturned: false,
+      rawMediaExternalUpload: false,
+    };
+  }
   return {
     status: "blocked",
     reason: error instanceof Error ? error.message : String(error),
+    rawSecretsReturned: false,
+    rawMediaExternalUpload: false,
+  };
+}
+
+function manifestArtifactPath(path: string) {
+  return safeWorkspacePath(isAbsolute(path) ? path : join(workspaceDir, path));
+}
+
+function sourceContextBlocked(reason: string, fieldPath: string, recovery: string, missingOrStaleInputs: string[] = []): SourceContextGateResult {
+  return {
+    schemaVersion: "context-gate-result-v1",
+    status: "blocked",
+    reason,
+    warnings: [],
+    missingOrStaleInputs,
+    fieldPath,
+    recovery,
+    rawSecretsReturned: false,
+    rawMediaExternalUpload: false,
+  };
+}
+
+function recomputeSourceContextGate(value: unknown): SourceContextGateResult {
+  const manifest = parseSourceContextManifest(value);
+  const requiredPaths: Array<[string, string, string | null]> = [
+    ["sourceRecordsPath", manifest.sourceRecordsPath, manifest.artifactHashes.sourceRecords],
+    ["sourceSegmentsPath", manifest.sourceSegmentsPath, manifest.artifactHashes.sourceSegments],
+    ["sourceStructurePath", manifest.sourceStructurePath, manifest.artifactHashes.sourceStructure],
+    ["taskStatePath", manifest.taskStatePath, null],
+    ["retrievalPlanPath", manifest.retrievalPlanPath, manifest.artifactHashes.retrievalPlan],
+    ["gatePath", manifest.gatePath, manifest.artifactHashes.gate],
+  ];
+  const resolvedPaths = new Map<string, string>();
+  for (const [field, path, expectedHash] of requiredPaths) {
+    const resolved = manifestArtifactPath(path);
+    if (!resolved || !existsSync(resolved)) {
+      return sourceContextBlocked(
+        "source_context_artifact_missing",
+        field,
+        "重新运行 source_context_prepare 以恢复缺失 artifact。",
+        [path],
+      );
+    }
+    resolvedPaths.set(field, resolved);
+    if (expectedHash && sha256File(resolved) !== expectedHash) {
+      return sourceContextBlocked(
+        "source_context_artifact_hash_mismatch",
+        `artifactHashes.${field.replace(/Path$/, "")}`,
+        "隔离被修改或截断的 artifact，并重新运行 source_context_prepare。",
+        [path],
+      );
+    }
+  }
+
+  const sourceRecordsArtifact = parseSourceRecordsArtifact(readJson(resolvedPaths.get("sourceRecordsPath")));
+  const sourceRecords = sourceRecordsArtifact.sources;
+  if (sourceRecords.length !== manifest.sourceCount || sourceRecords.length === 0) {
+    return sourceContextBlocked(
+      "source_context_source_count_mismatch",
+      "sourceCount",
+      "重新生成 source records 与 manifest，禁止使用计数不一致的来源。",
+      ["source records"],
+    );
+  }
+
+  const sourceIds = new Set<string>();
+  for (const [index, source] of sourceRecords.entries()) {
+    if (sourceIds.has(source.sourceId)) {
+      return sourceContextBlocked(
+        "source_context_duplicate_source_id",
+        `sources[${index}].sourceId`,
+        "重新分配当前运行内唯一的 sourceId。",
+        [source.sourceId],
+      );
+    }
+    sourceIds.add(source.sourceId);
+  }
+
+  const segments = parseSourceSegments(readJsonl(resolvedPaths.get("sourceSegmentsPath")));
+  if (segments.length !== manifest.segmentCount || segments.length === 0) {
+    return sourceContextBlocked(
+      "source_context_segment_count_mismatch",
+      "segmentCount",
+      "重新生成 source segments 与 manifest。",
+      ["source segments"],
+    );
+  }
+  const segmentIds = new Set(segments.map((segment) => segment.segmentId));
+  const segmentById = new Map(segments.map((segment) => [segment.segmentId, segment]));
+  const segmentWithUnknownSource = segments.find((segment) => !sourceIds.has(segment.sourceId));
+  if (segmentWithUnknownSource) {
+    return sourceContextBlocked(
+      "source_context_segment_source_invalid",
+      "sourceSegments.sourceId",
+      "只允许 segment 引用当前 source-records artifact 中存在的 sourceId。",
+      [segmentWithUnknownSource.segmentId],
+    );
+  }
+  const sourceStructure = asObject(readJson(resolvedPaths.get("sourceStructurePath")));
+  const sourceBlocks = [
+    ...objectArray(sourceStructure.headings),
+    ...objectArray(sourceStructure.tables),
+    ...objectArray(sourceStructure.commentAnchors),
+  ];
+  const sourceBlockIds = new Set<string>();
+  for (const [index, block] of sourceBlocks.entries()) {
+    const blockId = String(block.blockId ?? "");
+    const sourceId = String(block.sourceId ?? "");
+    const segmentId = block.segmentId === null || block.segmentId === undefined ? null : String(block.segmentId);
+    if (!blockId || sourceBlockIds.has(blockId)) {
+      return sourceContextBlocked(
+        "source_context_source_block_id_invalid",
+        `sourceStructure.blocks[${index}].blockId`,
+        "为每个结构化来源 block 分配非空且唯一的 blockId。",
+        blockId ? [blockId] : [],
+      );
+    }
+    if (!sourceIds.has(sourceId) || (segmentId !== null && !segmentIds.has(segmentId))) {
+      return sourceContextBlocked(
+        "source_context_source_block_provenance_invalid",
+        `sourceStructure.blocks[${index}]`,
+        "只允许 source block 引用当前 source 与 segment artifact 中存在的标识。",
+        [blockId],
+      );
+    }
+    sourceBlockIds.add(blockId);
+  }
+  if (manifest.workUnits.length !== manifest.workUnitCount || manifest.workUnits.length !== manifest.contextPackCount || manifest.workUnits.length === 0) {
+    return sourceContextBlocked(
+      "source_context_work_unit_count_mismatch",
+      "workUnits",
+      "重新规划 work units 与 context packs。",
+      ["work units"],
+    );
+  }
+
+  for (const [index, unit] of manifest.workUnits.entries()) {
+    const packPath = manifestArtifactPath(unit.contextPackRef);
+    if (!packPath || !existsSync(packPath)) {
+      return sourceContextBlocked(
+        "context_pack_missing",
+        `workUnits[${index}].contextPackRef`,
+        "重新生成缺失 context pack。",
+        [unit.contextPackRef],
+      );
+    }
+    const packValue = readJson(packPath);
+    const pack = parseContextPack(packValue);
+    if (
+      pack.contextPackId !== unit.contextPackId
+      || pack.workUnitId !== unit.workUnitId
+      || pack.docType !== unit.docType
+      || stableStringify(pack.sections) !== stableStringify(unit.sections)
+      || stableStringify(pack.sourceSegmentIds) !== stableStringify(unit.sourceSegmentIds)
+      || stableStringify(pack.sourceBlockIds ?? []) !== stableStringify(unit.sourceBlockIds)
+      || pack.tableBlockCount !== unit.tableBlockCount
+      || pack.promptBudgetChars !== unit.promptBudgetChars
+      || pack.evidenceBudgetChars !== unit.evidenceBudgetChars
+      || sha256(packValue) !== unit.contextPackHash
+    ) {
+      return sourceContextBlocked(
+        "context_pack_hash_mismatch",
+        `workUnits[${index}].contextPackHash`,
+        "隔离陈旧 context pack，并由当前来源重新生成。",
+        [unit.contextPackRef],
+      );
+    }
+    const invalidSegmentId = unit.sourceSegmentIds.find((segmentId) => !segmentIds.has(segmentId));
+    if (invalidSegmentId) {
+      return sourceContextBlocked(
+        "context_pack_segment_reference_invalid",
+        `workUnits[${index}].sourceSegmentIds`,
+        "只引用当前 source segment artifact 中存在的 segmentId。",
+        [invalidSegmentId],
+      );
+    }
+    const invalidSourceBlockId = unit.sourceBlockIds.find((blockId) => !sourceBlockIds.has(blockId));
+    if (invalidSourceBlockId) {
+      return sourceContextBlocked(
+        "context_pack_source_block_reference_invalid",
+        `workUnits[${index}].sourceBlockIds`,
+        "只引用当前 source-structure artifact 中存在的 blockId。",
+        [invalidSourceBlockId],
+      );
+    }
+    if (pack.selectedSegments) {
+      const selectedIds = pack.selectedSegments.map((segment) => segment.segmentId);
+      if (stableStringify(selectedIds) !== stableStringify(unit.sourceSegmentIds)) {
+        return sourceContextBlocked(
+          "context_pack_selected_segments_mismatch",
+          `workUnits[${index}].sourceSegmentIds`,
+          "由当前 source-segments artifact 重新生成 context pack。",
+          selectedIds,
+        );
+      }
+      for (const selected of pack.selectedSegments) {
+        const canonical = segmentById.get(selected.segmentId);
+        if (!canonical || sourceSegmentFingerprint(selected) !== sourceSegmentFingerprint(canonical)) {
+          return sourceContextBlocked(
+            "context_pack_segment_provenance_mismatch",
+            `workUnits[${index}].contextPackRef`,
+            "禁止在 context pack 内改写来源 segment；从 canonical source-segments 重建。",
+            [selected.segmentId],
+          );
+        }
+      }
+    }
+  }
+
+  const retrievalPlan = asObject(readJson(resolvedPaths.get("retrievalPlanPath")));
+  const retrievalWorkUnits = objectArray(retrievalPlan.workUnits);
+  if (retrievalWorkUnits.length !== manifest.workUnits.length) {
+    return sourceContextBlocked(
+      "source_context_retrieval_plan_count_mismatch",
+      "retrievalPlan.workUnits",
+      "由当前 manifest work units 重新生成 retrieval plan。",
+      [manifest.retrievalPlanPath],
+    );
+  }
+  for (const [index, unit] of manifest.workUnits.entries()) {
+    const planUnit = retrievalWorkUnits[index] ?? {};
+    if (
+      String(planUnit.workUnitId ?? "") !== unit.workUnitId
+      || String(planUnit.contextPackId ?? "") !== unit.contextPackId
+      || stableStringify(valuesArray(planUnit.sourceSegmentIds).map(String)) !== stableStringify(unit.sourceSegmentIds)
+      || stableStringify(valuesArray(planUnit.sourceBlockIds).map(String)) !== stableStringify(unit.sourceBlockIds)
+    ) {
+      return sourceContextBlocked(
+        "source_context_retrieval_plan_mismatch",
+        `retrievalPlan.workUnits[${index}]`,
+        "重新生成 retrieval plan，禁止继续使用与 manifest 不一致的计划。",
+        [unit.workUnitId],
+      );
+    }
+  }
+
+  const storedGate = parseSourceContextGateResult(readJson(resolvedPaths.get("gatePath")));
+  if (stableStringify(storedGate) !== stableStringify(manifest.gate)) {
+    return sourceContextBlocked(
+      "source_context_gate_artifact_mismatch",
+      "gate",
+      "重新计算并同步 context-gate.json 与 context manifest。",
+      [manifest.gatePath],
+    );
+  }
+
+  if (manifest.operation === "document_revision" && !segments.some((segment) => segment.sourceType === "review_context")) {
+    return sourceContextBlocked(
+      "needs_review_context",
+      "sourceSegments",
+      "获取并映射当前文档的 review comments 后重建 Source Context。",
+      ["review comments"],
+    );
+  }
+
+  const priorGate = parseSourceContextGateResult(manifest.gate);
+  if (priorGate.status !== "pass") {
+    return {
+      ...priorGate,
+      status: "blocked",
+      reason: priorGate.reason,
+      recovery: priorGate.recovery ?? "修复 Source Context 缺口后重新计算 Gate。",
+    };
+  }
+  return {
+    schemaVersion: "context-gate-result-v1",
+    status: "pass",
+    reason: "source_context_ready",
+    warnings: priorGate.warnings,
+    missingOrStaleInputs: [],
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
   };
@@ -1726,7 +2103,7 @@ export default function (pi: ExtensionAPI) {
       operation: Type.Optional(Type.String()),
       sectionsPerUnit: Type.Optional(Type.Number()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const details = buildContextPlane(params);
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -1747,7 +2124,7 @@ export default function (pi: ExtensionAPI) {
       title: Type.String(),
       text: Type.String(),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       const record: SourceRecord = {
         sourceId: params.sourceId,
         sourceType: params.sourceType,
@@ -1775,21 +2152,27 @@ export default function (pi: ExtensionAPI) {
       taskPrompt: Type.Optional(Type.String()),
       docType: Type.String(),
       sections: Type.Array(Type.String()),
-      segments: Type.Array(Type.Unknown()),
+      segments: Type.Array(SourceSegmentSchema),
       operation: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
-      const { selected, retrievalReasons } = selectSegmentsForWorkUnit(params.segments as SourceSegment[], params.taskPrompt ?? "", params.docType, params.sections, params.operation);
-      const details = {
-        schemaVersion: `${SOURCE_CONTEXT_VERSION}/retrieval-plan`,
-        strategy: "deterministic_section_retrieval",
-        vectorStoreUsed: false,
-        selectedSegmentIds: selected.map((segment) => segment.segmentId),
-        retrievalReasons,
-        rawSecretsReturned: false,
-        rawMediaExternalUpload: false,
-      };
-      return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
+      try {
+        const segments = parseSourceSegments(params.segments);
+        const { selected, retrievalReasons } = selectSegmentsForWorkUnit(segments, params.taskPrompt ?? "", params.docType, params.sections, params.operation);
+        const details = {
+          schemaVersion: `${SOURCE_CONTEXT_VERSION}/retrieval-plan`,
+          strategy: "deterministic_section_retrieval",
+          vectorStoreUsed: false,
+          selectedSegmentIds: selected.map((segment) => segment.segmentId),
+          retrievalReasons,
+          rawSecretsReturned: false,
+          rawMediaExternalUpload: false,
+        };
+        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+      } catch (error) {
+        const details = detailsFromError(error);
+        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+      }
     },
   });
 
@@ -1801,14 +2184,16 @@ export default function (pi: ExtensionAPI) {
       taskPrompt: Type.Optional(Type.String()),
       docType: Type.String(),
       sections: Type.Array(Type.String()),
-      selectedSegments: Type.Array(Type.Unknown()),
+      selectedSegments: Type.Array(SourceSegmentSchema),
       operation: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
-      const workUnitId = safeSegment(`${params.docType}-${sha256(params.sections.join("|")).slice(0, 8)}`);
-      const contextPackId = `${workUnitId}-${sha256(params.selectedSegments).slice(0, 10)}`;
-      const retrievalReasons = (params.selectedSegments as SourceSegment[]).map((segment) => `manual_selected:${segment.segmentId}`);
-      const details = {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
+      try {
+        const selectedSegments = parseSourceSegments(params.selectedSegments);
+        const workUnitId = safeSegment(`${params.docType}-${sha256(params.sections.join("|")).slice(0, 8)}`);
+        const contextPackId = `${workUnitId}-${sha256(selectedSegments).slice(0, 10)}`;
+        const retrievalReasons = selectedSegments.map((segment) => `manual_selected:${segment.segmentId}`);
+        const details = parseContextPack({
         schemaVersion: "context-pack-v2",
         contextPackId,
         workUnitId,
@@ -1817,8 +2202,9 @@ export default function (pi: ExtensionAPI) {
         operation: params.operation ?? "create_document",
         promptBudgetChars: DEFAULT_SECTION_PROMPT_HARD_CAP_CHARS,
         evidenceBudgetChars: DEFAULT_EVIDENCE_HARD_CAP_CHARS,
-        sourceSegmentIds: (params.selectedSegments as SourceSegment[]).map((segment) => segment.segmentId),
+        sourceSegmentIds: selectedSegments.map((segment) => segment.segmentId),
         retrievalReasons,
+        selectedSegments,
         taskState: {
           schemaVersion: "office-task-state-v2",
           objective: params.taskPrompt ?? "",
@@ -1836,7 +2222,7 @@ export default function (pi: ExtensionAPI) {
           docType: params.docType,
           sections: params.sections,
           taskPrompt: params.taskPrompt ?? "",
-          selectedSegments: params.selectedSegments as SourceSegment[],
+          selectedSegments,
           retrievalReasons,
           ...(params.operation === undefined ? {} : { operation: params.operation }),
           taskState: {
@@ -1853,8 +2239,12 @@ export default function (pi: ExtensionAPI) {
         }),
         rawSecretsReturned: false,
         rawMediaExternalUpload: false,
-      };
-      return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+        });
+        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+      } catch (error) {
+        const details = detailsFromError(error);
+        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+      }
     },
   });
 
@@ -1864,20 +2254,16 @@ export default function (pi: ExtensionAPI) {
     description: "Evaluate source/context coverage before document generation starts.",
     parameters: Type.Object({
       manifestPath: Type.Optional(Type.String()),
-      manifest: Type.Optional(Type.Unknown()),
+      manifest: Type.Optional(SourceContextManifestSchema),
     }),
     async execute(_toolCallId, params) {
       try {
         const manifest = params.manifest ?? readJson(params.manifestPath);
-        const gate = manifest?.gate ?? {
-          schemaVersion: "context-gate-result-v1",
-          status: "blocked",
-          reason: "source_context_manifest_required",
-          warnings: [],
-          missingOrStaleInputs: ["context manifest"],
-          rawSecretsReturned: false,
-          rawMediaExternalUpload: false,
-        };
+        if (!manifest) {
+          const gate = sourceContextBlocked("source_context_manifest_required", "manifest", "提供由 source_context_prepare 生成的 context manifest。", ["context manifest"]);
+          return { content: [{ type: "text", text: JSON.stringify(gate, null, 2) }], details: gate };
+        }
+        const gate = recomputeSourceContextGate(manifest);
         return { content: [{ type: "text", text: JSON.stringify(gate, null, 2) }], details: gate };
       } catch (error) {
         const details = detailsFromError(error);

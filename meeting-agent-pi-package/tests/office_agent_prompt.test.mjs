@@ -6,6 +6,7 @@ import test from "node:test";
 
 const root = new URL("../../", import.meta.url);
 
+/** @param {string} path */
 async function text(path) {
   return readFile(new URL(path, root), "utf8");
 }
@@ -71,13 +72,23 @@ test("document task state advances with completed work units", async () => {
     schemaVersion: "context-pack-v2",
     contextPackId: "pack-1",
     workUnitId: "unit-1",
+    docType: "document",
+    sections: ["正文"],
+    operation: "create_document",
+    promptBudgetChars: 24000,
+    evidenceBudgetChars: 12000,
     sourceSegmentIds: ["request-01:seg-0001"],
+    sourceBlockIds: [],
+    tableBlockCount: 0,
+    retrievalReasons: ["test"],
     selectedSourceBlocks: [],
     taskState: { schemaVersion: "office-task-state-v2", objective: "生成测试文档" },
     artifactIndex: { taskState: taskStatePath },
     documentIdentity: { confidence: "medium" },
     outputContract: { outputContractVersion: "document-output-contract-v1" },
     modelContext: "测试上下文",
+    rawSecretsReturned: false,
+    rawMediaExternalUpload: false,
   }));
   await writeFile(paramsPath, JSON.stringify({
     runId: "office-state-test",

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -16,6 +16,49 @@ const SECRET_PATTERNS = [
 ];
 
 const MAX_METRIC_TEXT_CHARS = 8000;
+
+type RuntimeTokenUsage = {
+  prompt: number;
+  completion: number;
+  cached: number;
+  total: number;
+};
+
+type RuntimeContextBudget = {
+  estimatedInputTokens: number;
+  retainedEvidenceItems: number;
+  offloadedEvidenceItems: number;
+  [key: string]: unknown;
+};
+
+type RuntimeMetrics = {
+  runId: string;
+  taskType: string;
+  summary: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  enabledCapabilities: string[];
+  modelCalls: unknown[];
+  toolCalls: unknown[];
+  externalCalls: unknown[];
+  tokenUsage: RuntimeTokenUsage;
+  contextBudget: RuntimeContextBudget;
+  generatedArtifacts: unknown[];
+  qaGate: unknown;
+  plannerDecisions: unknown[];
+  policyDecisions: unknown[];
+  workerDecisions: unknown[];
+  capabilitySelections: unknown[];
+  packageAudits: unknown[];
+  rawSecretsReturned: false;
+  meetingContentAllowed: true;
+  contentTruncationChars: number;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 function defaultOutputRoot() {
   return join(workspaceDir, "runtime-runs");
@@ -77,8 +120,32 @@ function sanitize(value: unknown, key = ""): unknown {
   return value;
 }
 
-function readMetrics(path: string) {
-  return JSON.parse(readFileSync(path, "utf8"));
+function readMetrics(path: string): RuntimeMetrics {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const record = isRecord(parsed) ? parsed : null;
+  const arrayFields = [
+    "enabledCapabilities",
+    "modelCalls",
+    "toolCalls",
+    "externalCalls",
+    "generatedArtifacts",
+    "plannerDecisions",
+    "policyDecisions",
+    "workerDecisions",
+    "capabilitySelections",
+    "packageAudits",
+  ];
+  if (
+    record === null
+    || typeof record.runId !== "string"
+    || typeof record.taskType !== "string"
+    || !isRecord(record.tokenUsage)
+    || !isRecord(record.contextBudget)
+    || arrayFields.some((field) => !Array.isArray(record[field]))
+  ) {
+    throw new Error("runtime_metrics_contract_invalid");
+  }
+  return record as RuntimeMetrics;
 }
 
 function writeMetrics(path: string, metrics: unknown) {
@@ -86,7 +153,7 @@ function writeMetrics(path: string, metrics: unknown) {
   writeFileSync(path, JSON.stringify(sanitize(metrics), null, 2) + "\n", "utf8");
 }
 
-function baseMetrics(runId: string, taskType: string, summary?: string) {
+function baseMetrics(runId: string, taskType: string, summary?: string): RuntimeMetrics {
   return {
     runId,
     taskType,
@@ -113,16 +180,17 @@ function baseMetrics(runId: string, taskType: string, summary?: string) {
   };
 }
 
-function appendByKind(metrics: Record<string, any>, kind: string, payload: unknown) {
+function appendByKind(metrics: RuntimeMetrics, kind: string, payload: unknown) {
+  const payloadRecord = isRecord(payload) ? payload : {};
   if (kind === "capability") {
-    const id = typeof payload === "string" ? payload : (payload as any)?.capabilityId;
+    const id = typeof payload === "string" ? payload : typeof payloadRecord.capabilityId === "string" ? payloadRecord.capabilityId : null;
     if (id && !metrics.enabledCapabilities.includes(id)) metrics.enabledCapabilities.push(id);
     return;
   }
   if (kind === "model") {
     metrics.modelCalls.push(payload);
-    const usage = (payload as any)?.usage;
-    if (usage && typeof usage === "object") {
+    const usage = isRecord(payloadRecord.usage) ? payloadRecord.usage : null;
+    if (usage) {
       metrics.tokenUsage.prompt += Number(usage.prompt ?? usage.prompt_tokens ?? 0);
       metrics.tokenUsage.completion += Number(usage.completion ?? usage.completion_tokens ?? 0);
       metrics.tokenUsage.cached += Number(usage.cached ?? usage.cached_tokens ?? 0);
@@ -147,7 +215,7 @@ function appendByKind(metrics: Record<string, any>, kind: string, payload: unkno
     return;
   }
   if (kind === "contextBudget") {
-    metrics.contextBudget = { ...metrics.contextBudget, ...(payload as object) };
+    metrics.contextBudget = { ...metrics.contextBudget, ...payloadRecord };
     return;
   }
   if (kind === "planner") {
@@ -182,7 +250,7 @@ export default function (pi: ExtensionAPI) {
       runId: Type.Optional(Type.String({ description: "Optional caller-provided run id." })),
       outputRoot: Type.Optional(Type.String({ description: "Optional runtime-runs output directory." })),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const runId = safeRunId(params.runId);
         const path = metricsPath(runId, params.outputRoot);
@@ -220,7 +288,7 @@ export default function (pi: ExtensionAPI) {
       payload: Type.Unknown(),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const path = metricsPath(params.runId, params.outputRoot);
         if (!existsSync(path)) {
@@ -254,7 +322,7 @@ export default function (pi: ExtensionAPI) {
       qaGate: Type.Optional(Type.Unknown()),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const path = metricsPath(params.runId, params.outputRoot);
         if (!existsSync(path)) {

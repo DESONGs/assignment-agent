@@ -53,37 +53,62 @@ export const MEETING_MEMORY_OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
+/**
+ * @typedef {{ claimId: string, text: string, claimType: string, status: string, evidenceQuality: string, evidenceSegmentIds: string[], [key: string]: unknown }} MemorySourceClaim
+ * @typedef {{ memoryKey: string | null, content: string }} IdentityCandidate
+ * @typedef {{
+ *   candidateIndex: number, type: string, memoryKey: string, content: string, rationale: string,
+ *   confidence: string, sourceClaimIds: string[], evidenceSegmentIds: string[], invalidSegmentIds: string[],
+ *   sourceRunId: string, fingerprint: string
+ * }} AcceptedMemoryCandidate
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
+/** @param {unknown} value @returns {unknown[]} */
 function list(value) {
   return Array.isArray(value) ? value : [];
 }
 
+/** @param {unknown} value @param {number} [maxChars] */
 function cleanText(value, maxChars = 600) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maxChars);
 }
 
+/** @param {unknown} values @param {number} [limit] */
 function uniqueStrings(values, limit = 100) {
   return [...new Set(list(values).map((value) => cleanText(value, 180)).filter(Boolean))].slice(0, limit);
 }
 
+/** @param {unknown} value */
 function jsStringLiteral(value) {
   return JSON.stringify(String(value ?? ""))
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
 }
 
+/** @param {string} type @param {string} memoryKey @param {string} content */
 function fingerprint(type, memoryKey, content) {
   return createHash("sha256").update(`${type}\n${memoryKey}\n${content}`).digest("hex");
 }
 
+/** @param {unknown} value */
 function safeMemoryKey(value) {
   const key = cleanText(value, 120).toLowerCase();
   return /^[a-z0-9][a-z0-9._:-]{2,119}$/.test(key) ? key : null;
 }
 
+/** @param {unknown} value */
 function containsCredentialMarker(value) {
   return /(?:api[_ -]?key|authorization|bearer\s+[a-z0-9._-]+|app[_ -]?secret|cookie|session[_ -]?token|access[_ -]?key[_ -]?secret|signed[_ -]?url)/iu.test(String(value ?? ""));
 }
 
+/** @param {unknown} value */
 function groundingTokens(value) {
   const text = String(value ?? "").toLowerCase();
   const tokens = new Set(text.match(/[a-z0-9][a-z0-9._-]+/gu) ?? []);
@@ -94,6 +119,7 @@ function groundingTokens(value) {
   return [...tokens];
 }
 
+/** @param {string} content @param {MemorySourceClaim[]} sourceClaims */
 function contentGroundedInClaims(content, sourceClaims) {
   const candidateTokens = groundingTokens(content);
   if (candidateTokens.length === 0) return false;
@@ -102,6 +128,7 @@ function contentGroundedInClaims(content, sourceClaims) {
   return matched / candidateTokens.length >= 0.5;
 }
 
+/** @param {string} workspaceDir @param {string} value */
 function workspacePath(workspaceDir, value) {
   const root = resolve(workspaceDir);
   const path = resolve(root, value);
@@ -110,6 +137,7 @@ function workspacePath(workspaceDir, value) {
   return path;
 }
 
+/** @param {{ runId: string, meetingAnalysisPath: string, meetingMinutesPath: string, qaGatePath: string, transcriptPath: string, participantMapPath: string }} input */
 export function buildMeetingMemoryCuratorPlan({
   runId,
   meetingAnalysisPath,
@@ -162,6 +190,7 @@ export function buildMeetingMemoryCuratorPlan({
   };
 }
 
+/** @param {{ workspaceDir: string, packageDir: string, planPath: string, provider: string, model: string, piCodingAgentDir: string }} input */
 export function buildPiMeetingMemoryInvocation({ workspaceDir, packageDir, planPath, provider, model, piCodingAgentDir }) {
   const prompt = [
     "读取可信的会议记忆提炼计划：" + planPath,
@@ -189,8 +218,11 @@ export function buildPiMeetingMemoryInvocation({ workspaceDir, packageDir, planP
   };
 }
 
+/** @param {unknown} value */
 export function extractMeetingMemoryPayload(value) {
+  /** @type {Set<object>} */
   const seen = new Set();
+  /** @param {unknown} item @param {number} [depth] @returns {Record<string, unknown> | null} */
   function visit(item, depth = 0) {
     if (depth > 12 || item === null || item === undefined) return null;
     if (typeof item === "string") {
@@ -204,15 +236,23 @@ export function extractMeetingMemoryPayload(value) {
     }
     if (typeof item !== "object" || seen.has(item)) return null;
     seen.add(item);
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        const found = visit(child, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
     if (meetingMemoryPayloadShapeValid(item)) return item;
+    const record = asRecord(item);
     const preferredKeys = ["structuredOutput", "value", "result", "details", "output", "results"];
     for (const key of preferredKeys) {
-      if (key in item) {
-        const found = visit(item[key], depth + 1);
+      if (key in record) {
+        const found = visit(record[key], depth + 1);
         if (found) return found;
       }
     }
-    for (const child of Object.values(item)) {
+    for (const child of Object.values(record)) {
       const found = visit(child, depth + 1);
       if (found) return found;
     }
@@ -221,14 +261,17 @@ export function extractMeetingMemoryPayload(value) {
   return visit(value);
 }
 
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
 function plainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+/** @param {Record<string, unknown>} value @param {Set<string>} allowed */
 function onlyKeys(value, allowed) {
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
+/** @param {unknown} payload @returns {payload is Record<string, unknown>} */
 export function meetingMemoryPayloadShapeValid(payload) {
   if (!plainObject(payload)) return false;
   if (!onlyKeys(payload, new Set(["schemaVersion", "summary", "candidates", "excluded"]))) return false;
@@ -238,9 +281,9 @@ export function meetingMemoryPayloadShapeValid(payload) {
   const candidateKeys = new Set(["type", "memoryKey", "content", "rationale", "confidence", "sourceClaimIds", "evidenceSegmentIds"]);
   for (const candidate of payload.candidates) {
     if (!plainObject(candidate) || !onlyKeys(candidate, candidateKeys)) return false;
-    if (!ALLOWED_TYPES.has(candidate.type)) return false;
+    if (!ALLOWED_TYPES.has(String(candidate.type ?? ""))) return false;
     if (!["memoryKey", "content", "rationale", "confidence"].every((key) => typeof candidate[key] === "string")) return false;
-    if (!new Set(["high", "medium"]).has(candidate.confidence)) return false;
+    if (!new Set(["high", "medium"]).has(String(candidate.confidence ?? ""))) return false;
     if (![candidate.sourceClaimIds, candidate.evidenceSegmentIds].every((values) => Array.isArray(values) && values.every((item) => typeof item === "string"))) return false;
   }
   const excludedKeys = new Set(["reason", "content", "detail"]);
@@ -252,42 +295,57 @@ export function meetingMemoryPayloadShapeValid(payload) {
   return true;
 }
 
+/** @param {unknown} meetingAnalysis @returns {Map<string, MemorySourceClaim>} */
 function evidenceIndexes(meetingAnalysis) {
+  /** @type {Map<string, MemorySourceClaim>} */
   const claimsById = new Map();
-  for (const claim of list(meetingAnalysis?.evidenceMap)) {
-    if (!claim?.claimId) continue;
-    claimsById.set(String(claim.claimId), {
+  for (const value of list(asRecord(meetingAnalysis).evidenceMap)) {
+    const claim = asRecord(value);
+    if (!claim.claimId) continue;
+    claimsById.set(String(claim.claimId), /** @type {MemorySourceClaim} */ ({
       ...claim,
-      evidenceSegmentIds: uniqueStrings(claim?.evidenceSegmentIds, 200),
-    });
+      claimId: String(claim.claimId),
+      text: String(claim.text ?? ""),
+      claimType: String(claim.claimType ?? ""),
+      status: String(claim.status ?? ""),
+      evidenceQuality: String(claim.evidenceQuality ?? ""),
+      evidenceSegmentIds: uniqueStrings(claim.evidenceSegmentIds, 200),
+    }));
   }
   return claimsById;
 }
 
+/** @param {IdentityCandidate} candidate @param {unknown} meetingAnalysis */
 function participantIdentityValid(candidate, meetingAnalysis) {
-  const participants = list(meetingAnalysis?.participantResolution?.participants);
-  return participants.some((participant) => participant?.nameStatus === "user_confirmed"
+  const participants = list(asRecord(asRecord(meetingAnalysis).participantResolution).participants).map(asRecord);
+  return participants.some((participant) => participant.nameStatus === "user_confirmed"
     && candidate.memoryKey === `participant:${String(participant.alias ?? "").replace(/^参会人\s*/u, "").toLowerCase()}`
     && candidate.content.includes(String(participant.alias))
     && candidate.content.includes(String(participant.displayName)));
 }
 
+/** @param {unknown} payload @param {{ meetingAnalysis: unknown, knownSegmentIds?: unknown[], runId: string }} options */
 export function reconcileMeetingMemoryCandidates(payload, { meetingAnalysis, knownSegmentIds = [], runId }) {
+  /** @type {AcceptedMemoryCandidate[]} */
   const accepted = [];
+  /** @type {Array<Record<string, unknown>>} */
   const rejected = [];
-  if (!payload || payload.schemaVersion !== MEETING_MEMORY_SCHEMA_VERSION) {
+  const normalizedPayload = asRecord(payload);
+  if (normalizedPayload.schemaVersion !== MEETING_MEMORY_SCHEMA_VERSION) {
     return { schemaVersion: MEETING_MEMORY_RESULT_VERSION, status: "blocked", reason: "memory_payload_missing_or_invalid", accepted, rejected, runId };
   }
   const known = new Set(uniqueStrings(knownSegmentIds, 20_000));
   const claimsById = evidenceIndexes(meetingAnalysis);
-  for (const [index, raw] of list(payload.candidates).slice(0, 80).entries()) {
-    const type = cleanText(raw?.type, 40);
-    const memoryKey = safeMemoryKey(raw?.memoryKey);
-    const content = cleanText(raw?.content, 600);
-    const rationale = cleanText(raw?.rationale, 500);
-    const confidence = cleanText(raw?.confidence, 20);
-    const sourceClaimIds = uniqueStrings(raw?.sourceClaimIds, 40);
-    const evidenceSegmentIds = uniqueStrings(raw?.evidenceSegmentIds, 100);
+  for (const [index, value] of list(normalizedPayload.candidates).slice(0, 80).entries()) {
+    const raw = asRecord(value);
+    const type = cleanText(raw.type, 40);
+    const memoryKey = safeMemoryKey(raw.memoryKey);
+    const content = cleanText(raw.content, 600);
+    const rationale = cleanText(raw.rationale, 500);
+    const confidence = cleanText(raw.confidence, 20);
+    const sourceClaimIds = uniqueStrings(raw.sourceClaimIds, 40);
+    const evidenceSegmentIds = uniqueStrings(raw.evidenceSegmentIds, 100);
+    /** @type {string[]} */
     const reasons = [];
     if (!ALLOWED_TYPES.has(type)) reasons.push("memory_type_not_allowed");
     if (!memoryKey) reasons.push("memory_key_invalid");
@@ -303,7 +361,10 @@ export function reconcileMeetingMemoryCandidates(payload, { meetingAnalysis, kno
     } else {
       if (sourceClaimIds.length === 0) reasons.push("source_claim_ids_required");
       if (evidenceSegmentIds.length === 0) reasons.push("evidence_segment_ids_required");
-      const sourceClaims = sourceClaimIds.map((id) => claimsById.get(id)).filter(Boolean);
+      const sourceClaims = sourceClaimIds.flatMap((id) => {
+        const claim = claimsById.get(id);
+        return claim ? [claim] : [];
+      });
       if (sourceClaims.length !== sourceClaimIds.length) reasons.push("source_claim_not_found");
       const claimTypesAllowed = type === "decision"
         ? new Set(["decision"])
@@ -333,20 +394,21 @@ export function reconcileMeetingMemoryCandidates(payload, { meetingAnalysis, kno
       sourceRunId: runId,
     };
     if (reasons.length > 0) rejected.push({ ...normalized, reasons: [...new Set(reasons)] });
-    else accepted.push({ ...normalized, fingerprint: fingerprint(type, memoryKey, content) });
+    else if (memoryKey) accepted.push({ ...normalized, memoryKey, fingerprint: fingerprint(type, memoryKey, content) });
   }
   return {
     schemaVersion: MEETING_MEMORY_RESULT_VERSION,
     status: rejected.length > 0 ? "needs_review" : "accepted",
     reason: rejected.length > 0 ? "some_memory_candidates_rejected" : null,
-    summary: cleanText(payload.summary, 700),
+    summary: cleanText(normalizedPayload.summary, 700),
     accepted,
     rejected,
-    excluded: list(payload.excluded).slice(0, 80),
+    excluded: list(normalizedPayload.excluded).slice(0, 80),
     runId,
   };
 }
 
+/** @param {string} path @returns {Array<Record<string, unknown>>} */
 function readLedger(path) {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
@@ -354,6 +416,7 @@ function readLedger(path) {
   });
 }
 
+/** @param {string} path @param {string} text */
 function atomicWrite(path, text) {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -361,6 +424,13 @@ function atomicWrite(path, text) {
   renameSync(temporary, path);
 }
 
+/** @param {unknown} error */
+function errorCode(error) {
+  const code = asRecord(error).code;
+  return typeof code === "string" ? code : null;
+}
+
+/** @template T @param {string} memoryDir @param {() => T} operation @returns {T} */
 function withMemoryWriteLock(memoryDir, operation) {
   mkdirSync(memoryDir, { recursive: true });
   const lockPath = join(memoryDir, ".write.lock");
@@ -370,14 +440,14 @@ function withMemoryWriteLock(memoryDir, operation) {
     try {
       descriptor = openSync(lockPath, "wx", 0o600);
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
+      if (errorCode(error) !== "EEXIST") throw error;
       try {
         if (Date.now() - statSync(lockPath).mtimeMs > 60_000) {
           unlinkSync(lockPath);
           continue;
         }
       } catch (lockError) {
-        if (lockError?.code !== "ENOENT") throw lockError;
+        if (errorCode(lockError) !== "ENOENT") throw lockError;
         continue;
       }
       if (Date.now() >= deadline) throw new Error("meeting_memory_write_lock_timeout");
@@ -388,10 +458,11 @@ function withMemoryWriteLock(memoryDir, operation) {
     return operation();
   } finally {
     closeSync(descriptor);
-    try { unlinkSync(lockPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    try { unlinkSync(lockPath); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   }
 }
 
+/** @param {Array<Record<string, unknown>>} entries */
 function renderMemory(entries) {
   const sections = [
     ["participant_identity", "已确认参会人"],
@@ -410,27 +481,36 @@ function renderMemory(entries) {
     if (values.length === 0) continue;
     lines.push("", `## ${title}`, "");
     for (const entry of values) {
-      const evidence = list(entry.evidenceSegmentIds).length > 0 ? `；证据：${entry.evidenceSegmentIds.join(", ")}` : "；来源：用户显式映射";
-      const claims = list(entry.sourceClaimIds).length > 0 ? `；claims：${entry.sourceClaimIds.join(", ")}` : "";
+      const evidenceIds = uniqueStrings(entry.evidenceSegmentIds, 100);
+      const claimIds = uniqueStrings(entry.sourceClaimIds, 40);
+      const evidence = evidenceIds.length > 0 ? `；证据：${evidenceIds.join(", ")}` : "；来源：用户显式映射";
+      const claims = claimIds.length > 0 ? `；claims：${claimIds.join(", ")}` : "";
       lines.push(`- [${entry.memoryKey}] ${entry.content}（run: ${entry.sourceRunId}${claims}${evidence}）`);
     }
   }
   return `${lines.slice(0, 200).join("\n")}\n`;
 }
 
+/** @param {unknown} reconciliation @param {{ workspaceDir: string, memoryRelativeDir?: string, now?: string }} options */
 export function persistMeetingMemory(reconciliation, { workspaceDir, memoryRelativeDir = ".pi/agent-memory/meeting-memory", now = new Date().toISOString() }) {
+  const normalizedReconciliation = asRecord(reconciliation);
   const memoryDir = workspacePath(workspaceDir, memoryRelativeDir);
   return withMemoryWriteLock(memoryDir, () => {
     const ledgerPath = join(memoryDir, "ledger.jsonl");
     const conflictLedgerPath = join(memoryDir, "conflicts.jsonl");
     const memoryPath = join(memoryDir, "MEMORY.md");
     const existing = readLedger(ledgerPath).filter((entry) => entry?.status === "accepted");
-    const byFingerprint = new Set(existing.map((entry) => entry.fingerprint));
+    const byFingerprint = new Set(existing.map((entry) => String(entry.fingerprint ?? "")).filter(Boolean));
     const byKey = new Map(existing.map((entry) => [entry.memoryKey, entry]));
+    /** @type {Array<Record<string, unknown>>} */
     const persisted = [];
+    /** @type {Array<Record<string, unknown>>} */
     const duplicates = [];
+    /** @type {Array<Record<string, unknown>>} */
     const conflicts = [];
-    for (const candidate of list(reconciliation?.accepted)) {
+    for (const value of list(normalizedReconciliation.accepted)) {
+      const candidate = asRecord(value);
+      if (typeof candidate.fingerprint !== "string" || typeof candidate.memoryKey !== "string") continue;
       if (byFingerprint.has(candidate.fingerprint)) {
         duplicates.push({ ...candidate, reason: "memory_candidate_duplicate" });
         continue;
@@ -440,9 +520,9 @@ export function persistMeetingMemory(reconciliation, { workspaceDir, memoryRelat
         conflicts.push({ ...candidate, reason: "memory_key_conflict_requires_review", existingFingerprint: prior.fingerprint });
         continue;
       }
-      const entry = { ...candidate, status: "accepted", acceptedAt: now };
+      const entry = /** @type {Record<string, unknown>} */ ({ ...candidate, status: "accepted", acceptedAt: now });
       existing.push(entry);
-      byFingerprint.add(entry.fingerprint);
+      byFingerprint.add(String(entry.fingerprint));
       byKey.set(entry.memoryKey, entry);
       persisted.push(entry);
     }

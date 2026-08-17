@@ -44,6 +44,19 @@ const LOCAL_ENV_ALLOWLIST = new Set([
   "ALIYUN_ASR_AUDIO_FRAME_DELAY_MS",
 ]);
 
+/**
+ * @typedef {{ version: number, defaultTools: string[], profileTools: Record<string, string[]> }} ToolLoadManifest
+ * @typedef {{ name: string, execute: (toolCallId: string, params: unknown) => Promise<unknown> }} RuntimeToolDefinition
+ * @typedef {Record<string, string | boolean>} CliArgs
+ */
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
+}
+
 function ensureTypeScriptImportSupport() {
   const hasStripTypes = process.execArgv.includes("--experimental-strip-types") ||
     String(process.env.NODE_OPTIONS ?? "").includes("--experimental-strip-types");
@@ -56,11 +69,13 @@ function ensureTypeScriptImportSupport() {
   process.exit(result.status ?? 1);
 }
 
+/** @param {string[]} argv @returns {CliArgs} */
 function parseArgs(argv) {
+  /** @type {CliArgs} */
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
-    if (!item.startsWith("--")) continue;
+    if (!item || !item.startsWith("--")) continue;
     const equalsIndex = item.indexOf("=");
     if (equalsIndex > 2) {
       args[item.slice(2, equalsIndex)] = item.slice(equalsIndex + 1);
@@ -78,42 +93,49 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} value */
 function safeEnvFilePath(value) {
-  const target = resolve(value || join(workspaceDir, ".env.local"));
+  const target = resolve(typeof value === "string" && value ? value : join(workspaceDir, ".env.local"));
   if (!isInside(workspaceDir, target)) {
     throw new Error("runtime_env_file_outside_workspace_blocked");
   }
   return target;
 }
 
+/** @param {string} text @returns {Record<string, string>} */
 function parseDotenv(text) {
+  /** @type {Record<string, string>} */
   const values = {};
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!match) continue;
+    const key = match?.[1];
+    if (!key) continue;
     let value = match[2] ?? "";
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     } else {
       value = value.replace(/\s+#.*$/, "").trim();
     }
-    values[match[1]] = value;
+    values[key] = value;
   }
   return values;
 }
 
+/** @param {CliArgs} args */
 function loadRuntimeEnv(args) {
   if (/^(0|false|no|off)$/i.test(String(process.env.FEISHU_AGENT_LOAD_LOCAL_ENV ?? "1"))) {
     return { status: "disabled", loadedKeys: [], skippedKeys: [] };
@@ -123,7 +145,9 @@ function loadRuntimeEnv(args) {
     return { status: "missing", loadedKeys: [], skippedKeys: [] };
   }
   const parsed = parseDotenv(readFileSync(envFile, "utf8"));
+  /** @type {string[]} */
   const loadedKeys = [];
+  /** @type {string[]} */
   const skippedKeys = [];
   for (const [key, value] of Object.entries(parsed)) {
     if (!LOCAL_ENV_ALLOWLIST.has(key)) {
@@ -141,6 +165,7 @@ function loadRuntimeEnv(args) {
   return { status: "loaded", loadedKeys, skippedKeys };
 }
 
+/** @param {unknown} value @param {string} label @returns {string[]} */
 function assertStringArray(value, label) {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.trim())) {
     throw new Error(`tool load manifest ${label} must be an array of extension file names`);
@@ -148,36 +173,41 @@ function assertStringArray(value, label) {
   return value.map((item) => item.trim());
 }
 
+/** @returns {ToolLoadManifest} */
 function readToolLoadManifest() {
   if (!existsSync(toolLoadManifestPath)) {
     throw new Error(`tool load manifest not found: ${toolLoadManifestPath}`);
   }
-  const manifest = JSON.parse(readFileSync(toolLoadManifestPath, "utf8"));
-  if (!manifest || typeof manifest !== "object") {
+  const manifest = asRecord(JSON.parse(readFileSync(toolLoadManifestPath, "utf8")));
+  if (Object.keys(manifest).length === 0) {
     throw new Error("tool load manifest must be an object");
   }
-  if (!Number.isInteger(manifest.version) || manifest.version < 1) {
+  const version = manifest.version;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
     throw new Error("tool load manifest version must be a positive integer");
   }
   const profileTools = manifest.profileTools;
   if (!profileTools || typeof profileTools !== "object" || Array.isArray(profileTools)) {
     throw new Error("tool load manifest profileTools must be an object");
   }
+  /** @type {Record<string, string[]>} */
   const normalizedProfileTools = Object.create(null);
-  for (const [profile, files] of Object.entries(profileTools)) {
+  for (const [profile, files] of Object.entries(asRecord(profileTools))) {
     normalizedProfileTools[profile] = assertStringArray(files, `profileTools.${profile}`);
   }
   return {
-    version: manifest.version,
+    version,
     defaultTools: assertStringArray(manifest.defaultTools, "defaultTools"),
     profileTools: normalizedProfileTools,
   };
 }
 
+/** @template T @param {T[]} values @returns {T[]} */
 function unique(values) {
   return [...new Set(values)];
 }
 
+/** @param {ToolLoadManifest} manifest */
 function allManifestExtensionFiles(manifest) {
   return unique([
     ...manifest.defaultTools,
@@ -185,6 +215,7 @@ function allManifestExtensionFiles(manifest) {
   ]);
 }
 
+/** @param {string} file */
 function safeExtensionPath(file) {
   if (isAbsolute(file)) {
     throw new Error(`extension file must be relative to extensions dir: ${file}`);
@@ -209,6 +240,7 @@ function safeExtensionPath(file) {
   return realAbs;
 }
 
+/** @param {ToolLoadManifest} manifest @param {string} profile */
 function extensionFilesForProfile(manifest, profile) {
   if (!profile) return manifest.defaultTools;
   const files = manifest.profileTools[profile];
@@ -219,16 +251,21 @@ function extensionFilesForProfile(manifest, profile) {
   return files;
 }
 
+/** @param {{ profile?: string, requestedTool?: string }} [options] @returns {Promise<Record<string, RuntimeToolDefinition>>} */
 async function loadTools({ profile = "", requestedTool = "" } = {}) {
   const manifest = readToolLoadManifest();
+  /** @type {Record<string, RuntimeToolDefinition>} */
   const tools = Object.create(null);
   const pi = {
+    /** @param {RuntimeToolDefinition} definition */
     registerTool(definition) {
       tools[definition.name] = definition;
     },
   };
 
+  /** @type {Set<string>} */
   const loaded = new Set();
+  /** @param {string} file */
   async function loadExtensionFile(file) {
     const abs = safeExtensionPath(file);
     if (loaded.has(abs)) return;
@@ -236,7 +273,7 @@ async function loadTools({ profile = "", requestedTool = "" } = {}) {
     if (typeof mod.default !== "function") {
       throw new Error(`extension file does not export a default registration function: ${file}`);
     }
-    await mod.default(pi);
+    await mod.default(/** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ (/** @type {unknown} */ (pi)));
     loaded.add(abs);
   }
 
@@ -272,8 +309,11 @@ async function main() {
   if (!tools[tool]) {
     throw new Error(`runtime tool not found: ${tool}`);
   }
-  const result = await tools[tool].execute("runtime-tool-cli", params);
-  const payload = result?.details ?? result;
+  const selectedTool = tools[tool];
+  if (!selectedTool) throw new Error(`runtime tool not found: ${tool}`);
+  const result = await selectedTool.execute("runtime-tool-cli", params);
+  const resultRecord = asRecord(result);
+  const payload = resultRecord.details ?? result;
   if (out) writeJson(out, payload);
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }

@@ -1,9 +1,22 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isRecord,
+  parseDocumentLifecycle,
+  parseOfficeObject,
+  parseRetrievalEntry,
+  parseRetrievalIndex,
+  type DocumentLifecycle,
+  type OfficeContext,
+  type OfficeObject,
+  type OfficeSourceRun,
+  type RetrievalEntry,
+  type RetrievalIndex,
+} from "../dist/index.js";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
@@ -80,6 +93,31 @@ type RetrievalIndexSearchDetails = OfficeBlockedDetails | {
   rawSecretsReturned: boolean;
   rawMediaExternalUpload: boolean;
 };
+
+type LifecyclePlan = {
+  schemaVersion: "document-lifecycle-plan-v1";
+  status: "blocked" | "needs_confirmation" | "ready";
+  action: string;
+  documentId: string;
+  channel: "feishu" | "wechat" | "local";
+  target: Record<string, unknown>;
+  sourceRun: OfficeSourceRun;
+  nextVersion: string;
+  reasons: string[];
+  requiredPolicyIntent: string;
+  destructiveActionsAllowed: false;
+  rawSecretsReturned: false;
+  rawMediaExternalUpload: false;
+};
+
+function officeChannel(value: unknown): "feishu" | "wechat" | "local" {
+  return value === "feishu" || value === "wechat" ? value : "local";
+}
+
+function officeObjectType(value: unknown): RetrievalEntry["objectType"] {
+  const allowed: RetrievalEntry["objectType"][] = ["document", "file", "meeting", "transcript_summary", "task", "calendar_event", "contact", "project", "customer", "preference", "run"];
+  return allowed.includes(value as RetrievalEntry["objectType"]) ? value as RetrievalEntry["objectType"] : "run";
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -180,38 +218,43 @@ function containsSecretRisk(value: unknown, path: string[] = []): string | null 
 
 function writeJson(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(sanitize(value), null, 2)}\n`, "utf8");
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, `${JSON.stringify(sanitize(value), null, 2)}\n`, "utf8");
+  renameSync(tempPath, path);
   return path;
 }
 
-function loadJson(path: string) {
-  return JSON.parse(readFileSync(path, "utf8"));
+function loadJson(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
 }
 
-function defaultContext(params: any) {
+function defaultContext(params: unknown): OfficeContext {
+  const record = isRecord(params) ? params : {};
   return {
-    contextId: params.contextId ?? hashText([params.channel ?? "local", params.conversationId ?? "", params.actorId ?? ""].join(":")).slice(0, 24),
-    actor: params.actor ?? { actorId: params.actorId ?? null },
-    conversation: params.conversation ?? { conversationId: params.conversationId ?? null },
-    workspace: params.workspace ?? { workspaceId: params.workspaceId ?? "local-runtime" },
-    replyTarget: params.replyTarget ?? null,
-    permissions: params.permissions ?? {},
+    contextId: String(record.contextId ?? hashText([record.channel ?? "local", record.conversationId ?? "", record.actorId ?? ""].join(":")).slice(0, 24)),
+    actor: isRecord(record.actor) ? record.actor : { actorId: record.actorId ?? null },
+    conversation: isRecord(record.conversation) ? record.conversation : { conversationId: record.conversationId ?? null },
+    workspace: isRecord(record.workspace) ? record.workspace : { workspaceId: record.workspaceId ?? "local-runtime" },
+    replyTarget: record.replyTarget ?? null,
+    permissions: isRecord(record.permissions) ? record.permissions : {},
   };
 }
 
-function defaultSourceRun(params: any) {
+function defaultSourceRun(params: unknown): OfficeSourceRun {
+  const record = isRecord(params) ? params : {};
   return {
-    runId: params.sourceRunId ?? params.runId,
-    version: params.sourceRunVersion ?? "v1",
-    artifactPointer: params.sourceArtifactPointer ?? null,
+    runId: String(record.sourceRunId ?? record.runId ?? "run"),
+    version: String(record.sourceRunVersion ?? "v1"),
+    artifactPointer: record.sourceArtifactPointer === undefined || record.sourceArtifactPointer === null ? null : String(record.sourceArtifactPointer),
   };
 }
 
-function buildLifecyclePlan(params: any) {
-  const action = String(params.action ?? "create");
+function buildLifecyclePlan(params: unknown): LifecyclePlan {
+  const record = isRecord(params) ? params : {};
+  const action = String(record.action ?? "create");
   const destructive = DESTRUCTIVE_ACTIONS.has(action);
   const modifiesExisting = ["overwrite", "revised", "rewrite_section", "section_rewritten", "comment"].includes(action);
-  const targetSpecified = Boolean(params.targetFileToken || params.targetArtifactPointer || params.generatedInCurrentConversation);
+  const targetSpecified = Boolean(record.targetFileToken || record.targetArtifactPointer || record.generatedInCurrentConversation);
   const status = destructive ? "blocked" : modifiesExisting && !targetSpecified ? "needs_confirmation" : "ready";
   const reasons = [];
   if (destructive) reasons.push("destructive_document_action_blocked");
@@ -222,16 +265,16 @@ function buildLifecyclePlan(params: any) {
     schemaVersion: "document-lifecycle-plan-v1",
     status,
     action,
-    documentId: params.documentId ?? `doc_${randomUUID().slice(0, 8)}`,
-    channel: params.channel ?? "local",
+    documentId: String(record.documentId ?? `doc_${randomUUID().slice(0, 8)}`),
+    channel: officeChannel(record.channel),
     target: {
-      targetType: params.targetFileToken ? "explicit_file_token" : params.targetArtifactPointer ? "generated_artifact" : "none",
-      fileToken: params.targetFileToken ?? null,
-      artifactPointer: params.targetArtifactPointer ?? null,
-      generatedInCurrentConversation: Boolean(params.generatedInCurrentConversation),
+      targetType: record.targetFileToken ? "explicit_file_token" : record.targetArtifactPointer ? "generated_artifact" : "none",
+      fileToken: record.targetFileToken ?? null,
+      artifactPointer: record.targetArtifactPointer ?? null,
+      generatedInCurrentConversation: Boolean(record.generatedInCurrentConversation),
     },
-    sourceRun: defaultSourceRun(params),
-    nextVersion: params.nextVersion ?? "v1",
+    sourceRun: defaultSourceRun(record),
+    nextVersion: String(record.nextVersion ?? "v1"),
     reasons,
     requiredPolicyIntent: destructive ? "delete" : modifiesExisting || action === "create" ? "write_private" : "draft",
     destructiveActionsAllowed: false,
@@ -240,15 +283,21 @@ function buildLifecyclePlan(params: any) {
   };
 }
 
-function buildLifecycleArtifact(params: any, plan: any) {
-  return {
+function buildLifecycleArtifact(params: unknown, plan: LifecyclePlan): DocumentLifecycle {
+  const record = isRecord(params) ? params : {};
+  const currentState = plan.status === "blocked"
+    ? "blocked"
+    : ["draft", "review", "published", "revision_requested", "archived"].includes(String(record.currentState))
+      ? record.currentState as DocumentLifecycle["currentState"]
+      : "draft";
+  return parseDocumentLifecycle({
     schemaVersion: "document-lifecycle-v1",
-    version: plan.nextVersion ?? params.version ?? "v1",
+    version: String(plan.nextVersion ?? record.version ?? "v1"),
     documentId: plan.documentId,
     channel: plan.channel,
     context: defaultContext(params),
     sourceRun: plan.sourceRun,
-    currentState: plan.status === "blocked" ? "blocked" : params.currentState ?? "draft",
+    currentState,
     target: plan.target,
     lifecycleEvents: [
       {
@@ -269,9 +318,9 @@ function buildLifecycleArtifact(params: any, plan: any) {
                       : "comment_added",
         sourceRun: plan.sourceRun,
         version: plan.nextVersion ?? "v1",
-        artifactPointer: params.artifactPointer ?? params.targetArtifactPointer ?? "pending-artifact",
-        diffPointer: params.diffPointer ?? null,
-        summaryPointer: params.summaryPointer ?? null,
+        artifactPointer: String(record.artifactPointer ?? record.targetArtifactPointer ?? "pending-artifact"),
+        diffPointer: record.diffPointer === undefined || record.diffPointer === null ? null : String(record.diffPointer),
+        summaryPointer: record.summaryPointer === undefined || record.summaryPointer === null ? null : String(record.summaryPointer),
         requiresConfirmation: plan.status === "needs_confirmation",
         confirmationStatus: plan.status === "needs_confirmation" ? "pending" : "not_required",
       },
@@ -279,32 +328,37 @@ function buildLifecycleArtifact(params: any, plan: any) {
     destructiveActionsAllowed: false,
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-  };
+  });
 }
 
-function normalizeRetrievalEntry(params: any, entry: any, index: number) {
-  return {
-    entryId: entry.entryId ?? `entry_${hashText(JSON.stringify(entry)).slice(0, 12)}_${index}`,
-    objectType: entry.objectType ?? "run",
-    channel: entry.channel ?? params.channel ?? "local",
-    context: entry.context ?? defaultContext(params),
-    sourceRun: entry.sourceRun ?? defaultSourceRun(params),
-    version: entry.version ?? "v1",
-    title: boundedPreview(entry.title, 180),
-    summary: boundedPreview(entry.summary, 1200),
-    boundedPreview: boundedPreview(entry.boundedPreview ?? entry.preview, 900),
-    tags: Array.isArray(entry.tags) ? entry.tags.map((tag: unknown) => String(tag).slice(0, 80)) : [],
+function normalizeRetrievalEntry(params: unknown, entry: unknown, index: number): RetrievalEntry {
+  const paramRecord = isRecord(params) ? params : {};
+  const record = isRecord(entry) ? entry : {};
+  const pointerRecord = isRecord(record.pointers) ? record.pointers : {};
+  const context = isRecord(record.context) ? defaultContext({ ...paramRecord, ...record.context }) : defaultContext(paramRecord);
+  const sourceRun = isRecord(record.sourceRun) ? defaultSourceRun({ ...paramRecord, sourceRunId: record.sourceRun.runId, sourceRunVersion: record.sourceRun.version, sourceArtifactPointer: record.sourceRun.artifactPointer }) : defaultSourceRun(paramRecord);
+  return parseRetrievalEntry({
+    entryId: String(record.entryId ?? `entry_${hashText(JSON.stringify(record)).slice(0, 12)}_${index}`),
+    objectType: officeObjectType(record.objectType),
+    channel: officeChannel(record.channel ?? paramRecord.channel),
+    context,
+    sourceRun,
+    version: String(record.version ?? "v1"),
+    title: boundedPreview(String(record.title ?? ""), 180),
+    summary: boundedPreview(String(record.summary ?? ""), 1200),
+    boundedPreview: boundedPreview(String(record.boundedPreview ?? record.preview ?? ""), 900),
+    tags: Array.isArray(record.tags) ? record.tags.map((tag) => String(tag).slice(0, 80)) : [],
     pointers: {
-      artifactPointer: entry.pointers?.artifactPointer ?? entry.artifactPointer,
-      summaryPointer: entry.pointers?.summaryPointer ?? entry.summaryPointer ?? null,
-      metadataPointer: entry.pointers?.metadataPointer ?? entry.metadataPointer ?? null,
-      embeddingPointer: entry.pointers?.embeddingPointer ?? null,
+      artifactPointer: String(pointerRecord.artifactPointer ?? record.artifactPointer ?? ""),
+      summaryPointer: pointerRecord.summaryPointer === undefined ? record.summaryPointer === undefined ? null : String(record.summaryPointer) : pointerRecord.summaryPointer === null ? null : String(pointerRecord.summaryPointer),
+      metadataPointer: pointerRecord.metadataPointer === undefined ? record.metadataPointer === undefined ? null : String(record.metadataPointer) : pointerRecord.metadataPointer === null ? null : String(pointerRecord.metadataPointer),
+      embeddingPointer: pointerRecord.embeddingPointer === undefined || pointerRecord.embeddingPointer === null ? null : String(pointerRecord.embeddingPointer),
     },
     pointerOnly: true,
-  };
+  });
 }
 
-function matchScore(entry: any, query: string) {
+function matchScore(entry: RetrievalEntry, query: string) {
   const haystack = [entry.title, entry.summary, entry.boundedPreview, ...(entry.tags ?? [])].join(" ").toLowerCase();
   return query
     .toLowerCase()
@@ -364,7 +418,8 @@ export default function (pi: ExtensionAPI) {
       try {
         const risk = containsSecretRisk(params);
         if (risk) throw new Error(`office_runtime_secret_payload_blocked:${risk}`);
-        const plan = params.plan ?? buildLifecyclePlan({ ...params, action: params.action ?? "create" });
+        const planRecord = isRecord(params.plan) ? params.plan : {};
+        const plan = buildLifecyclePlan({ ...params, ...planRecord, action: planRecord.action ?? params.action ?? "create" });
         const artifact = buildLifecycleArtifact(params, plan);
         const path = writeJson(artifactPath(params.runId, "document-lifecycle.json", params.outputRoot), artifact);
         const details = { ok: true, status: artifact.currentState, documentLifecyclePath: path, rawSecretsReturned: false, rawMediaExternalUpload: false };
@@ -402,7 +457,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const risk = containsSecretRisk(params);
         if (risk) throw new Error(`office_runtime_secret_payload_blocked:${risk}`);
-        const object = {
+        const object: OfficeObject = parseOfficeObject({
           schemaVersion: "office-object-v1",
           version: "v1",
           objectId: params.objectId ?? `${params.objectType}_${randomUUID().slice(0, 8)}`,
@@ -420,7 +475,7 @@ export default function (pi: ExtensionAPI) {
           },
           rawSecretsReturned: false,
           rawMediaExternalUpload: false,
-        };
+        });
         const path = writeJson(artifactPath(params.runId, `office-object-${object.objectId}.json`, params.outputRoot), object);
         const details = { ok: true, officeObjectPath: path, objectId: object.objectId, rawSecretsReturned: false };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -453,9 +508,9 @@ export default function (pi: ExtensionAPI) {
         const risk = containsSecretRisk(params);
         if (risk) throw new Error(`retrieval_index_secret_payload_blocked:${risk}`);
         const entries = params.entries.map((entry: unknown, index: number) => normalizeRetrievalEntry(params, entry, index));
-        const missingPointer = entries.find((entry: any) => !entry.pointers.artifactPointer);
+        const missingPointer = entries.find((entry) => !entry.pointers.artifactPointer);
         if (missingPointer) throw new Error("retrieval_index_artifact_pointer_required");
-        const index = {
+        const index: RetrievalIndex = parseRetrievalIndex({
           schemaVersion: "retrieval-index-v1",
           version: "v1",
           indexId: params.indexId ?? `index_${safeSegment(params.runId, "run")}`,
@@ -467,7 +522,7 @@ export default function (pi: ExtensionAPI) {
           entries,
           rawSecretsReturned: false,
           rawMediaExternalUpload: false,
-        };
+        });
         const path = writeJson(artifactPath(params.runId, "retrieval-index.json", params.outputRoot), index);
         const details = { ok: true, retrievalIndexPath: path, entryCount: entries.length, pointerOnly: true, rawSecretsReturned: false };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -492,14 +547,13 @@ export default function (pi: ExtensionAPI) {
         const path = resolve(params.indexPath);
         if (!isInside(workspaceDir, path)) throw new Error("retrieval_index_path_outside_workspace_blocked");
         if (!existsSync(path)) throw new Error("retrieval_index_missing");
-        const index = loadJson(path);
-        if (index.pointerOnly !== true) throw new Error("retrieval_index_pointer_only_required");
-        const results = (index.entries ?? [])
-          .map((entry: any) => ({ ...entry, score: matchScore(entry, params.query) }))
-          .filter((entry: any) => entry.score > 0)
-          .sort((a: any, b: any) => b.score - a.score)
+        const index = parseRetrievalIndex(loadJson(path));
+        const results = index.entries
+          .map((entry) => ({ ...entry, score: matchScore(entry, params.query) }))
+          .filter((entry) => entry.score > 0)
+          .sort((a, b) => b.score - a.score)
           .slice(0, Math.max(1, Math.min(Number(params.limit ?? 5), 20)))
-          .map((entry: any) => ({
+          .map((entry) => ({
             entryId: entry.entryId,
             objectType: entry.objectType,
             title: entry.title ?? null,

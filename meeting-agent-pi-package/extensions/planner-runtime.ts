@@ -16,6 +16,7 @@ import {
   type CapabilityNeed,
   type InteractionItem,
   type LedgerStep,
+  type LedgerEvent,
   type PolicyRisk,
   type TaskType,
   type TodoProjection,
@@ -76,6 +77,14 @@ type ReconcileParams = {
   stepUpdates?: StepUpdate[];
   interactionUpdates?: InteractionUpdate[];
   interactionAdditions?: unknown[];
+  eventAdditions?: Array<{
+    type: string;
+    actor?: string;
+    reason?: string | null;
+    artifactRef?: string | null;
+    recovery?: string | null;
+    operationId?: string | null;
+  }>;
 };
 
 type LedgerWithProjection = Pick<AdaptiveExecutionLedger, "planId" | "revision" | "steps" | "interactionItems">;
@@ -570,6 +579,17 @@ function reconcileLedger(current: AdaptiveExecutionLedger, params: ReconcilePara
   }
   const now = nowIso();
   let changed = false;
+  const eventAdditions: LedgerEvent[] = (params.eventAdditions ?? []).map((event, index) => ({
+    eventId: stableId("event", `${current.planId}:${params.operationId ?? now}:addition:${index}:${event.type}`),
+    type: event.type,
+    at: now,
+    actor: event.actor ?? params.actor ?? "parent",
+    operationId: event.operationId ?? params.operationId ?? null,
+    reason: event.reason ?? null,
+    artifactRef: event.artifactRef ?? null,
+    recovery: event.recovery ?? null,
+  }));
+  if (eventAdditions.length > 0) changed = true;
   const patches = params.stepUpdates ?? [];
   const steps: LedgerStep[] = current.steps.map((step) => {
     const patch = patches.find((item) => item.stepId === step.stepId);
@@ -645,6 +665,7 @@ function reconcileLedger(current: AdaptiveExecutionLedger, params: ReconcilePara
     updatedAt: now,
     events: [
       ...(current.events ?? []),
+      ...eventAdditions,
       { eventId: stableId("event", `${current.planId}:${revision}:${params.operationId ?? now}`), type: "ledger_reconciled", at: now, actor: params.actor ?? "parent", operationId: params.operationId ?? null },
     ].slice(-500),
   };
@@ -739,6 +760,14 @@ export default function (pi: ExtensionAPI) {
         order: Type.Optional(Type.Number()),
       }))),
       interactionAdditions: Type.Optional(Type.Array(Type.Unknown())),
+      eventAdditions: Type.Optional(Type.Array(Type.Object({
+        type: Type.String(),
+        actor: Type.Optional(Type.String()),
+        reason: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+        artifactRef: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+        recovery: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+        operationId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      }))),
     }),
     async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {

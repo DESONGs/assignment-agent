@@ -1,21 +1,27 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  ContractValidationError,
+  QaEvaluationInputSchema,
+  QaGateResultSchema,
+  isRecord,
+  parseQaEvaluationInput,
+  parseQaGateResult,
+  qaProfileRequirementFailure,
+  stableStringify,
+  type QaChecks,
+  type QaGateResult,
+  type QaIssue,
+  type QaProfile,
+} from "../dist/index.js";
 
 const SEVERITIES = new Set(["info", "warning", "needs_fix", "blocking"]);
 
-type Issue = {
-  code: string;
-  severity: "info" | "warning" | "needs_fix" | "blocking";
-  message: string;
-  suggestedFix?: string;
-  evidence?: unknown;
-  artifactType?: string;
-  priority?: "primary" | "follow_up" | "optional";
-  blocksDelivery?: boolean;
-};
+type Issue = QaIssue;
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
@@ -57,6 +63,14 @@ function gatePath(runId: string, outputRoot?: string) {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function optionalString(value: unknown) {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function normalizeSeverity(value: unknown): Issue["severity"] {
@@ -137,16 +151,59 @@ function hasReadableTableOutput(markdown: string) {
     || /^[-*]\s+.+$/m.test(markdown) && /表格|字段|列|行|范围|需求|验收|暂不做/.test(markdown);
 }
 
-function evaluateGate(checks: any, publishIntent: boolean) {
+function inputHash(value: unknown) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function blockedGate(params: {
+  profile: QaProfile;
+  publishIntent: boolean;
+  checks: QaChecks;
+  reason: string;
+  fieldPath: string;
+  recovery: string;
+  hashSource: unknown;
+}): QaGateResult {
+  const hash = inputHash(params.hashSource);
+  return {
+    schemaVersion: "qa-gate-v2",
+    evaluationId: `qa_${hash.slice(0, 20)}`,
+    inputHash: hash,
+    profile: params.profile,
+    publishIntent: params.publishIntent,
+    status: "blocked",
+    reason: params.reason,
+    fieldPath: params.fieldPath,
+    recovery: params.recovery,
+    primaryDeliveryStatus: "blocked",
+    followUpDeliveryStatus: "blocked",
+    overallStatus: "blocked",
+    publishAllowed: false,
+    evaluatedAt: new Date().toISOString(),
+    artifacts: [],
+    checks: params.checks,
+    issues: [{
+      code: params.reason,
+      severity: "blocking",
+      message: `QA 输入未通过合同校验：${params.fieldPath}`,
+      suggestedFix: params.recovery,
+      blocksDelivery: true,
+    }],
+    rawSecretsReturned: false,
+  };
+}
+
+function evaluateGate(checks: QaChecks, publishIntent: boolean, profile: QaProfile, hash: string): QaGateResult {
   const issues: Issue[] = [];
   for (const issue of asArray(checks?.issues)) {
-    if (issue && typeof issue === "object") {
+    if (isRecord(issue)) {
+      const suggestedFix = optionalString(issue.suggestedFix);
       issues.push({
-        code: String((issue as any).code ?? "external_issue"),
-        severity: normalizeSeverity((issue as any).severity),
-        message: String((issue as any).message ?? "External QA issue."),
-        suggestedFix: (issue as any).suggestedFix,
-        evidence: (issue as any).evidence,
+        code: String(issue.code ?? "external_issue"),
+        severity: normalizeSeverity(issue.severity),
+        message: String(issue.message ?? "External QA issue."),
+        ...(suggestedFix === undefined ? {} : { suggestedFix }),
+        ...(issue.evidence === undefined ? {} : { evidence: issue.evidence }),
       });
     }
   }
@@ -268,8 +325,8 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     });
   }
 
-  const sourcePack = checks?.sourcePack ?? {};
-  if (sourcePack.required === true) {
+  const sourcePack = checks.sourcePack;
+  if (sourcePack?.required === true) {
     if (sourcePack.completeTranscriptAvailable !== true) {
       issues.push({
         code: "source_pack_complete_transcript_missing",
@@ -323,8 +380,8 @@ function evaluateGate(checks: any, publishIntent: boolean) {
 
   const documentOutputs = asArray(checks?.documentOutputs ?? checks?.documents);
 
-  const reviewContext = checks?.reviewContext ?? {};
-  if (reviewContext?.required === true) {
+  const reviewContext = asObject(checks.reviewContext);
+  if (reviewContext.required === true) {
     if (!reviewContext.artifact || reviewContext.status === "missing") {
       issues.push({
         code: "document_revision_review_context_missing",
@@ -333,14 +390,14 @@ function evaluateGate(checks: any, publishIntent: boolean) {
         suggestedFix: "继续处理用户明确给出的修改和可读正文，并披露未覆盖的评论范围；需要逐条评论时再补取。",
       });
     }
-    const access = reviewContext.commentAccess ?? {};
+    const access = asObject(reviewContext.commentAccess);
     const method = String(access.method ?? reviewContext.method ?? "");
     const independentRead = reviewContext.independentCommentThreadsRead === true || method === "cli" || method === "sdk";
     const sourceDocuments = asArray(reviewContext.sourceDocuments);
-    const sourceIds = new Set(sourceDocuments.map((source: any) => String(source?.sourceId ?? "")).filter(Boolean));
-    const scopedComments = sourceDocuments.flatMap((source: any) => asArray(source?.comments));
-    const commentsMissingSource = scopedComments.filter((comment: any) => {
-      const sourceId = String(comment?.sourceId ?? "");
+    const sourceIds = new Set(sourceDocuments.map((source) => String(asObject(source).sourceId ?? "")).filter(Boolean));
+    const scopedComments = sourceDocuments.flatMap((source) => asArray(asObject(source).comments));
+    const commentsMissingSource = scopedComments.filter((comment) => {
+      const sourceId = String(asObject(comment).sourceId ?? "");
       return !sourceId || !sourceIds.has(sourceId);
     });
     if (commentsMissingSource.length > 0) {
@@ -369,7 +426,7 @@ function evaluateGate(checks: any, publishIntent: boolean) {
         evidence: { status: reviewContext.status, method, reason: access.reason ?? null },
       });
     }
-    const matchSummary = reviewContext.matchSummary ?? {};
+    const matchSummary = asObject(reviewContext.matchSummary);
     const sourcesWithUnavailableComments = asArray(matchSummary.sourcesWithUnavailableComments).map(String).filter(Boolean);
     if (sourcesWithUnavailableComments.length > 0 && independentRead) {
       issues.push({
@@ -384,7 +441,10 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     const unmatched = Number(matchSummary.unmatched ?? 0);
     const exportedBodyDetected = Number(matchSummary.exportedBodyDetected ?? 0);
     if (weakMatched + unmatched + exportedBodyDetected > 0) {
-      const documentMarkdown = documentOutputs.map((doc: any) => String(doc?.markdown ?? doc?.content ?? "")).join("\n\n");
+      const documentMarkdown = documentOutputs.map((doc) => {
+        const record = asObject(doc);
+        return String(record.markdown ?? record.content ?? "");
+      }).join("\n\n");
       if (!/待确认|未匹配|无法匹配|独立评论线程未读取|弱定位|多处出现/.test(documentMarkdown)) {
         issues.push({
           code: "document_revision_comment_match_pending_missing",
@@ -406,17 +466,20 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     issueCodes: string[];
   }> = [];
   for (const documentOutput of documentOutputs) {
-    const doc = documentOutput && typeof documentOutput === "object" ? (documentOutput as any) : {};
+    const doc = asObject(documentOutput);
     const docType = String(doc.docType ?? "document");
     const priority = publishIntent ? "primary" : normalizeArtifactPriority(docType, doc.priority ?? doc.deliveryTier);
     const documentIssues: Issue[] = [];
     const markdown = String(doc.markdown ?? doc.content ?? "");
     const title = String(doc.title ?? doc.targetTitle ?? markdownH1(markdown) ?? "").trim();
-    const outputContract = doc.outputContract ?? checks?.outputContract ?? {};
-    const documentIdentity = doc.documentIdentity ?? checks?.documentIdentity ?? {};
-    const identityBasis = asArray(doc.titleBasis?.identityBasis ?? documentIdentity.basis).map(String).filter(Boolean);
-    const identityConfidence = String(doc.titleBasis?.identityConfidence ?? documentIdentity.confidence ?? doc.documentIdentityConfidence ?? "");
-    if (outputContract?.titlePolicy?.forbidGenericUploadName !== false && looksLikeGenericUploadName(title)) {
+    const outputContract = asObject(doc.outputContract ?? checks.outputContract);
+    const documentIdentity = asObject(doc.documentIdentity ?? checks.documentIdentity);
+    const titleBasis = asObject(doc.titleBasis);
+    const titlePolicy = asObject(outputContract.titlePolicy);
+    const markdownPolicy = asObject(outputContract.markdownPolicy);
+    const identityBasis = asArray(titleBasis.identityBasis ?? documentIdentity.basis).map(String).filter(Boolean);
+    const identityConfidence = String(titleBasis.identityConfidence ?? documentIdentity.confidence ?? doc.documentIdentityConfidence ?? "");
+    if (titlePolicy.forbidGenericUploadName !== false && looksLikeGenericUploadName(title)) {
       documentIssues.push(scopedDocumentIssue(docType, priority, {
         code: "bad_document_title",
         severity: "blocking",
@@ -434,7 +497,7 @@ function evaluateGate(checks: any, publishIntent: boolean) {
         evidence: { docType, identityBasis, identityConfidence, documentIdentity },
       }));
     }
-    if (outputContract?.markdownPolicy?.forbidHtmlTableTags !== false && containsHtmlTableTags(markdown)) {
+    if (markdownPolicy.forbidHtmlTableTags !== false && containsHtmlTableTags(markdown)) {
       documentIssues.push(scopedDocumentIssue(docType, priority, {
         code: "raw_html_table_in_markdown",
         severity: "blocking",
@@ -444,7 +507,7 @@ function evaluateGate(checks: any, publishIntent: boolean) {
       }));
     }
     const tableBlockCount = Number(doc.tableBlockCount ?? checks?.sourceStructureSummary?.tableBlockCount ?? 0);
-    if (outputContract?.markdownPolicy?.tablesMustBeMarkdownOrBullets !== false && tableBlockCount > 0 && !hasReadableTableOutput(markdown)) {
+    if (markdownPolicy.tablesMustBeMarkdownOrBullets !== false && tableBlockCount > 0 && !hasReadableTableOutput(markdown)) {
       documentIssues.push(scopedDocumentIssue(docType, priority, {
         code: "table_source_unreadable_in_output",
         severity: "needs_fix",
@@ -580,8 +643,15 @@ function evaluateGate(checks: any, publishIntent: boolean) {
           : "pass";
   const overallStatus = primaryDeliveryStatus !== "ready" ? "blocked" : hasFollowUpIssues ? "partial_ready" : "ready";
   const status = primaryDeliveryStatus === "ready" ? "pass" : primaryDeliveryStatus;
+  const reason = status === "pass" ? null : primaryIssues.find((issue) => issue.severity === "blocking" || issue.severity === "needs_fix")?.code ?? "qa_gate_not_publishable";
   return {
+    schemaVersion: "qa-gate-v2",
+    evaluationId: `qa_${hash.slice(0, 20)}`,
+    inputHash: hash,
+    profile,
+    publishIntent,
     status,
+    reason,
     primaryDeliveryStatus,
     followUpDeliveryStatus,
     overallStatus,
@@ -590,7 +660,56 @@ function evaluateGate(checks: any, publishIntent: boolean) {
     artifacts,
     checks,
     issues,
+    rawSecretsReturned: false,
   };
+}
+
+function gateIntegrityProjection(gate: QaGateResult) {
+  return {
+    schemaVersion: gate.schemaVersion,
+    evaluationId: gate.evaluationId,
+    inputHash: gate.inputHash,
+    profile: gate.profile,
+    publishIntent: gate.publishIntent,
+    status: gate.status,
+    reason: gate.reason,
+    fieldPath: gate.fieldPath ?? null,
+    recovery: gate.recovery ?? null,
+    primaryDeliveryStatus: gate.primaryDeliveryStatus,
+    followUpDeliveryStatus: gate.followUpDeliveryStatus,
+    overallStatus: gate.overallStatus,
+    publishAllowed: gate.publishAllowed,
+    artifacts: gate.artifacts,
+    checks: gate.checks,
+    issues: gate.issues,
+    rawSecretsReturned: gate.rawSecretsReturned,
+  };
+}
+
+function assertGateIntegrity(gate: QaGateResult) {
+  const input = {
+    profile: gate.profile,
+    checks: gate.checks,
+    publishIntent: gate.publishIntent,
+  };
+  const hash = inputHash(input);
+  const requirementFailure = qaProfileRequirementFailure(input);
+  const expected = requirementFailure
+    ? blockedGate({
+        profile: input.profile,
+        publishIntent: input.publishIntent,
+        checks: input.checks,
+        ...requirementFailure,
+        hashSource: input,
+      })
+    : evaluateGate(input.checks, input.publishIntent, input.profile, hash);
+  if (stableStringify(gateIntegrityProjection(gate)) !== stableStringify(gateIntegrityProjection(expected))) {
+    throw new ContractValidationError({
+      reason: "qa_gate_result_integrity_mismatch",
+      fieldPath: "gate",
+      recovery: "重新运行 qa_gate_evaluate，并原样写入其返回结果。",
+    });
+  }
 }
 
 export default function (pi: ExtensionAPI) {
@@ -598,12 +717,32 @@ export default function (pi: ExtensionAPI) {
     name: "qa_gate_evaluate",
     label: "QA Gate Evaluate",
     description: "Evaluate evidence, source-pack provenance/completeness, topic/action coverage, speaker attribution, entity safety, title sync, Feishu readiness, web access, security, and context budget checks.",
-    parameters: Type.Object({
-      checks: Type.Unknown(),
-      publishIntent: Type.Optional(Type.Boolean({ description: "Whether this gate controls a customer-visible or Feishu publish action." })),
-    }),
+    parameters: QaEvaluationInputSchema,
     async execute(_toolCallId, params) {
-      const details = evaluateGate(params.checks, params.publishIntent === true);
+      let input;
+      try {
+        input = parseQaEvaluationInput(params);
+      } catch (error) {
+        const contractError = error instanceof ContractValidationError ? error : new ContractValidationError({
+          reason: "qa_checks_contract_invalid",
+          fieldPath: "$",
+          recovery: "按当前 QA profile 补齐必检项后重新评估。",
+        });
+        const raw = asObject(params);
+        const profile = ["source_pack", "meeting_minutes", "office_document", "document_revision"].includes(String(raw.profile))
+          ? raw.profile as QaProfile
+          : "office_document";
+        const checks: QaChecks = { security: { rawSecretsReturned: false, secretsLeaked: false } };
+        const details = blockedGate({ profile, publishIntent: false, checks, reason: contractError.reason, fieldPath: contractError.fieldPath, recovery: contractError.recovery, hashSource: params });
+        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+      }
+      const requirementFailure = qaProfileRequirementFailure(input);
+      if (requirementFailure) {
+        const details = blockedGate({ profile: input.profile, publishIntent: input.publishIntent === true, checks: input.checks, ...requirementFailure, hashSource: input });
+        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+      }
+      const hash = inputHash(input);
+      const details = evaluateGate(input.checks, input.publishIntent === true, input.profile, hash);
       return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
     },
   });
@@ -614,15 +753,19 @@ export default function (pi: ExtensionAPI) {
     description: "Write a machine-readable qa-gate.json artifact for a run.",
     parameters: Type.Object({
       runId: Type.String(),
-      gate: Type.Unknown(),
+      gate: QaGateResultSchema,
       outputRoot: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {
       try {
+        const gate = parseQaGateResult(params.gate);
+        assertGateIntegrity(gate);
         const path = gatePath(params.runId, params.outputRoot);
         mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, JSON.stringify(params.gate, null, 2) + "\n", "utf8");
-        const details = { ok: true, runId: params.runId, qaGatePath: path };
+        const tempPath = `${path}.${process.pid}.tmp`;
+        writeFileSync(tempPath, JSON.stringify(gate, null, 2) + "\n", "utf8");
+        renameSync(tempPath, path);
+        const details = { ok: true, runId: params.runId, qaGatePath: path, evaluationId: gate.evaluationId, inputHash: gate.inputHash };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {
         const blocked = {
@@ -631,6 +774,8 @@ export default function (pi: ExtensionAPI) {
           reason: error instanceof Error ? error.message : String(error),
           runId: params.runId,
           qaGatePath: "",
+          evaluationId: "",
+          inputHash: "",
         };
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
       }

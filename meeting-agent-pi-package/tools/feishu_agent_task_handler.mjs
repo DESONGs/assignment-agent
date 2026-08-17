@@ -72,14 +72,58 @@ const SECRET_PATTERNS = [
   /\b(FEISHU_APP_SECRET|DEEPSEEK_API_KEY|XIAOMI_TOKEN_PLAN_SGP_API_KEY)\b/gi,
 ];
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {import("../dist/index.js").FeishuEvent} FeishuEvent
+ * @typedef {import("../dist/index.js").FeishuTask} FeishuTask
+ * @typedef {import("../dist/index.js").FeishuRunState} FeishuRunState
+ * @typedef {{ _: string[], [key: string]: string | boolean | string[] | undefined }} CliArgs
+ * @typedef {UnknownRecord & { resourceType?: string, fileKey?: string, file_key?: string, fileToken?: string, name?: string, fileName?: string, localPath?: string | null, mimeType?: string | null, sourceMessageId?: string, messageId?: string, explicitFileReference?: boolean, downloadStatus?: string | null, sourceReady?: boolean, sha256?: string | null, sizeBytes?: number | null }} HandlerAttachment
+ * @typedef {UnknownRecord & { status?: string, unsupportedReason?: string, [key: string]: unknown }} HandlerFileContext
+ * @typedef {FeishuEvent & { attachmentResolution?: UnknownRecord, ledgerSelection?: UnknownRecord, parentMessage?: unknown, rootMessage?: unknown, parentMessages?: unknown[], referencedMessages?: unknown[] }} HandlerEvent
+ * @typedef {FeishuTask & { attachments?: HandlerAttachment[], fileContexts?: UnknownRecord & { contexts?: HandlerFileContext[] } }} HandlerTask
+ * @typedef {{ runDir: string, inputsDir: string, attachmentsDir: string, fileContextsDir: string, fileContextPath: string, artifactsDir: string, eventPath: string, sourceEventsPath: string, taskPath: string, statePath: string, metricsPath: string, manifestPath: string, agentTaskPath: string, agentOutputPath: string, publishPath: string, replyPath: string, progressPath: string, runtimeStoreIndexPath: string, stdoutPath: string, stderrPath: string }} RunPaths
+ * @typedef {{ exitCode: number, signal: NodeJS.Signals | null, stdout: string, stderr: string, error?: string, timedOut: boolean }} CommandResult
+ * @typedef {{ cwd?: string, env?: NodeJS.ProcessEnv, timeoutMs?: number, stdin?: string }} CommandOptions
+ * @typedef {{ outputRoot?: string, runId?: string, executionMode?: string, publishMode?: string, replyMode?: string, publishAs?: string, publishTarget?: string, folderToken?: string, dryRun?: boolean, mockAgent?: boolean, asyncMode?: boolean, asyncVisibleAck?: boolean, fileAckReplyMode?: string, progressReplyMode?: string, cliTimeoutMs?: number, piTimeoutMs?: number, piCliBin?: string, attachmentDownloadAs?: string | string[], attachmentDownloadMaxAttempts?: number, attachmentDownloadTimeoutMs?: number, historicalAttachmentScanLimit?: number, runtimeStoreMode?: string, runtimeStoreCas?: boolean, runtimeStoreTimeoutMs?: number, [key: string]: unknown }} HandlerOptions
+ * @typedef {UnknownRecord & { status: string, summary?: string, documents?: UnknownRecord[], artifacts?: unknown[], qaGate?: UnknownRecord, policyGate?: UnknownRecord }} AgentOutput
+ * @typedef {UnknownRecord & { status: string, documents?: UnknownRecord[] }} PublishResult
+ * @typedef {UnknownRecord & { runId: string, taskType: string, summary: string, finishedAt: string | null, status: string, enabledCapabilities: string[], toolCalls: unknown[], externalCalls: unknown[], generatedArtifacts: unknown[], plannerDecisions: unknown[], policyDecisions: unknown[], workerDecisions: unknown[], capabilitySelections: unknown[], qaGate: unknown }} RunMetrics
+ * @typedef {UnknownRecord & { scopeHash: string, runId: string, plannerEnvelopePath: string }} LedgerIndexEntry
+ * @typedef {{ schemaVersion: string, entries: LedgerIndexEntry[] }} LedgerThreadIndex
+ * @typedef {UnknownRecord & { messageId: string, chatId: string, senderId: string, threadKey: string, timestampMs: number, attachments: HandlerAttachment[] }} AttachmentCacheEntry
+ * @typedef {{ schemaVersion: string, entries: AttachmentCacheEntry[] }} AttachmentCache
+ * @typedef {UnknownRecord & { resourceType: string, fileKey: string, name: string, localPath: string, downloadStatus: string, reason: string, linkMode?: string, reuseSource?: unknown, downloadAs?: unknown, failureClass?: unknown, retryable?: unknown, downloadAttempts?: unknown, exitCode?: unknown, stderrTail?: unknown }} LocalReuseFields
+ * @typedef {HandlerOptions & { kind: string, name: string, fileKey: string, sourceMessageId: string, index: number, targetPath: string, afterCliFailure: boolean, downloadAs?: unknown, failureClass?: unknown, retryable?: unknown, downloadAttempts?: unknown, exitCode?: unknown, stderrTail?: unknown }} ReuseSearchOptions
+ * @typedef {{ schemaVersion: string, entries: Record<string, UnknownRecord>, projectEntries: Record<string, UnknownRecord>, legacySessionMappings: Record<string, UnknownRecord> }} PublishTargetRegistry
+ * @typedef {PublishResult & { plannedCommands: string[][], documents: UnknownRecord[], folderToken: string | null, publishTarget: unknown, reason?: string | null }} HandlerPublishResult
+ * @typedef {UnknownRecord & { status: string, reason?: string, markdown?: string }} ReplyResult
+ * @typedef {UnknownRecord & { status: string, reason?: string }} ProgressResult
+ * @typedef {{ status: string, output: AgentOutput, mode: string, rawSecretsReturned: false }} AgentRun
+ * @typedef {UnknownRecord & { docType: string, title: string, fileName: string, localPath: string, markdown: string }} OutputDocument
+ * @typedef {{ itemId: string, selectedOption: string, requestedDocuments: string[], sourceRunId: unknown, sourcePlanId: unknown, sourceRevision: unknown }} LedgerSelection
+ * @typedef {UnknownRecord & { path: string, ledger: UnknownRecord }} PreviousThreadLedger
+ * @typedef {UnknownRecord & { status: string, reason: string, attachments: HandlerAttachment[], sourceMessageId?: unknown, messageIds?: unknown[], parentResolution?: UnknownRecord, cacheResolution?: UnknownRecord }} AttachmentResolutionResult
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string[]} argv @returns {CliArgs} */
 function parseArgs(argv) {
+  /** @type {CliArgs} */
   const args = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
+    if (item === undefined) continue;
     if (!item.startsWith("--")) {
       args._.push(item);
       continue;
@@ -100,24 +144,28 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeSegment(value, fallback = "item") {
   const cleaned = String(value || fallback).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
   if (!cleaned || cleaned === "." || cleaned === "..") return fallback;
   return cleaned;
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeMarkdownFileName(value, fallback = "document.md") {
   const cleaned = String(value || fallback).replace(/[\/\\:*?"<>|]/g, "_").trim().slice(0, 160) || fallback;
   return cleaned.endsWith(".md") ? cleaned : `${cleaned}.md`;
 }
 
+/** @param {unknown} input */
 function outputRoot(input) {
-  const root = resolve(input ?? DEFAULT_OUTPUT_ROOT);
+  const root = resolve(typeof input === "string" ? input : DEFAULT_OUTPUT_ROOT);
   if (!isInside(workspaceDir, root)) {
     throw new Error("feishu_agent_output_root_outside_workspace_blocked");
   }
@@ -125,10 +173,12 @@ function outputRoot(input) {
   return root;
 }
 
+/** @param {unknown} value */
 function redactString(value) {
   return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), redactSensitiveUrlsInText(value));
 }
 
+/** @param {unknown} stderr */
 function classifyFeishuFileReadFailure(stderr) {
   const text = String(stderr ?? "");
   if (/99991672|action_scope_required|drive:file:download|drive:file:readonly|drive:drive:readonly/i.test(text)) {
@@ -155,7 +205,9 @@ function classifyFeishuFileReadFailure(stderr) {
   };
 }
 
-function classifyFeishuImResourceDownloadFailure(result) {
+/** @param {unknown} resultValue */
+function classifyFeishuImResourceDownloadFailure(resultValue) {
+  const result = asRecord(resultValue);
   const text = `${result?.stderr ?? ""}\n${result?.stdout ?? ""}\n${result?.error ?? ""}`;
   if (result?.exitCode === 127 || /command not found|ENOENT|lark-cli not found/i.test(text)) {
     return {
@@ -192,12 +244,14 @@ function classifyFeishuImResourceDownloadFailure(result) {
   };
 }
 
+/** @param {unknown} value */
 function parseAttachmentDownloadIdentities(value) {
   const raw = String(value ?? "").trim();
   const values = raw
     ? raw.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean)
     : DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES;
   const allowed = new Set(["bot", "user"]);
+  /** @type {string[]} */
   const output = [];
   for (const identity of values) {
     if (!allowed.has(identity) || output.includes(identity)) continue;
@@ -206,20 +260,24 @@ function parseAttachmentDownloadIdentities(value) {
   return output.length > 0 ? output : DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES;
 }
 
+/** @param {HandlerOptions} [options] */
 function attachmentDownloadMaxAttempts(options = {}) {
   const value = Number(options.attachmentDownloadMaxAttempts ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS ?? DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS);
   return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS;
 }
 
+/** @param {HandlerOptions} [options] */
 function attachmentDownloadTimeoutMs(options = {}) {
   const value = Number(options.attachmentDownloadTimeoutMs ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS ?? DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
   return Number.isFinite(value) && value > 0 ? Math.max(30000, Math.floor(value)) : DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS;
 }
 
+/** @param {unknown} value @param {string} [key] @returns {unknown} */
 function sanitize(value, key = "") {
   if (typeof value === "string") return redactString(value).slice(0, 20000);
   if (Array.isArray(value)) return value.map((item) => sanitize(item));
   if (value && typeof value === "object") {
+    /** @type {UnknownRecord} */
     const output = {};
     for (const [entryKey, entryValue] of Object.entries(value)) {
       if (["rawSecretsReturned", "rawMediaExternalUpload", "rawMeetingContentIncluded", "tokensIncluded", "cookiesUsed"].includes(entryKey)) {
@@ -235,24 +293,29 @@ function sanitize(value, key = "") {
   return value;
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(sanitize(value), null, 2)}\n`, "utf8");
   return path;
 }
 
+/** @param {string} path @param {string} value */
 function writeText(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, value, "utf8");
   return path;
 }
 
+/** @param {unknown} path */
 function workspaceRelative(path) {
   if (!path) return null;
+  if (typeof path !== "string") return "[outside-workspace]";
   const resolved = resolve(path);
   return isInside(workspaceDir, resolved) ? relative(workspaceDir, resolved) : "[outside-workspace]";
 }
 
+/** @param {unknown} value @param {number} [max] */
 function safeShortText(value, max = 700) {
   return redactString(String(value ?? ""))
     .replace(/\s+/g, " ")
@@ -260,14 +323,17 @@ function safeShortText(value, max = 700) {
     .slice(0, max);
 }
 
+/** @param {unknown} value */
 function hashJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+/** @param {unknown} value */
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
+/** @param {unknown} value @returns {unknown} */
 function parseJsonMaybe(value) {
   if (typeof value !== "string") return value ?? {};
   try {
@@ -277,20 +343,24 @@ function parseJsonMaybe(value) {
   }
 }
 
+/** @param {unknown} content */
 function parseText(content) {
-  const parsed = parseJsonMaybe(content);
-  if (typeof parsed?.text === "string") return parsed.text.trim();
+  const parsed = asRecord(parseJsonMaybe(content));
+  if (typeof parsed.text === "string") return parsed.text.trim();
   if (typeof content === "string") return content.trim();
   return "";
 }
 
-function normalizeDirectEvent(input) {
-  if (input?.schemaVersion === "feishu-event-v1") return assertFeishuEvent(sanitize(input));
-  const envelope = input?.event ?? input?.data?.event ?? input?.data ?? input;
-  const message = envelope?.message ?? input?.message ?? {};
-  const sender = envelope?.sender ?? input?.sender ?? {};
-  const content = message?.content ?? input?.content ?? "";
-  const parsed = parseJsonMaybe(content);
+/** @param {unknown} inputValue @returns {HandlerEvent} */
+function normalizeDirectEvent(inputValue) {
+  const input = asRecord(inputValue);
+  if (input.schemaVersion === "feishu-event-v1") return /** @type {HandlerEvent} */ (assertFeishuEvent(sanitize(input)));
+  const data = asRecord(input.data);
+  const envelope = asRecord(input.event ?? data.event ?? input.data ?? input);
+  const message = asRecord(envelope.message ?? input.message);
+  const sender = asRecord(envelope.sender ?? input.sender);
+  const content = message.content ?? input.content ?? "";
+  const parsed = asRecord(parseJsonMaybe(content));
   const fileKey = parsed.file_key ?? parsed.fileKey ?? input.fileKey;
   const imageKey = parsed.image_key ?? parsed.imageKey ?? input.imageKey;
   const attachments = Array.isArray(input?.attachments) ? input.attachments : [];
@@ -326,12 +396,14 @@ function normalizeDirectEvent(input) {
   });
 }
 
+/** @param {HandlerEvent} event */
 function runIdFor(event) {
   const seed = event.message?.messageId || event.eventId || randomUUID();
   const date = new Date().toISOString().replace(/[:.]/g, "-");
   return safeSegment(`feishu_${date}_${seed}`);
 }
 
+/** @param {string} root @param {string} runId @returns {RunPaths} */
 function runPaths(root, runId) {
   const runDir = resolve(root, "runs", safeSegment(runId));
   if (!isInside(root, runDir)) throw new Error("feishu_run_dir_outside_output_root_blocked");
@@ -359,6 +431,7 @@ function runPaths(root, runId) {
   };
 }
 
+/** @param {FeishuRunState} state @param {string} name @param {string} status @param {UnknownRecord} [details] */
 function addStep(state, name, status, details = {}) {
   const { name: _detailName, status: _detailStatus, at: _detailAt, ...safeDetails } = details;
   state.steps.push({ ...safeDetails, name, status, at: nowIso() });
@@ -366,17 +439,22 @@ function addStep(state, name, status, details = {}) {
   state.updatedAt = nowIso();
 }
 
+/** @param {RunPaths} paths @param {FeishuRunState} state */
 function writeState(paths, state) {
   writeJson(paths.statePath, assertFeishuRunState(state));
 }
 
+/** @param {unknown} text */
 function hasExplicitFeishuFileReferences(text) {
   return extractFeishuFileReferences(text).length > 0;
 }
 
+/** @param {unknown} text @returns {HandlerAttachment[]} */
 function extractFeishuFileReferences(text) {
   const value = String(text ?? "");
+  /** @type {HandlerAttachment[]} */
   const refs = [];
+  /** @type {Set<string>} */
   const seen = new Set();
   for (const match of value.matchAll(FEISHU_FILE_URL_PATTERN)) {
     const urlType = String(match[1] ?? "file").toLowerCase();
@@ -412,6 +490,7 @@ function extractFeishuFileReferences(text) {
   return refs;
 }
 
+/** @param {unknown} text @returns {Set<string>} */
 function expectedCacheKindsForText(text) {
   const value = String(text ?? "");
   const audioCue = /录音|音频|转写|形成会议纪要|会议记录|minutes/i.test(value);
@@ -422,12 +501,16 @@ function expectedCacheKindsForText(text) {
   return new Set(["file", "audio"]);
 }
 
+/** @param {HandlerAttachment[]} attachments @param {Set<string>} expectedKinds */
 function filterAttachmentsByExpectedKinds(attachments, expectedKinds) {
   return attachments.filter((item) => expectedKinds.has(attachmentKind(item)));
 }
 
+/** @param {HandlerAttachment[]} attachments @returns {HandlerAttachment[]} */
 function dedupeAttachments(attachments) {
+  /** @type {Set<string>} */
   const seen = new Set();
+  /** @type {HandlerAttachment[]} */
   const result = [];
   for (const attachment of attachments) {
     const key = [
@@ -445,6 +528,7 @@ function dedupeAttachments(attachments) {
   return result;
 }
 
+/** @param {string} command @param {string[]} args @param {CommandOptions} [options] @returns {Promise<CommandResult>} */
 function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand) => {
     let stdout = "";
@@ -481,6 +565,7 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+/** @param {string} text @returns {unknown} */
 function parseJsonOutput(text) {
   try {
     return text.trim() ? JSON.parse(text) : null;
@@ -489,57 +574,68 @@ function parseJsonOutput(text) {
   }
 }
 
+/** @param {unknown} raw */
 function optionalPositiveNumber(raw) {
   if (raw === undefined || raw === null || raw === "") return undefined;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function stableSenderId(sender) {
-  const value = sender?.senderId ?? sender;
+/** @param {unknown} senderValue */
+function stableSenderId(senderValue) {
+  const sender = asRecord(senderValue);
+  const value = sender.senderId ?? senderValue;
   if (!value) return "";
   if (typeof value === "string") return value;
-  return String(value.open_id ?? value.openId ?? value.union_id ?? value.unionId ?? value.user_id ?? value.userId ?? hashJson(value).slice(0, 16));
+  const record = asRecord(value);
+  return String(record.open_id ?? record.openId ?? record.union_id ?? record.unionId ?? record.user_id ?? record.userId ?? hashJson(value).slice(0, 16));
 }
 
+/** @param {HandlerEvent} event */
 function eventTimestampMs(event) {
   const raw = event.message?.createTime ?? event.createTime ?? event.receivedAt;
   const numeric = Number(raw);
   if (Number.isFinite(numeric) && numeric > 0) {
     return numeric > 10_000_000_000 ? numeric : numeric * 1000;
   }
-  const parsed = Date.parse(raw);
+  const parsed = Date.parse(String(raw ?? ""));
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+/** @param {HandlerEvent} event */
 function attachmentCacheTimestampMs(event) {
   const received = Date.parse(event.receivedAt ?? "");
   return Number.isFinite(received) ? received : eventTimestampMs(event);
 }
 
+/** @param {HandlerEvent} event */
 function threadKey(event) {
   return String(event.message?.threadId ?? event.message?.rootId ?? event.message?.parentId ?? event.threadId ?? event.rootId ?? event.parentId ?? "");
 }
 
+/** @param {string} root */
 function attachmentCachePath(root) {
   return join(root, ".feishu-attachment-cache.json");
 }
 
+/** @param {string} root */
 function ledgerThreadIndexPath(root) {
   return join(root, ".execution-ledger-thread-index.json");
 }
 
+/** @param {string} root @returns {LedgerThreadIndex} */
 function loadLedgerThreadIndex(root) {
   const path = ledgerThreadIndexPath(root);
   if (!existsSync(path)) return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: [] };
   try {
     const value = JSON.parse(readFileSync(path, "utf8"));
-    return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: Array.isArray(value.entries) ? value.entries : [] };
+    return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: /** @type {LedgerIndexEntry[]} */ (Array.isArray(value.entries) ? value.entries : []) };
   } catch {
     return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: [] };
   }
 }
 
+/** @param {HandlerEvent} event */
 function threadScopeHash(event) {
   const thread = threadKey(event);
   const chat = event.message?.chatId ?? "";
@@ -547,6 +643,7 @@ function threadScopeHash(event) {
   return thread || chat ? hashText(`${chat}:${thread || "chat"}:${sender || "unknown"}`).slice(0, 32) : "";
 }
 
+/** @param {string} root @param {HandlerEvent} event @param {string} runId @param {string} plannerEnvelopePath @param {AgentOutput} agentOutput */
 function indexExecutionLedgerForThread(root, event, runId, plannerEnvelopePath, agentOutput) {
   if (!existsSync(plannerEnvelopePath)) return { status: "skipped", reason: "execution_ledger_missing" };
   const scopeHash = threadScopeHash(event);
@@ -555,8 +652,8 @@ function indexExecutionLedgerForThread(root, event, runId, plannerEnvelopePath, 
   const entry = {
     scopeHash,
     runId,
-    plannerEnvelopePath: workspaceRelative(plannerEnvelopePath),
-    sourceEventPath: workspaceRelative(join(dirname(plannerEnvelopePath), "event.json")),
+    plannerEnvelopePath: workspaceRelative(plannerEnvelopePath) ?? "[missing-ledger]",
+    sourceEventPath: workspaceRelative(join(dirname(plannerEnvelopePath), "event.json")) ?? "[missing-event]",
     updatedAt: nowIso(),
     status: agentOutput?.status ?? null,
   };
@@ -565,6 +662,8 @@ function indexExecutionLedgerForThread(root, event, runId, plannerEnvelopePath, 
   return { status: "indexed", entry };
 }
 
+/** @param {string} root @param {HandlerEvent} event */
+/** @param {string} root @param {HandlerEvent} event @returns {PreviousThreadLedger | null} */
 function selectPreviousThreadLedger(root, event) {
   const scopeHash = threadScopeHash(event);
   if (!scopeHash) return null;
@@ -584,9 +683,13 @@ function selectPreviousThreadLedger(root, event) {
   return null;
 }
 
-export function resolveLedgerSelection(text, ledger) {
+/** @param {unknown} text @param {unknown} ledgerValue */
+/** @param {unknown} text @param {unknown} ledgerValue @returns {LedgerSelection | null} */
+export function resolveLedgerSelection(text, ledgerValue) {
+  const ledger = asRecord(ledgerValue);
+  const interactionItems = Array.isArray(ledger.interactionItems) ? ledger.interactionItems.map(asRecord) : [];
   const prompt = String(text ?? "").trim();
-  if (!prompt || !ledger?.interactionItems?.length) return null;
+  if (!prompt || interactionItems.length === 0) return null;
   const optionMap = new Map([
     ["prd", "prd"], ["产品需求", "prd"],
     ["客户需求确认表", "customer-requirement-checklist"], ["客户确认表", "customer-requirement-checklist"], ["checklist", "customer-requirement-checklist"],
@@ -605,12 +708,12 @@ export function resolveLedgerSelection(text, ledger) {
     }
   }
   if (!selectedOption) return null;
-  const interaction = ledger.interactionItems.find((item) => item.status === "pending" && (
-    (item.options ?? []).includes(selectedOption) || (item.suggestedDocuments ?? []).includes(selectedOption)
+  const interaction = interactionItems.find((item) => item.status === "pending" && (
+    (Array.isArray(item.options) ? item.options : []).includes(selectedOption) || (Array.isArray(item.suggestedDocuments) ? item.suggestedDocuments : []).includes(selectedOption)
   ));
   if (!interaction) return null;
   return {
-    itemId: interaction.itemId,
+    itemId: String(interaction.itemId ?? ""),
     selectedOption,
     requestedDocuments: ["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(selectedOption) ? [selectedOption] : [],
     sourceRunId: ledger.runId ?? null,
@@ -619,6 +722,7 @@ export function resolveLedgerSelection(text, ledger) {
   };
 }
 
+/** @param {string} root @returns {AttachmentCache} */
 function loadAttachmentCache(root) {
   const path = attachmentCachePath(root);
   if (!existsSync(path)) return { schemaVersion: ATTACHMENT_CACHE_VERSION, entries: [] };
@@ -626,13 +730,14 @@ function loadAttachmentCache(root) {
     const cache = JSON.parse(readFileSync(path, "utf8"));
     return {
       schemaVersion: ATTACHMENT_CACHE_VERSION,
-      entries: Array.isArray(cache.entries) ? cache.entries : [],
+      entries: /** @type {AttachmentCacheEntry[]} */ (Array.isArray(cache.entries) ? cache.entries : []),
     };
   } catch {
     return { schemaVersion: ATTACHMENT_CACHE_VERSION, entries: [] };
   }
 }
 
+/** @param {string} root @param {AttachmentCache} cache */
 function saveAttachmentCache(root, cache) {
   const cutoff = Date.now() - ATTACHMENT_CACHE_MAX_AGE_MS;
   const entries = (cache.entries ?? [])
@@ -647,6 +752,7 @@ function saveAttachmentCache(root, cache) {
   });
 }
 
+/** @param {HandlerEvent} event @param {HandlerAttachment} attachment @returns {HandlerAttachment} */
 function attachmentWithSource(event, attachment) {
   return {
     ...attachment,
@@ -660,26 +766,30 @@ function attachmentWithSource(event, attachment) {
   };
 }
 
-function collectAttachmentsFromMessageLike(message, sourceMessageId) {
+/** @param {unknown} messageValue @param {unknown} sourceMessageId @returns {HandlerAttachment[]} */
+function collectAttachmentsFromMessageLike(messageValue, sourceMessageId) {
+  const message = asRecord(messageValue);
+  /** @type {HandlerAttachment[]} */
   const attachments = [];
-  const rawContent = message?.content ?? message?.body?.content ?? "";
-  const parsed = parseJsonMaybe(rawContent);
-  const directAttachments = Array.isArray(message?.attachments)
+  const rawContent = message.content ?? asRecord(message.body).content ?? "";
+  const parsed = asRecord(parseJsonMaybe(rawContent));
+  const directAttachments = Array.isArray(message.attachments)
     ? message.attachments
-    : Array.isArray(message?.message?.attachments)
-      ? message.message.attachments
+    : Array.isArray(asRecord(message.message).attachments)
+      ? /** @type {unknown[]} */ (asRecord(message.message).attachments)
       : [];
-  for (const [index, item] of directAttachments.entries()) {
+  for (const [index, itemValue] of directAttachments.entries()) {
+    const item = asRecord(itemValue);
     const fileKey = item.file_key ?? item.fileKey ?? item.key ?? item.image_key ?? item.imageKey;
     if (!fileKey) continue;
     attachments.push({
-      resourceType: item.resource_type ?? item.resourceType ?? item.type ?? (item.image_key || item.imageKey ? "image" : "file"),
+      resourceType: String(item.resource_type ?? item.resourceType ?? item.type ?? (item.image_key || item.imageKey ? "image" : "file")),
       fileKey: String(fileKey),
       name: String(item.file_name ?? item.fileName ?? item.name ?? fileKey ?? `attachment_${index}`),
-      mimeType: item.mime_type ?? item.mimeType ?? null,
-      localPath: item.localPath ?? null,
-      sourceMessageId,
-      messageId: sourceMessageId,
+      mimeType: typeof (item.mime_type ?? item.mimeType) === "string" ? String(item.mime_type ?? item.mimeType) : null,
+      localPath: typeof item.localPath === "string" ? item.localPath : null,
+      sourceMessageId: String(sourceMessageId ?? ""),
+      messageId: String(sourceMessageId ?? ""),
       resolvedFromParentMessage: true,
     });
   }
@@ -695,8 +805,8 @@ function collectAttachmentsFromMessageLike(message, sourceMessageId) {
       fileKey: String(fileKey),
       name: String(attrs.name ?? attrs.file_name ?? attrs.fileName ?? fileKey ?? `file_${index}`),
       mimeType: attrs.mime_type ?? attrs.mimeType ?? null,
-      sourceMessageId,
-      messageId: sourceMessageId,
+      sourceMessageId: String(sourceMessageId ?? ""),
+      messageId: String(sourceMessageId ?? ""),
       resolvedFromParentMessage: true,
       resolvedFromXmlFileTag: true,
     });
@@ -712,8 +822,8 @@ function collectAttachmentsFromMessageLike(message, sourceMessageId) {
       fileKey: String(imageKey),
       name: String(attrs.name ?? attrs.file_name ?? attrs.fileName ?? imageKey ?? `image_${index}`),
       mimeType: attrs.mime_type ?? attrs.mimeType ?? null,
-      sourceMessageId,
-      messageId: sourceMessageId,
+      sourceMessageId: String(sourceMessageId ?? ""),
+      messageId: String(sourceMessageId ?? ""),
       resolvedFromParentMessage: true,
       resolvedFromXmlFileTag: true,
     });
@@ -725,9 +835,9 @@ function collectAttachmentsFromMessageLike(message, sourceMessageId) {
       resourceType: "file",
       fileKey: String(contentFileKey),
       name: String(parsed.file_name ?? parsed.fileName ?? parsed.name ?? contentFileKey),
-      mimeType: parsed.mime_type ?? parsed.mimeType ?? null,
-      sourceMessageId,
-      messageId: sourceMessageId,
+      mimeType: typeof (parsed.mime_type ?? parsed.mimeType) === "string" ? String(parsed.mime_type ?? parsed.mimeType) : null,
+      sourceMessageId: String(sourceMessageId ?? ""),
+      messageId: String(sourceMessageId ?? ""),
       resolvedFromParentMessage: true,
     });
   }
@@ -736,21 +846,24 @@ function collectAttachmentsFromMessageLike(message, sourceMessageId) {
       resourceType: "image",
       fileKey: String(contentImageKey),
       name: String(parsed.file_name ?? parsed.fileName ?? parsed.name ?? contentImageKey),
-      mimeType: parsed.mime_type ?? parsed.mimeType ?? null,
-      sourceMessageId,
-      messageId: sourceMessageId,
+      mimeType: typeof (parsed.mime_type ?? parsed.mimeType) === "string" ? String(parsed.mime_type ?? parsed.mimeType) : null,
+      sourceMessageId: String(sourceMessageId ?? ""),
+      messageId: String(sourceMessageId ?? ""),
       resolvedFromParentMessage: true,
     });
   }
   return attachments;
 }
 
+/** @param {unknown} value @param {UnknownRecord[]} [results] @returns {UnknownRecord[]} */
 function findMessageLikeObjects(value, results = []) {
   if (!value || typeof value !== "object") return results;
   if (!Array.isArray(value)) {
-    const messageId = value.message_id ?? value.messageId ?? value.message?.message_id ?? value.message?.messageId;
-    const hasMessageShape = messageId || value.content || value.message_type || value.msgType || value.attachments;
-    if (hasMessageShape) results.push(value);
+    const record = asRecord(value);
+    const nestedMessage = asRecord(record.message);
+    const messageId = record.message_id ?? record.messageId ?? nestedMessage.message_id ?? nestedMessage.messageId;
+    const hasMessageShape = messageId || record.content || record.message_type || record.msgType || record.attachments;
+    if (hasMessageShape) results.push(record);
   }
   const children = Array.isArray(value) ? value : Object.values(value);
   for (const child of children) {
@@ -759,6 +872,7 @@ function findMessageLikeObjects(value, results = []) {
   return results;
 }
 
+/** @param {HandlerEvent} event @returns {HandlerAttachment[]} */
 function embeddedParentMessageAttachments(event) {
   const candidates = [
     event.parentMessage,
@@ -766,26 +880,32 @@ function embeddedParentMessageAttachments(event) {
     ...(Array.isArray(event.parentMessages) ? event.parentMessages : []),
     ...(Array.isArray(event.referencedMessages) ? event.referencedMessages : []),
   ].filter(Boolean);
+  /** @type {HandlerAttachment[]} */
   const attachments = [];
-  for (const message of candidates) {
+  for (const messageValue of candidates) {
+    const message = asRecord(messageValue);
     const sourceMessageId = message.message_id ?? message.messageId ?? message.id ?? event.message?.parentId ?? event.message?.rootId ?? "";
     attachments.push(...collectAttachmentsFromMessageLike(message, sourceMessageId));
   }
   return attachments;
 }
 
+/** @param {unknown} payload @param {unknown[]} targetIds @returns {HandlerAttachment[]} */
 function collectAttachmentsFromCliPayload(payload, targetIds) {
   const targetSet = new Set(targetIds.filter(Boolean));
   const messages = findMessageLikeObjects(payload);
+  /** @type {HandlerAttachment[]} */
   const attachments = [];
   for (const message of messages) {
-    const messageId = String(message.message_id ?? message.messageId ?? message.message?.message_id ?? message.message?.messageId ?? "");
+    const nestedMessage = asRecord(message.message);
+    const messageId = String(message.message_id ?? message.messageId ?? nestedMessage.message_id ?? nestedMessage.messageId ?? "");
     if (targetSet.size > 0 && messageId && !targetSet.has(messageId)) continue;
     attachments.push(...collectAttachmentsFromMessageLike(message.message ?? message, messageId));
   }
   return attachments;
 }
 
+/** @param {string} root @param {HandlerEvent} event */
 function rememberAttachments(root, event) {
   const attachments = (event.message?.attachments ?? []).filter((item) => item.fileKey || item.localPath);
   if (attachments.length === 0) return { status: "skipped", reason: "no_attachments" };
@@ -805,12 +925,13 @@ function rememberAttachments(root, event) {
   return { status: "cached", attachments: entry.attachments.length, cachePath: attachmentCachePath(root) };
 }
 
+/** @param {string} root @param {HandlerEvent} event @param {HandlerAttachment[]} attachments */
 function rememberDownloadedAttachments(root, event, attachments) {
   const reusable = (attachments ?? [])
-    .filter((item) => item?.localPath && existsSync(resolve(item.localPath)))
-    .filter((item) => !["failed", "blocked", "skipped"].includes(item.downloadStatus));
+    .filter((item) => typeof item.localPath === "string" && existsSync(resolve(item.localPath)))
+    .filter((item) => !["failed", "blocked", "skipped"].includes(String(item.downloadStatus ?? "")));
   if (reusable.length === 0) {
-    const failed = (attachments ?? []).filter((item) => ["failed", "blocked"].includes(item?.downloadStatus));
+    const failed = (attachments ?? []).filter((item) => ["failed", "blocked"].includes(String(item.downloadStatus ?? "")));
     if (failed.length === 0) return { status: "skipped", reason: "no_reusable_downloaded_attachments" };
     const failedForCache = failed.map((item) => {
       const { localPath, sourcePath, ...rest } = item;
@@ -822,31 +943,33 @@ function rememberDownloadedAttachments(root, event, attachments) {
         lastDownloadAttempts: item.downloadAttempts ?? [],
       };
     });
-    const cached = rememberAttachments(root, {
+    const cached = rememberAttachments(root, /** @type {HandlerEvent} */ ({
       ...event,
       message: {
         ...event.message,
         attachments: failedForCache,
       },
-    });
+    }));
     return {
       ...cached,
       reason: "cached_failed_attachment_metadata",
       sourceReady: false,
     };
   }
-  return rememberAttachments(root, {
+  return rememberAttachments(root, /** @type {HandlerEvent} */ ({
     ...event,
     message: {
       ...event.message,
       attachments: reusable.map((item) => ({ ...item, sourceReady: true })),
     },
-  });
+  }));
 }
 
+/** @param {string} root @param {HandlerEvent} event */
+/** @param {string} root @param {HandlerEvent} event @returns {AttachmentResolutionResult} */
 function resolveCachedAttachments(root, event) {
   if ((event.message?.attachments ?? []).length > 0) {
-    return { status: "not_needed", reason: "event_has_attachments", attachments: event.message.attachments };
+    return { status: "not_needed", reason: "event_has_attachments", attachments: /** @type {HandlerAttachment[]} */ (event.message.attachments ?? []) };
   }
   const text = event.message?.text ?? "";
   if (hasExplicitFeishuFileReferences(text)) {
@@ -892,6 +1015,8 @@ function resolveCachedAttachments(root, event) {
   };
 }
 
+/** @param {HandlerEvent} event @param {HandlerOptions} options */
+/** @param {HandlerEvent} event @param {HandlerOptions} options @returns {Promise<AttachmentResolutionResult>} */
 async function resolveParentMessageAttachments(event, options) {
   const text = event.message?.text ?? "";
   if (!FILE_REFERENCE_PATTERN.test(text)) {
@@ -962,9 +1087,11 @@ async function resolveParentMessageAttachments(event, options) {
   };
 }
 
+/** @param {string} root @param {HandlerEvent} event @param {HandlerOptions} options */
+/** @param {string} root @param {HandlerEvent} event @param {HandlerOptions} options @returns {Promise<AttachmentResolutionResult>} */
 async function resolveReferencedAttachments(root, event, options) {
   if ((event.message?.attachments ?? []).length > 0) {
-    return { status: "not_needed", reason: "event_has_attachments", attachments: event.message.attachments };
+    return { status: "not_needed", reason: "event_has_attachments", attachments: /** @type {HandlerAttachment[]} */ (event.message.attachments ?? []) };
   }
   if (hasExplicitFeishuFileReferences(event.message?.text ?? "")) {
     return { status: "not_needed", reason: "explicit_file_reference_present_no_cache_fallback", attachments: [] };
@@ -976,7 +1103,7 @@ async function resolveReferencedAttachments(root, event, options) {
   if (parentResolution.attachments?.length > 0) return parentResolution;
 
   const cacheResolution = resolveCachedAttachments(root, event);
-  if (cacheResolution.attachments?.length > 0) return cacheResolution;
+  if ((cacheResolution.attachments ?? []).length > 0) return cacheResolution;
 
   return {
     status: "missing",
@@ -995,12 +1122,15 @@ async function resolveReferencedAttachments(root, event, options) {
   };
 }
 
+/** @param {unknown} value @param {string[]} keys @returns {string | null} */
 function findToken(value, keys) {
   if (!value || typeof value !== "object") return null;
+  const record = asRecord(value);
   for (const key of keys) {
-    if (typeof value[key] === "string" && value[key]) return value[key];
+    const entry = record[key];
+    if (typeof entry === "string" && entry) return entry;
   }
-  for (const child of Object.values(value)) {
+  for (const child of Object.values(record)) {
     if (Array.isArray(child)) {
       for (const item of child) {
         const token = findToken(item, keys);
@@ -1014,6 +1144,7 @@ function findToken(value, keys) {
   return null;
 }
 
+/** @param {HandlerAttachment} attachment */
 function exportFormatForExplicitFile(attachment) {
   const type = String(attachment.explicitFileUrlType ?? "").toLowerCase();
   if (type === "doc" || type === "docx" || type === "wiki") return { docType: type === "doc" ? "doc" : "docx", extension: "markdown" };
@@ -1022,6 +1153,7 @@ function exportFormatForExplicitFile(attachment) {
   return null;
 }
 
+/** @param {string} path */
 function existingNonEmptyFile(path) {
   try {
     const stat = statSync(path);
@@ -1031,6 +1163,7 @@ function existingNonEmptyFile(path) {
   }
 }
 
+/** @param {string} path */
 function audioSignatureStatus(path) {
   const resolved = resolve(path);
   const stat = existingNonEmptyFile(resolved);
@@ -1050,6 +1183,7 @@ function audioSignatureStatus(path) {
   return { ...validation, sizeBytes: stat.size };
 }
 
+/** @param {string} path @param {string} kind */
 function reusableLocalSourceReady(path, kind) {
   const stat = existingNonEmptyFile(path);
   if (!stat) return { ok: false, reason: "local_source_file_missing" };
@@ -1058,6 +1192,7 @@ function reusableLocalSourceReady(path, kind) {
   return validation.ok ? { ok: true, stat, audioValidation: validation } : { ok: false, reason: validation.reason, audioValidation: validation };
 }
 
+/** @param {string} path @param {string} kind @param {string} attachmentsDir */
 function discardInvalidCurrentRunAttachment(path, kind, attachmentsDir) {
   const resolved = resolve(path);
   if (!isInside(attachmentsDir, resolved)) return null;
@@ -1073,15 +1208,18 @@ function discardInvalidCurrentRunAttachment(path, kind, attachmentsDir) {
   }
 }
 
+/** @param {unknown} runId */
 function isFixtureLikeRunId(runId) {
   return /fixture|mock|dry[_-]?run|fake[_-]?lark/i.test(String(runId ?? ""));
 }
 
+/** @param {RunPaths} paths @param {HandlerAttachment} attachment @param {number} index @param {string} fallbackName */
 function attachmentTargetPath(paths, attachment, index, fallbackName) {
   const rawName = attachment.name || attachment.fileName || (attachment.localPath ? basename(attachment.localPath) : "") || fallbackName || attachment.fileKey || `attachment_${index}`;
   return resolve(workspaceDir, relative(workspaceDir, join(paths.attachmentsDir, safeSegment(rawName))));
 }
 
+/** @param {string} sourcePath @param {string} targetPath */
 function linkOrCopyLocalAttachment(sourcePath, targetPath) {
   mkdirSync(dirname(targetPath), { recursive: true });
   const source = resolve(sourcePath);
@@ -1103,11 +1241,14 @@ function linkOrCopyLocalAttachment(sourcePath, targetPath) {
   }
 }
 
+/** @param {HandlerAttachment} attachment @param {LocalReuseFields} fields */
 async function buildLocalReuseAttachment(attachment, fields) {
   const sourceReady = reusableLocalSourceReady(fields.localPath, fields.resourceType);
   if (!sourceReady.ok) {
     return null;
   }
+  const sourceStat = existingNonEmptyFile(fields.localPath);
+  if (!sourceStat) return null;
   return {
     ...attachment,
     resourceType: fields.resourceType,
@@ -1126,11 +1267,12 @@ async function buildLocalReuseAttachment(attachment, fields) {
     stderrTail: fields.stderrTail ?? undefined,
     audioValidation: sourceReady.audioValidation ?? undefined,
     sha256: await sha256File(fields.localPath),
-    sizeBytes: sourceReady.stat.size,
+    sizeBytes: sourceStat.size,
     rawMediaExternalUpload: false,
   };
 }
 
+/** @param {unknown} value */
 function resolveWorkspaceCandidatePath(value) {
   if (!value) return null;
   const resolved = isAbsolute(String(value)) ? resolve(String(value)) : resolve(workspaceDir, String(value));
@@ -1138,14 +1280,17 @@ function resolveWorkspaceCandidatePath(value) {
   return existingNonEmptyFile(resolved) ? resolved : null;
 }
 
+/** @param {HandlerAttachment} attachment @param {unknown} eventMessageId */
 function sourceMessageIdForAttachment(attachment, eventMessageId) {
   return attachment.messageId ?? attachment.sourceMessageId ?? attachment.cacheSourceMessageId ?? eventMessageId ?? "";
 }
 
+/** @param {string} kind */
 function storeKindForAttachment(kind) {
   return ["audio", "video", "image"].includes(kind) ? "raw_media" : "raw_document_file";
 }
 
+/** @param {HandlerAttachment} attachment @param {string} kind @param {string} name @param {string} sourceMessageId @param {HandlerOptions} [options] */
 async function findRuntimeStoreAttachmentCandidate(attachment, kind, name, sourceMessageId, options = {}) {
   if (!runtimeStoreCliPath || !existsSync(runtimeStoreCliPath)) return null;
   const fileKey = attachment.fileKey ?? attachment.file_key ?? "";
@@ -1170,9 +1315,10 @@ async function findRuntimeStoreAttachmentCandidate(attachment, kind, name, sourc
       stderrTail: redactString(cli.stderr).slice(-1000),
     };
   }
-  const result = parseJsonOutput(cli.stdout);
-  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
-  for (const candidate of candidates) {
+  const result = asRecord(parseJsonOutput(cli.stdout));
+  const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+  for (const candidateValue of candidates) {
+    const candidate = asRecord(candidateValue);
     if (isFixtureLikeRunId(candidate.runId)) continue;
     const candidatePath = resolveWorkspaceCandidatePath(candidate.availablePath ?? candidate.objectPath ?? candidate.path);
     if (!candidatePath) continue;
@@ -1195,17 +1341,19 @@ async function findRuntimeStoreAttachmentCandidate(attachment, kind, name, sourc
   return { status: "missing", reason: "runtime_store_source_not_found" };
 }
 
+/** @param {HandlerAttachment} attachment @param {HandlerAttachment} indexedAttachment @param {unknown} expectedName */
 function attachmentNamesMatch(attachment, indexedAttachment, expectedName) {
   const expected = safeSegment(expectedName ?? attachment.name ?? attachment.fileName ?? "");
   const values = [
     indexedAttachment.name,
     indexedAttachment.fileName,
     indexedAttachment.localPath ? basename(indexedAttachment.localPath) : "",
-    indexedAttachment.sourcePath ? basename(indexedAttachment.sourcePath) : "",
+    typeof indexedAttachment.sourcePath === "string" ? basename(indexedAttachment.sourcePath) : "",
   ].filter(Boolean).map((value) => safeSegment(value));
   return !expected || values.includes(expected);
 }
 
+/** @param {HandlerAttachment} attachment @param {HandlerAttachment} indexedAttachment @param {unknown} expectedName */
 function attachmentSourceMatches(attachment, indexedAttachment, expectedName) {
   const fileKey = attachment.fileKey ?? attachment.file_key ?? "";
   const sourceMessageId = attachment.sourceMessageId ?? attachment.messageId ?? attachment.cacheSourceMessageId ?? "";
@@ -1216,6 +1364,7 @@ function attachmentSourceMatches(attachment, indexedAttachment, expectedName) {
   return fileKeyMatches || messageMatches || (attachmentNamesMatch(attachment, indexedAttachment, expectedName) && (fileKey || sourceMessageId));
 }
 
+/** @param {HandlerAttachment} attachment @param {RunPaths} paths @param {string} kind @param {unknown} expectedName @param {HandlerOptions} [options] */
 function findHistoricalRunAttachmentCandidate(attachment, paths, kind, expectedName, options = {}) {
   const runsRoot = dirname(paths.runDir);
   if (!isInside(workspaceDir, runsRoot) || !existsSync(runsRoot)) return { status: "missing", reason: "historical_runs_root_missing" };
@@ -1239,17 +1388,19 @@ function findHistoricalRunAttachmentCandidate(attachment, paths, kind, expectedN
     if (isFixtureLikeRunId(basename(runDir.path))) continue;
     const taskPath = join(runDir.path, "task.json");
     if (!existsSync(taskPath)) continue;
+    /** @type {UnknownRecord | null} */
     let task = null;
     try {
-      task = JSON.parse(readFileSync(taskPath, "utf8"));
+      task = asRecord(JSON.parse(readFileSync(taskPath, "utf8")));
     } catch {
       continue;
     }
     const candidates = Array.isArray(task?.attachments) ? task.attachments : [];
-    for (const candidate of candidates) {
+    for (const candidateValue of candidates) {
+      const candidate = /** @type {HandlerAttachment} */ (asRecord(candidateValue));
       if (!candidate || typeof candidate !== "object") continue;
       if (attachmentKind(candidate) !== kind) continue;
-      if (["failed", "blocked", "skipped"].includes(candidate.downloadStatus)) continue;
+      if (["failed", "blocked", "skipped"].includes(String(candidate.downloadStatus ?? ""))) continue;
       if (!attachmentSourceMatches(attachment, candidate, expectedName)) continue;
       const candidatePath = resolveWorkspaceCandidatePath(candidate.localPath ?? candidate.sourcePath);
       if (!candidatePath) continue;
@@ -1271,6 +1422,7 @@ function findHistoricalRunAttachmentCandidate(attachment, paths, kind, expectedN
   return { status: "missing", reason: "historical_run_source_not_found" };
 }
 
+/** @param {HandlerAttachment} attachment @param {UnknownRecord & { targetPath: string, sourcePath: string, resourceType: string, fileKey: string, name: string, downloadStatus: string, reason: string }} fields */
 async function materializeReusableAttachment(attachment, fields) {
   const targetPath = fields.targetPath;
   const linkMode = linkOrCopyLocalAttachment(fields.sourcePath, targetPath);
@@ -1292,10 +1444,11 @@ async function materializeReusableAttachment(attachment, fields) {
   });
 }
 
+/** @param {HandlerAttachment} attachment @param {RunPaths} paths @param {ReuseSearchOptions} options */
 async function findAndMaterializeReusableAttachment(attachment, paths, options) {
   const { kind, name, fileKey, sourceMessageId, index, targetPath, afterCliFailure } = options;
   const storeCandidate = await findRuntimeStoreAttachmentCandidate(attachment, kind, name, sourceMessageId, options);
-  if (storeCandidate?.status === "found") {
+  if (storeCandidate?.status === "found" && typeof storeCandidate.localPath === "string") {
     return await materializeReusableAttachment(attachment, {
       resourceType: kind,
       fileKey,
@@ -1314,7 +1467,7 @@ async function findAndMaterializeReusableAttachment(attachment, paths, options) 
     });
   }
   const historicalCandidate = findHistoricalRunAttachmentCandidate(attachment, paths, kind, name, options);
-  if (historicalCandidate?.status === "found") {
+  if (historicalCandidate?.status === "found" && typeof historicalCandidate.localPath === "string") {
     return await materializeReusableAttachment(attachment, {
       resourceType: kind,
       fileKey,
@@ -1341,10 +1494,12 @@ async function findAndMaterializeReusableAttachment(attachment, paths, options) 
   };
 }
 
+/** @param {{ sourceMessageId: string, fileKey: string, kind: string, outputRelative: string, localPath: string, options: HandlerOptions }} input */
 async function downloadImResourceWithRetry({ sourceMessageId, fileKey, kind, outputRelative, localPath, options }) {
   const identities = parseAttachmentDownloadIdentities(options.attachmentDownloadAs);
   const maxAttempts = attachmentDownloadMaxAttempts(options);
   const timeoutMs = attachmentDownloadTimeoutMs(options);
+  /** @type {UnknownRecord[]} */
   const attempts = [];
   let lastFailure = {
     failureClass: "attachment_download_failed",
@@ -1437,17 +1592,20 @@ async function downloadImResourceWithRetry({ sourceMessageId, fileKey, kind, out
   };
 }
 
+/** @param {HandlerEvent} event @param {RunPaths} paths @param {HandlerOptions} options @returns {Promise<HandlerAttachment[]>} */
 async function downloadAttachments(event, paths, options) {
   mkdirSync(paths.attachmentsDir, { recursive: true });
   const messageId = event.message?.messageId;
   const attachments = event.message?.attachments ?? [];
+  /** @type {HandlerAttachment[]} */
   const results = [];
-  for (const [index, attachment] of attachments.entries()) {
+  for (const [index, attachmentValue] of attachments.entries()) {
+    const attachment = /** @type {HandlerAttachment} */ (asRecord(attachmentValue));
     const kind = attachmentKind(attachment);
     const name = safeSegment(attachment.name || attachment.fileKey || `attachment_${index}`);
     const fileKey = attachment.fileKey ?? attachment.file_key ?? "";
-    const sourceMessageId = attachment.messageId ?? attachment.sourceMessageId ?? attachment.cacheSourceMessageId ?? messageId;
-    if (attachment.localPath && attachment.sourceReady !== false && !["failed", "blocked"].includes(attachment.downloadStatus)) {
+    const sourceMessageId = String(attachment.messageId ?? attachment.sourceMessageId ?? attachment.cacheSourceMessageId ?? messageId ?? "");
+    if (attachment.localPath && attachment.sourceReady !== false && !["failed", "blocked"].includes(String(attachment.downloadStatus ?? ""))) {
       const sourceLocalPath = resolve(attachment.localPath);
       const sourceStat = existingNonEmptyFile(sourceLocalPath);
       if (!sourceStat) {
@@ -1511,18 +1669,18 @@ async function downloadAttachments(event, paths, options) {
         continue;
       }
       let localPath = markdownPath;
-      let cli = await runCommand("lark-cli", ["markdown", "+fetch", "--as", "bot", "--file-token", token, "--output", relative(workspaceDir, markdownPath), "--overwrite"], { timeoutMs: options.cliTimeoutMs });
+      let cli = await runCommand("lark-cli", ["markdown", "+fetch", "--as", "bot", "--file-token", token, "--output", relative(workspaceDir, markdownPath), "--overwrite"], { timeoutMs: options.cliTimeoutMs ?? 120000 });
       let ok = cli.exitCode === 0 && existsSync(markdownPath);
       let downloadMethod = "markdown_fetch";
       let fallbackCli = null;
       if (!ok && exportSpec) {
-        fallbackCli = await runCommand("lark-cli", ["drive", "+export", "--as", "bot", "--token", token, "--doc-type", exportSpec.docType, "--file-extension", exportSpec.extension, "--output-dir", relative(workspaceDir, paths.attachmentsDir), "--file-name", exportName, "--overwrite"], { timeoutMs: options.cliTimeoutMs });
+        fallbackCli = await runCommand("lark-cli", ["drive", "+export", "--as", "bot", "--token", token, "--doc-type", exportSpec.docType, "--file-extension", exportSpec.extension, "--output-dir", relative(workspaceDir, paths.attachmentsDir), "--file-name", exportName, "--overwrite"], { timeoutMs: options.cliTimeoutMs ?? 120000 });
         localPath = exportPath;
         ok = fallbackCli.exitCode === 0 && existsSync(exportPath);
         downloadMethod = "drive_export";
       }
       if (!ok && !exportSpec) {
-        fallbackCli = await runCommand("lark-cli", ["drive", "+download", "--as", "bot", "--file-token", token, "--output", relative(workspaceDir, exportPath), "--overwrite"], { timeoutMs: options.cliTimeoutMs });
+        fallbackCli = await runCommand("lark-cli", ["drive", "+download", "--as", "bot", "--file-token", token, "--output", relative(workspaceDir, exportPath), "--overwrite"], { timeoutMs: options.cliTimeoutMs ?? 120000 });
         localPath = exportPath;
         ok = fallbackCli.exitCode === 0 && existsSync(exportPath);
         downloadMethod = "drive_download";
@@ -1537,7 +1695,7 @@ async function downloadAttachments(event, paths, options) {
         name: ok ? safeSegment(basename(localPath)) : name,
         localPath,
         downloadStatus: ok ? "downloaded" : "failed",
-        reason: ok ? null : failure.reason,
+        reason: ok ? null : failure?.reason ?? "explicit_feishu_file_unreadable",
         errorCode: failure?.errorCode ?? null,
         requiredScopes: failure?.requiredScopes ?? [],
         userMessage: failure?.userMessage ?? null,
@@ -1577,7 +1735,7 @@ async function downloadAttachments(event, paths, options) {
       afterCliFailure: false,
       discardedInvalidTarget,
     });
-    if (longTermReuse?.localPath) {
+    if (longTermReuse && "localPath" in longTermReuse && typeof longTermReuse.localPath === "string") {
       results.push(longTermReuse);
       continue;
     }
@@ -1638,7 +1796,7 @@ async function downloadAttachments(event, paths, options) {
         exitCode: downloaded.cli.exitCode,
         stderrTail: redactString(downloaded.cli.stderr).slice(-2000),
       });
-      if (postFailureReuse?.localPath) {
+      if (postFailureReuse && "localPath" in postFailureReuse && typeof postFailureReuse.localPath === "string") {
         results.push(postFailureReuse);
         continue;
       }
@@ -1665,7 +1823,7 @@ async function downloadAttachments(event, paths, options) {
       }
     }
     const stat = downloaded.ok ? downloaded.stat : null;
-    results.push({
+    results.push(/** @type {HandlerAttachment} */ ({
       ...attachment,
       resourceType: kind,
       fileKey,
@@ -1683,11 +1841,12 @@ async function downloadAttachments(event, paths, options) {
       sha256: downloaded.ok ? await sha256File(localPath) : null,
       sizeBytes: stat?.size ?? null,
       rawMediaExternalUpload: false,
-    });
+    }));
   }
   return results;
 }
 
+/** @param {unknown} value */
 function xmlDecode(value) {
   return String(value ?? "")
     .replace(/&lt;/g, "<")
@@ -1697,6 +1856,7 @@ function xmlDecode(value) {
     .replace(/&apos;/g, "'");
 }
 
+/** @param {HandlerTask} task @param {RunPaths} paths */
 function buildAgentTaskMarkdown(task, paths) {
   const taskJson = JSON.stringify(task, null, 2);
   return [
@@ -1742,6 +1902,7 @@ function buildAgentTaskMarkdown(task, paths) {
   ].join("\n");
 }
 
+/** @param {HandlerTask} task @returns {AgentOutput} */
 function createMockAgentOutput(task) {
   if (task.taskIntent?.responseMode === "unsupported") {
     return createImmediateAgentOutput(task);
@@ -1797,8 +1958,10 @@ function createMockAgentOutput(task) {
   };
 }
 
+/** @param {HandlerTask} task @returns {AgentOutput} */
 function createImmediateAgentOutput(task) {
   const mode = task.taskIntent?.responseMode;
+  const taskIntent = asRecord(task.taskIntent);
   const summary = task.taskIntent?.immediateResponse ?? (mode === "unsupported" ? UNSUPPORTED_FEATURE_REPLY : "");
   const status = mode === "unsupported" ? "blocked" : "completed";
   return {
@@ -1808,7 +1971,7 @@ function createImmediateAgentOutput(task) {
     qaGate: {
       status: mode === "unsupported" ? "blocked" : "pass",
       publishAllowed: false,
-      issues: mode === "unsupported" ? [task.taskIntent?.unsupportedReason ?? "unsupported"] : [],
+      issues: mode === "unsupported" ? [String(taskIntent.unsupportedReason ?? "unsupported")] : [],
     },
     policyGate: { status: "pass", actionIntent: "draft", reasons: ["immediate_handler_response_no_publish"] },
     artifacts: [],
@@ -1817,10 +1980,12 @@ function createImmediateAgentOutput(task) {
   };
 }
 
+/** @param {HandlerAttachment[]} [attachments] */
 function firstAttachmentDownloadFailure(attachments = []) {
   return (attachments ?? []).find((item) => item.downloadStatus === "failed" || item.downloadStatus === "blocked") ?? null;
 }
 
+/** @param {string} reason @param {HandlerAttachment[]} [attachments] */
 function sourceAcquisitionFailureSummary(reason, attachments = []) {
   if (reason === "attachment_download_failed") {
     const failed = firstAttachmentDownloadFailure(attachments);
@@ -1838,7 +2003,9 @@ function sourceAcquisitionFailureSummary(reason, attachments = []) {
   return "音视频 source acquisition 未通过，暂时无法转写。";
 }
 
-function sourceAcquisitionGate(task, attachments, fileContexts) {
+/** @param {HandlerTask} task @param {HandlerAttachment[]} attachments @param {unknown} fileContextsValue */
+function sourceAcquisitionGate(task, attachments, fileContextsValue) {
+  const fileContexts = asRecord(fileContextsValue);
   if (task.taskIntent?.executionProfile !== "audio_minutes" && task.taskIntent?.requiresLocalAsr !== true) {
     return { status: "pass", reason: "not_audio_minutes" };
   }
@@ -1874,6 +2041,7 @@ function sourceAcquisitionGate(task, attachments, fileContexts) {
   };
 }
 
+/** @param {HandlerTask} task @param {UnknownRecord & {reason: string}} gate @param {HandlerAttachment[]} attachments @returns {AgentOutput} */
 function createSourceAcquisitionBlockedOutput(task, gate, attachments) {
   const summary = sourceAcquisitionFailureSummary(gate.reason, attachments);
   const failureClass = gate.failureClass ?? gate.reason;
@@ -1915,6 +2083,8 @@ function createSourceAcquisitionBlockedOutput(task, gate, attachments) {
   };
 }
 
+/** @param {HandlerTask} task @param {RunPaths} paths @param {HandlerOptions} options */
+/** @param {HandlerTask} task @param {RunPaths} paths @param {HandlerOptions} options @returns {Promise<AgentRun>} */
 async function runPiAgent(task, paths, options) {
   writeText(paths.agentTaskPath, buildAgentTaskMarkdown(task, paths));
   if (task.taskIntent?.immediateResponse) {
@@ -1938,12 +2108,15 @@ async function runPiAgent(task, paths, options) {
     "-p",
     `@${paths.agentTaskPath}`,
   ];
+  /** @type {Array<UnknownRecord & {name: string, provider: string | null, model: string | null, piCliBin: string, exitCode: number, failureClass: string | null, stdout: string, stderr: string}>} */
   const attempts = [];
+  /** @param {string | null} provider @param {string | null} model */
   const commandFor = (provider, model) => [
     ...(provider ? ["--provider", provider] : []),
     ...(model ? ["--model", model] : []),
     ...baseCommand,
   ];
+  /** @param {CommandResult} result */
   const classifyPiFailure = (result) => {
     const text = `${result.stderr}\n${result.stdout}`;
     if (/Unknown provider/i.test(text)) return "provider_cli_unsupported";
@@ -1953,12 +2126,13 @@ async function runPiAgent(task, paths, options) {
     if (result.timedOut) return "pi_cli_timeout";
     return "pi_cli_failed";
   };
+  /** @param {string} name @param {NodeJS.ProcessEnv} [env] */
   const runAttempt = async (name, env = {}) => {
     const provider = env.PI_PROVIDER ?? process.env.PI_PROVIDER ?? null;
     const model = env.PI_MODEL ?? process.env.PI_MODEL ?? null;
     const result = await runCommand(piCliBin, commandFor(provider, model), {
       cwd: workspaceDir,
-      timeoutMs: options.piTimeoutMs,
+      timeoutMs: options.piTimeoutMs ?? 900000,
       env: { PI_CODING_AGENT_DIR: sessionDir, ...env },
     });
     attempts.push({
@@ -2004,20 +2178,23 @@ async function runPiAgent(task, paths, options) {
     writeJson(paths.agentOutputPath, output);
     return { status: "blocked", output, mode: "execute", rawSecretsReturned: false };
   }
-  const output = JSON.parse(readFileSync(paths.agentOutputPath, "utf8"));
-  return { status: pi.exitCode === 0 ? "completed" : "failed", output: sanitize(output), mode: "execute", rawSecretsReturned: false };
+  const output = /** @type {AgentOutput} */ (asRecord(sanitize(JSON.parse(readFileSync(paths.agentOutputPath, "utf8")))));
+  return { status: pi.exitCode === 0 ? "completed" : "failed", output, mode: "execute", rawSecretsReturned: false };
 }
 
+/** @param {AgentOutput} output */
 function qaAllowsPublish(output) {
-  const qa = output?.qaGate ?? {};
+  const qa = asRecord(output.qaGate);
   return qa.publishAllowed === true || qa.status === "pass" || qa.status === "ready";
 }
 
+/** @param {AgentOutput} output */
 function policyAllowsPublish(output) {
-  const policy = output?.policyGate ?? {};
+  const policy = asRecord(output.policyGate);
   return policy.status === "pass";
 }
 
+/** @param {HandlerTask} task @param {boolean} hasDocuments */
 function feishuUserWriteAllowed(task, hasDocuments) {
   const prompt = cleanUserPrompt(task.sourceEvent?.message?.text ?? "");
   if (DESTRUCTIVE_REQUEST_PATTERN.test(prompt)) return false;
@@ -2025,10 +2202,12 @@ function feishuUserWriteAllowed(task, hasDocuments) {
   return PUBLISH_REQUEST_PATTERN.test(prompt) || MODIFY_REQUEST_PATTERN.test(prompt);
 }
 
+/** @param {RunPaths} paths */
 function publishTargetRegistryPath(paths) {
   return join(dirname(dirname(paths.runDir)), "feishu-publish-targets.json");
 }
 
+/** @param {RunPaths} paths @returns {PublishTargetRegistry} */
 function loadPublishTargetRegistry(paths) {
   const path = publishTargetRegistryPath(paths);
   if (!existsSync(path)) {
@@ -2043,9 +2222,9 @@ function loadPublishTargetRegistry(paths) {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     return {
       schemaVersion: "feishu-publish-target-registry-v2",
-      entries: parsed && typeof parsed.entries === "object" && !Array.isArray(parsed.entries) ? parsed.entries : {},
-      projectEntries: parsed && typeof parsed.projectEntries === "object" && !Array.isArray(parsed.projectEntries) ? parsed.projectEntries : {},
-      legacySessionMappings: parsed && typeof parsed.legacySessionMappings === "object" && !Array.isArray(parsed.legacySessionMappings) ? parsed.legacySessionMappings : {},
+      entries: /** @type {Record<string, UnknownRecord>} */ (asRecord(parsed?.entries)),
+      projectEntries: /** @type {Record<string, UnknownRecord>} */ (asRecord(parsed?.projectEntries)),
+      legacySessionMappings: /** @type {Record<string, UnknownRecord>} */ (asRecord(parsed?.legacySessionMappings)),
     };
   } catch {
     return {
@@ -2057,6 +2236,7 @@ function loadPublishTargetRegistry(paths) {
   }
 }
 
+/** @param {RunPaths} paths @param {PublishTargetRegistry} registry */
 function savePublishTargetRegistry(paths, registry) {
   writeJson(publishTargetRegistryPath(paths), {
     schemaVersion: "feishu-publish-target-registry-v2",
@@ -2068,6 +2248,7 @@ function savePublishTargetRegistry(paths, registry) {
   });
 }
 
+/** @param {HandlerTask} task */
 function sessionPublishKey(task) {
   const message = task.sourceEvent?.message ?? {};
   const seed = [
@@ -2077,6 +2258,7 @@ function sessionPublishKey(task) {
   return hashText(seed).slice(0, 20);
 }
 
+/** @param {unknown} text */
 function extractFeishuFileToken(text) {
   const value = String(text ?? "");
   const explicit = value.match(/(?:file[_\s-]?token|obj[_\s-]?token|token)\s*[:=：]\s*([A-Za-z0-9_-]{8,})/i);
@@ -2088,17 +2270,22 @@ function extractFeishuFileToken(text) {
   return null;
 }
 
+/** @param {HandlerTask} task @param {AgentOutput} agentOutput @param {PublishResult} publish */
 function userFacingSummary(task, agentOutput, publish) {
+  const details = asRecord(agentOutput.details);
   if (task.taskIntent?.immediateResponse) return task.taskIntent.immediateResponse;
-  if (agentOutput?.details?.sourceAcquisitionGate === true && typeof agentOutput?.summary === "string") {
+  if (details.sourceAcquisitionGate === true && typeof agentOutput.summary === "string") {
     return agentOutput.summary.trim();
   }
-  const finalFailureReport = agentOutput?.details?.finalFailureReport ?? agentOutput?.finalFailureReport ?? null;
-  if (finalFailureReport && ["blocked", "failed", "needs_fix"].includes(String(agentOutput?.status ?? ""))) {
+  const finalFailureReport = asRecord(details.finalFailureReport ?? agentOutput.finalFailureReport);
+  if (Object.keys(finalFailureReport).length > 0 && ["blocked", "failed", "needs_fix"].includes(String(agentOutput.status ?? ""))) {
     const reason = userFacingFailureReason(finalFailureReport);
     const pendingDocs = Array.isArray(finalFailureReport.pendingDocs)
       ? finalFailureReport.pendingDocs
-          .map((doc) => `${doc.docType || "document"}${Array.isArray(doc.missingSections) && doc.missingSections.length ? ` 缺失 ${doc.missingSections.length} 个章节` : ""}`)
+          .map((docValue) => {
+            const doc = asRecord(docValue);
+            return `${String(doc.docType ?? "document")}${Array.isArray(doc.missingSections) && doc.missingSections.length ? ` 缺失 ${doc.missingSections.length} 个章节` : ""}`;
+          })
           .slice(0, 3)
           .join("；")
       : "";
@@ -2112,29 +2299,34 @@ function userFacingSummary(task, agentOutput, publish) {
   }
   let summary = typeof agentOutput?.summary === "string" ? agentOutput.summary.trim() : "";
   const generatedReply = summary.match(/已生成回复[：:]\s*[「"]([^」"]{1,1000})[」"]/);
-  if (generatedReply) summary = generatedReply[1].trim();
+  if (generatedReply) summary = (generatedReply[1] ?? "").trim();
   summary = summary
     .split(/\n+/)
     .filter((line) => !/(runId|Policy Gate|QA Gate|agent-output|publish_customer_visible|PI agent|handler|本地 run artifact)/i.test(line))
     .join("\n")
     .trim();
   if (task.taskIntent?.responseMode === "source_pack" && agentOutput?.status === "completed") {
-    const handoffPath = agentOutput?.details?.readableSourcePackPath ?? agentOutput?.details?.sourcePackPath ?? null;
+    const handoffPath = details.readableSourcePackPath ?? details.sourcePackPath ?? null;
     if (handoffPath) summary = [summary, `本地交接包：${safeShortText(handoffPath, 500)}`].filter(Boolean).join("\n");
   }
   if (!summary && agentOutput?.status === "blocked") return publish?.reason === "qa_gate_not_publishable" ? "任务处理暂未完成，请稍后重试。" : UNSUPPORTED_FEATURE_REPLY;
   return summary;
 }
 
+/** @param {AgentOutput} agentOutput @returns {UnknownRecord[]} */
 function userFacingTodo(agentOutput) {
-  const projection = agentOutput?.details?.todo ?? agentOutput?.todo ?? null;
-  if (!projection || !Array.isArray(projection.items)) return [];
-  return projection.items
+  const projection = asRecord(asRecord(agentOutput.details).todo ?? agentOutput.todo);
+  if (!Array.isArray(projection.items)) return [];
+  return projection.items.map(asRecord)
     .filter((item) => item?.interactive === true && item?.status === "pending")
-    .sort((left, right) => ({ high: 0, medium: 1, low: 2 }[left.priority] ?? 3) - ({ high: 0, medium: 1, low: 2 }[right.priority] ?? 3))
+    .sort((left, right) => {
+      const rank = /** @type {Record<string, number>} */ ({ high: 0, medium: 1, low: 2 });
+      return (rank[String(left.priority ?? "")] ?? 3) - (rank[String(right.priority ?? "")] ?? 3);
+    })
     .slice(0, 5);
 }
 
+/** @param {AgentOutput} agentOutput @returns {string[]} */
 function todoMarkdownLines(agentOutput) {
   const items = userFacingTodo(agentOutput);
   if (items.length === 0) return [];
@@ -2142,7 +2334,7 @@ function todoMarkdownLines(agentOutput) {
   for (const item of items) {
     lines.push(`- ${item.label}${item.description ? `：${safeShortText(item.description, 180)}` : ""}`);
     if (Array.isArray(item.options) && item.options.length > 0) {
-      const labels = item.options.map((option) => ({
+      const labels = item.options.map((option) => /** @type {Record<string, string>} */ ({
         prd: "生成 PRD",
         "customer-requirement-checklist": "生成客户需求确认表",
         "tech-architecture": "生成技术架构",
@@ -2151,7 +2343,7 @@ function todoMarkdownLines(agentOutput) {
         "keep-meeting-minutes-only": "仅保留会议纪要",
         "review-source-pack": "先审阅 source pack",
         "keep-source-pack-local": "仅保留本地交接包",
-      })[option] ?? option);
+      })[String(option)] ?? String(option));
       lines.push(`  可选：${labels.join(" / ")}`);
     }
   }
@@ -2159,12 +2351,15 @@ function todoMarkdownLines(agentOutput) {
   return lines;
 }
 
-function userFacingFailureReason(report) {
-  const lastReason = String(report?.lastProviderAttempt?.reason ?? report?.terminalReason ?? "document_workflow_not_completed");
+/** @param {unknown} reportValue */
+function userFacingFailureReason(reportValue) {
+  const report = asRecord(reportValue);
+  const lastProviderAttempt = asRecord(report.lastProviderAttempt);
+  const lastReason = String(lastProviderAttempt.reason ?? report.terminalReason ?? "document_workflow_not_completed");
   if (lastReason === "model_provider_unavailable") return "模型 provider 未配置或当前不可用";
   if (lastReason === "model_provider_request_timeout" || lastReason === "document_worker_deadline_exhausted") return "模型生成多次超时";
   if (lastReason === "model_provider_empty_response") return "模型返回为空";
-  if (lastReason === "model_provider_http_error") return `模型服务返回 HTTP ${report?.lastProviderAttempt?.httpStatus ?? "错误"}`;
+  if (lastReason === "model_provider_http_error") return `模型服务返回 HTTP ${lastProviderAttempt.httpStatus ?? "错误"}`;
   if (lastReason === "document_sections_missing_after_repair") return "文档章节修复后仍有缺失";
   if (lastReason === "qa_gate_not_publishable") return "QA 检查未通过";
   if (lastReason === "policy_gate_not_publishable") return "发布边界检查未通过";
@@ -2174,8 +2369,10 @@ function userFacingFailureReason(report) {
   return safeShortText(lastReason, 160);
 }
 
+/** @param {HandlerEvent} event @param {HandlerTask} task @param {string} text @param {RunPaths} paths @param {HandlerOptions} options @param {string} stage @returns {Promise<ProgressResult>} */
 async function sendProgressReply(event, task, text, paths, options, stage) {
   const messageId = event.message?.messageId;
+  /** @type {ProgressResult} */
   const progress = {
     stage,
     at: nowIso(),
@@ -2199,7 +2396,7 @@ async function sendProgressReply(event, task, text, paths, options, stage) {
     appendFileSync(paths.progressPath, `${JSON.stringify(sanitize(progress))}\n`, "utf8");
     return progress;
   }
-  const cli = await runCommand("lark-cli", ["im", "+messages-reply", "--as", "bot", "--message-id", messageId, "--text", String(text).slice(0, 1200), "--idempotency-key", idempotencyKey], { timeoutMs: options.cliTimeoutMs });
+  const cli = await runCommand("lark-cli", ["im", "+messages-reply", "--as", "bot", "--message-id", messageId, "--text", String(text).slice(0, 1200), "--idempotency-key", idempotencyKey], { timeoutMs: options.cliTimeoutMs ?? 120000 });
   progress.status = cli.exitCode === 0 ? "sent" : "failed";
   progress.exitCode = cli.exitCode;
   progress.stderrTail = redactString(cli.stderr).slice(-1200);
@@ -2207,15 +2404,26 @@ async function sendProgressReply(event, task, text, paths, options, stage) {
   return progress;
 }
 
+/** @param {HandlerTask} task @param {AgentOutput} agentOutput @param {RunPaths} paths @param {HandlerOptions} options @returns {Promise<HandlerPublishResult>} */
 async function publishResults(task, agentOutput, paths, options) {
-  const documents = Array.isArray(agentOutput?.documents) ? agentOutput.documents : [];
+  const documents = (Array.isArray(agentOutput.documents) ? agentOutput.documents : []).map((documentValue, index) => {
+    const document = asRecord(documentValue);
+    const docType = String(document.docType ?? "document");
+    const title = String(document.title ?? document.fileName ?? docType);
+    const fileName = safeMarkdownFileName(document.fileName ?? title ?? `${docType}-${index}.md`);
+    const localPath = typeof document.localPath === "string" ? resolve(document.localPath) : join(paths.artifactsDir, fileName);
+    return /** @type {OutputDocument} */ ({ ...document, docType, title, fileName, localPath, markdown: String(document.markdown ?? "") });
+  });
   const qaPass = qaAllowsPublish(agentOutput);
   const policyPass = policyAllowsPublish(agentOutput);
-  const policyBlocked = agentOutput?.policyGate?.status === "blocked";
+  const policyGate = asRecord(agentOutput.policyGate);
+  const policyBlocked = policyGate.status === "blocked";
   const userWriteAllowed = feishuUserWriteAllowed(task, documents.length > 0);
   const effectivePolicyPass = policyPass || (!policyBlocked && userWriteAllowed);
+  /** @type {string[][]} */
   const plannedCommands = [];
   const publishAs = options.publishAs ?? "bot";
+  /** @type {HandlerPublishResult} */
   const result = {
     schemaVersion: "feishu-publish-v1",
     runId: task.runId,
@@ -2224,7 +2432,7 @@ async function publishResults(task, agentOutput, paths, options) {
     publishAs,
     qaPass,
     policyPass: effectivePolicyPass,
-    policyGateStatus: agentOutput?.policyGate?.status ?? null,
+    policyGateStatus: policyGate.status ?? null,
     policyOverride: !policyPass && !policyBlocked && userWriteAllowed
       ? {
           status: "pass",
@@ -2264,6 +2472,8 @@ async function publishResults(task, agentOutput, paths, options) {
     return result;
   }
 
+  for (const document of documents) writeText(document.localPath, document.markdown);
+
   const legacySessionKey = sessionPublishKey(task);
   const taxonomy = buildPublishTaxonomy({
     task,
@@ -2296,7 +2506,13 @@ async function publishResults(task, agentOutput, paths, options) {
       task,
       documents,
       paths,
-      options: { ...options, publishTarget },
+      options: {
+        publishMode: options.publishMode ?? "dry-run",
+        ...(typeof options.publishAs === "string" ? { publishAs: options.publishAs } : {}),
+        publishTarget,
+        cliTimeoutMs: options.cliTimeoutMs ?? 120000,
+        ...(typeof options.folderToken === "string" ? { folderToken: options.folderToken } : {}),
+      },
       workspaceDir,
       runCommand,
       writeText,
@@ -2317,7 +2533,7 @@ async function publishResults(task, agentOutput, paths, options) {
     }
     if (publishTarget === "wiki") {
       result.status = "blocked";
-      result.reason = wikiPublish.reason ?? "wiki_publish_failed";
+      result.reason = String(wikiPublish.reason ?? "wiki_publish_failed");
       result.publishTarget = "wiki";
       result.documents = wikiPublish.documents ?? [];
       result.plannedCommands.push(...(wikiPublish.plannedCommands ?? []));
@@ -2337,8 +2553,8 @@ async function publishResults(task, agentOutput, paths, options) {
 
   const registry = loadPublishTargetRegistry(paths);
   const parentFolderToken = options.folderToken ?? null;
-  const existingProjectTarget = registry.projectEntries?.[taxonomy.projectKey] ?? null;
-  let folderToken = existingProjectTarget?.folderToken ?? null;
+  const existingProjectTarget = registry.projectEntries[taxonomy.projectKey] ?? null;
+  let folderToken = typeof existingProjectTarget?.folderToken === "string" ? existingProjectTarget.folderToken : null;
   const folderName = taxonomy.drive?.folderName ?? `项目｜${taxonomy.projectTitle}`;
   result.publishTarget = {
     mode: "project_workspace",
@@ -2361,7 +2577,7 @@ async function publishResults(task, agentOutput, paths, options) {
   if (options.publishMode === "live" && !folderToken) {
     const folderArgs = ["drive", "+create-folder", "--as", publishAs, "--name", folderName];
     if (parentFolderToken) folderArgs.push("--folder-token", parentFolderToken);
-    const folder = await runCommand("lark-cli", folderArgs, { timeoutMs: options.cliTimeoutMs });
+    const folder = await runCommand("lark-cli", folderArgs, { timeoutMs: options.cliTimeoutMs ?? 120000 });
     const folderJson = parseJsonOutput(folder.stdout);
     folderToken = findToken(folderJson, ["folder_token", "token", "file_token"]) ?? folderToken;
     result.folderCreate = { exitCode: folder.exitCode, stderrTail: redactString(folder.stderr).slice(-2000) };
@@ -2375,7 +2591,7 @@ async function publishResults(task, agentOutput, paths, options) {
     } else {
       registry.projectEntries ??= {};
       registry.legacySessionMappings ??= {};
-      const legacySessionKeys = Array.from(new Set([...(existingProjectTarget?.legacySessionKeys ?? []), legacySessionKey].filter(Boolean)));
+      const legacySessionKeys = Array.from(new Set([...(Array.isArray(existingProjectTarget?.legacySessionKeys) ? existingProjectTarget.legacySessionKeys.map(String) : []), legacySessionKey].filter(Boolean)));
       registry.projectEntries[taxonomy.projectKey] = {
         folderToken,
         folderName,
@@ -2398,11 +2614,11 @@ async function publishResults(task, agentOutput, paths, options) {
   } else if (options.publishMode === "live" && folderToken) {
     registry.projectEntries ??= {};
     registry.legacySessionMappings ??= {};
-    const legacySessionKeys = Array.from(new Set([...(existingProjectTarget?.legacySessionKeys ?? []), legacySessionKey].filter(Boolean)));
+    const legacySessionKeys = Array.from(new Set([...(Array.isArray(existingProjectTarget?.legacySessionKeys) ? existingProjectTarget.legacySessionKeys.map(String) : []), legacySessionKey].filter(Boolean)));
     registry.projectEntries[taxonomy.projectKey] = {
       ...existingProjectTarget,
       folderToken,
-      folderName: existingProjectTarget?.folderName ?? folderName,
+      folderName: typeof existingProjectTarget?.folderName === "string" ? existingProjectTarget.folderName : folderName,
       projectTitle: taxonomy.projectTitle,
       projectKey: taxonomy.projectKey,
       sourceThreadKey: taxonomy.sourceThreadKey,
@@ -2411,7 +2627,7 @@ async function publishResults(task, agentOutput, paths, options) {
     };
     registry.legacySessionMappings[legacySessionKey] = {
       projectKey: taxonomy.projectKey,
-      folderName: existingProjectTarget?.folderName ?? folderName,
+      folderName: typeof existingProjectTarget?.folderName === "string" ? existingProjectTarget.folderName : folderName,
       mappedAt: nowIso(),
     };
     savePublishTargetRegistry(paths, registry);
@@ -2422,13 +2638,16 @@ async function publishResults(task, agentOutput, paths, options) {
     const fileName = safeMarkdownFileName(doc.fileName || doc.title || `${doc.docType || "document"}-${index}.md`);
     const markdownPath = join(paths.artifactsDir, fileName.endsWith(".md") ? fileName : `${fileName}.md`);
     writeText(markdownPath, String(doc.markdown ?? ""));
-    const targetFileToken = doc.targetFileToken ?? doc.fileToken ?? promptTargetToken;
+    const targetFileTokenValue = doc.targetFileToken ?? doc.fileToken ?? promptTargetToken;
+    const targetFileToken = typeof targetFileTokenValue === "string" ? targetFileTokenValue : null;
     const shouldOverwrite = Boolean(targetFileToken && MODIFY_REQUEST_PATTERN.test(cleanUserPrompt(task.sourceEvent?.message?.text ?? "")));
+    /** @type {string[]} */
     const command = shouldOverwrite
-      ? ["lark-cli", "markdown", "+overwrite", "--as", publishAs, "--file", relative(workspaceDir, markdownPath), "--file-token", targetFileToken, "--name", fileName.endsWith(".md") ? fileName : `${fileName}.md`]
+      ? ["lark-cli", "markdown", "+overwrite", "--as", publishAs, "--file", relative(workspaceDir, markdownPath), "--file-token", targetFileToken ?? "", "--name", fileName.endsWith(".md") ? fileName : `${fileName}.md`]
       : ["lark-cli", "markdown", "+create", "--as", publishAs, "--file", relative(workspaceDir, markdownPath), "--name", fileName.endsWith(".md") ? fileName : `${fileName}.md`];
     if (!shouldOverwrite && folderToken) command.push("--folder-token", folderToken);
     plannedCommands.push(command);
+    /** @type {UnknownRecord & {status: string}} */
     const docResult = {
       docType: doc.docType ?? "document",
       title: doc.title ?? fileName,
@@ -2440,7 +2659,7 @@ async function publishResults(task, agentOutput, paths, options) {
     };
     if (options.publishMode === "live") {
       const cliArgs = command.slice(1).concat(["--format", "json"]);
-      const created = await runCommand("lark-cli", cliArgs, { timeoutMs: options.cliTimeoutMs });
+      const created = await runCommand("lark-cli", cliArgs, { timeoutMs: options.cliTimeoutMs ?? 120000 });
       const json = parseJsonOutput(created.stdout);
       docResult.status = created.exitCode === 0 ? (shouldOverwrite ? "overwritten" : "published") : "failed";
       docResult.exitCode = created.exitCode;
@@ -2451,15 +2670,16 @@ async function publishResults(task, agentOutput, paths, options) {
     result.documents.push(docResult);
   }
 
-  if (options.publishMode === "live" && result.documents.some((doc) => !["published", "overwritten"].includes(doc.status))) {
+  if (options.publishMode === "live" && result.documents.some((doc) => !["published", "overwritten"].includes(String(doc.status ?? "")))) {
     result.status = "blocked";
     result.reason = "feishu_markdown_create_failed";
     writeJson(paths.publishPath, result);
     return result;
   }
 
-  for (const artifact of agentOutput.artifacts ?? []) {
-    if (!artifact?.localPath) continue;
+  for (const artifactValue of agentOutput.artifacts ?? []) {
+    const artifact = asRecord(artifactValue);
+    if (typeof artifact.localPath !== "string") continue;
     const command = ["lark-cli", "drive", "+upload", "--as", publishAs, "--file", relative(workspaceDir, resolve(artifact.localPath)), "--name", safeSegment(artifact.name || artifact.localPath)];
     if (folderToken) command.push("--folder-token", folderToken);
     plannedCommands.push(command);
@@ -2470,6 +2690,7 @@ async function publishResults(task, agentOutput, paths, options) {
   return result;
 }
 
+/** @param {HandlerEvent} event @param {HandlerTask} task @param {AgentOutput} agentOutput @param {HandlerPublishResult} publish @param {RunPaths} paths @param {HandlerOptions} options @returns {Promise<ReplyResult>} */
 async function replyToFeishu(event, task, agentOutput, publish, paths, options) {
   const messageId = event.message?.messageId;
   const documentLines = (publish.documents ?? []).map((doc) => `- ${doc.title}: ${doc.status}${doc.url ? ` ${doc.url}` : ""}`);
@@ -2485,6 +2706,7 @@ async function replyToFeishu(event, task, agentOutput, publish, paths, options) 
         ...documentLines,
         ...todoMarkdownLines(agentOutput),
       ].filter(Boolean).join("\n");
+  /** @type {ReplyResult} */
   const reply = {
     runId: task.runId,
     replyMode: options.replyMode,
@@ -2516,12 +2738,12 @@ async function replyToFeishu(event, task, agentOutput, publish, paths, options) 
   const idempotencyKey = replyIdempotencyKey(task.runId);
   reply.idempotencyKey = idempotencyKey;
   const command = ["im", "+messages-reply", "--as", "bot", "--message-id", messageId, "--markdown", markdown, "--idempotency-key", idempotencyKey];
-  const cli = await runCommand("lark-cli", command, { timeoutMs: options.cliTimeoutMs });
+  const cli = await runCommand("lark-cli", command, { timeoutMs: options.cliTimeoutMs ?? 120000 });
   let finalCli = cli;
   if (cli.exitCode !== 0 && /field validation failed/i.test(cli.stderr)) {
     const textFallback = markdown.replace(/\*\*/g, "").slice(0, 3500);
     const textCommand = ["im", "+messages-reply", "--as", "bot", "--message-id", messageId, "--text", textFallback, "--idempotency-key", `${idempotencyKey.slice(0, 42)}-text`];
-    finalCli = await runCommand("lark-cli", textCommand, { timeoutMs: options.cliTimeoutMs });
+    finalCli = await runCommand("lark-cli", textCommand, { timeoutMs: options.cliTimeoutMs ?? 120000 });
     reply.fallback = {
       reason: "markdown_field_validation_failed",
       attempted: "text",
@@ -2535,27 +2757,30 @@ async function replyToFeishu(event, task, agentOutput, publish, paths, options) 
   return reply;
 }
 
+/** @param {string} runId */
 function replyIdempotencyKey(runId) {
   return createHash("sha256").update(String(runId)).digest("hex").slice(0, 48);
 }
 
+/** @param {HandlerTask} task @param {AgentOutput} agentOutput @param {HandlerPublishResult} publish @param {string} stateStatus */
 function buildHandlerResponseText(task, agentOutput, publish, stateStatus) {
   const documents = Array.isArray(publish?.documents) ? publish.documents : [];
   const summary = userFacingSummary(task, agentOutput, publish);
+  const details = asRecord(agentOutput.details);
   if (
     stateStatus === "blocked"
-    && ["audio_transcoder_unavailable", "audio_normalize_failed"].includes(agentOutput?.details?.reason)
+    && ["audio_transcoder_unavailable", "audio_normalize_failed"].includes(String(details.reason ?? ""))
   ) {
     return (summary || "目前音频格式暂不支持自动转码。").slice(0, 3500);
   }
   if (
     stateStatus === "blocked"
-    && agentOutput?.details?.sourceAcquisitionGate === true
+    && details.sourceAcquisitionGate === true
     && summary
   ) {
     return summary.slice(0, 3500);
   }
-  if (documents.length === 0 && summary && ["direct_answer", "unsupported", "needs_file", "ack_file_cached"].includes(task.taskIntent?.responseMode)) {
+  if (documents.length === 0 && summary && ["direct_answer", "unsupported", "needs_file", "ack_file_cached"].includes(String(task.taskIntent?.responseMode ?? ""))) {
     return summary.slice(0, 3500);
   }
   const lines = [];
@@ -2595,6 +2820,7 @@ function buildHandlerResponseText(task, agentOutput, publish, stateStatus) {
   return lines.join("\n").slice(0, 3500);
 }
 
+/** @param {string} runId @param {string} [taskType] @returns {RunMetrics} */
 function baseRunMetrics(runId, taskType = "feishu_agent") {
   return {
     runId,
@@ -2622,6 +2848,7 @@ function baseRunMetrics(runId, taskType = "feishu_agent") {
   };
 }
 
+/** @param {RunMetrics} metrics @param {string} kind @param {unknown} payload */
 function appendMetric(metrics, kind, payload) {
   const sanitizedPayload = sanitize(payload);
   if (kind === "tool") metrics.toolCalls.push(sanitizedPayload);
@@ -2634,10 +2861,12 @@ function appendMetric(metrics, kind, payload) {
   if (kind === "capabilitySelection") metrics.capabilitySelections.push(sanitizedPayload);
 }
 
+/** @param {RunPaths} paths @param {RunMetrics} metrics */
 function writeRunMetrics(paths, metrics) {
   writeJson(paths.metricsPath, metrics);
 }
 
+/** @param {string} status */
 function metricsStatusFromState(status) {
   if (status === "completed") return "pass";
   if (status === "blocked") return "blocked";
@@ -2645,6 +2874,7 @@ function metricsStatusFromState(status) {
   return "needs_fix";
 }
 
+/** @param {HandlerAttachment} attachment */
 function summarizeAttachmentForLearning(attachment) {
   return {
     name: attachment.name ?? null,
@@ -2660,20 +2890,22 @@ function summarizeAttachmentForLearning(attachment) {
   };
 }
 
+/** @param {HandlerFileContext} context */
 function summarizeFileContextForLearning(context) {
+  const extraction = asRecord(context.extraction);
   return {
     fileName: context.fileName ?? null,
     fileType: context.fileType ?? null,
     extension: context.extension ?? null,
     status: context.status ?? null,
     contextMode: context.contextMode ?? null,
-    extraction: context.extraction
+    extraction: Object.keys(extraction).length > 0
       ? {
-          status: context.extraction.status ?? null,
-          method: context.extraction.method ?? null,
-          reason: context.extraction.reason ?? null,
-          chars: context.extraction.chars ?? 0,
-          previewChars: context.extraction.previewChars ?? 0,
+          status: extraction.status ?? null,
+          method: extraction.method ?? null,
+          reason: extraction.reason ?? null,
+          chars: extraction.chars ?? 0,
+          previewChars: extraction.previewChars ?? 0,
         }
       : null,
     extractedTextPath: workspaceRelative(context.extractedTextPath),
@@ -2682,9 +2914,13 @@ function summarizeFileContextForLearning(context) {
   };
 }
 
+/** @param {{event: HandlerEvent, task: HandlerTask, state: FeishuRunState, agentOutput: AgentOutput, publish: HandlerPublishResult, reply: ReplyResult, paths: RunPaths, metrics: RunMetrics}} input */
 function buildRunManifest({ event, task, state, agentOutput, publish, reply, paths, metrics }) {
   const attachments = Array.isArray(task.attachments) ? task.attachments : [];
   const contexts = Array.isArray(task.fileContexts?.contexts) ? task.fileContexts.contexts : [];
+  const agentDetails = asRecord(agentOutput.details);
+  const wikiPublish = asRecord(publish.wikiPublish);
+  const wikiFallback = asRecord(publish.wikiFallback);
   return {
     schemaVersion: "feishu-run-manifest-v1",
     runId: task.runId,
@@ -2727,13 +2963,16 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
         markdownHash: doc.markdown ? hashText(doc.markdown) : null,
         markdownChars: typeof doc.markdown === "string" ? doc.markdown.length : 0,
       })),
-      artifacts: (agentOutput?.artifacts ?? []).map((artifact) => ({
-        kind: artifact.kind ?? artifact.type ?? "artifact",
-        name: artifact.name ?? null,
-        localPath: workspaceRelative(artifact.localPath),
-      })),
-      todo: agentOutput?.details?.todo ?? agentOutput?.todo ?? null,
-      interactionItems: agentOutput?.details?.interactionItems ?? agentOutput?.interactionItems ?? [],
+      artifacts: (agentOutput.artifacts ?? []).map((artifactValue) => {
+        const artifact = asRecord(artifactValue);
+        return ({
+          kind: artifact.kind ?? artifact.type ?? "artifact",
+          name: artifact.name ?? null,
+          localPath: workspaceRelative(artifact.localPath),
+        });
+      }),
+      todo: agentDetails.todo ?? agentOutput.todo ?? null,
+      interactionItems: agentDetails.interactionItems ?? agentOutput.interactionItems ?? [],
     },
     gates: {
       qaGate: agentOutput?.qaGate ?? { status: "not_run", issues: [] },
@@ -2744,8 +2983,8 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
       reason: publish?.reason ?? null,
       publishTarget: publish?.publishTarget ?? null,
       publishTaxonomy: publish?.publishTaxonomy ?? null,
-      wikiPublishStatus: publish?.wikiPublish?.status ?? null,
-      wikiFallbackReason: publish?.wikiFallback?.reason ?? publish?.wikiPublish?.fallbackReason ?? null,
+      wikiPublishStatus: wikiPublish.status ?? null,
+      wikiFallbackReason: wikiFallback.reason ?? wikiPublish.fallbackReason ?? null,
       documentCount: Array.isArray(publish?.documents) ? publish.documents.length : 0,
     },
     reply: {
@@ -2788,6 +3027,7 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
   };
 }
 
+/** @param {{event: HandlerEvent, task: HandlerTask, state: FeishuRunState, agentOutput: AgentOutput, publish: HandlerPublishResult, reply: ReplyResult, paths: RunPaths, metrics: RunMetrics}} input */
 function writeRunArtifacts({ event, task, state, agentOutput, publish, reply, paths, metrics }) {
   metrics.status = metricsStatusFromState(state.status);
   metrics.finishedAt = nowIso();
@@ -2804,10 +3044,12 @@ function writeRunArtifacts({ event, task, state, agentOutput, publish, reply, pa
   return { manifest };
 }
 
+/** @param {unknown} mode */
 function runtimeStoreModeEnabled(mode) {
   return !/^(0|false|off|disabled|none)$/i.test(String(mode ?? "index").trim());
 }
 
+/** @param {RunPaths} paths @param {HandlerOptions} options @param {FeishuRunState} state @param {RunMetrics} metrics */
 async function indexRuntimeStoreRun(paths, options, state, metrics) {
   const mode = options.runtimeStoreMode ?? "index";
   const baseResult = {
@@ -2848,8 +3090,8 @@ async function indexRuntimeStoreRun(paths, options, state, metrics) {
   const args = [runtimeStoreCliPath, "index-run", "--run-dir", paths.runDir];
   if (options.runtimeStoreCas !== false) args.push("--cas");
   const cli = await runCommand("python3", args, { timeoutMs: options.runtimeStoreTimeoutMs ?? 120000 });
-  const parsed = parseJsonOutput(cli.stdout);
-  const ok = cli.exitCode === 0 && parsed?.status === "indexed";
+  const parsed = asRecord(parseJsonOutput(cli.stdout));
+  const ok = cli.exitCode === 0 && parsed.status === "indexed";
   const result = {
     ...baseResult,
     status: ok ? "completed" : "failed",
@@ -2879,17 +3121,22 @@ async function indexRuntimeStoreRun(paths, options, state, metrics) {
   return result;
 }
 
+/** @param {unknown} input @param {HandlerOptions} options */
 export async function handleEvent(input, options) {
   const event = normalizeDirectEvent(input);
   const root = outputRoot(options.outputRoot);
   const previousThreadLedger = selectPreviousThreadLedger(root, event);
   const ledgerSelection = resolveLedgerSelection(event.message?.text ?? "", previousThreadLedger?.ledger);
-  if (ledgerSelection) {
+  if (ledgerSelection && previousThreadLedger) {
     const selected = previousThreadLedger.ledger;
-    const interactionItems = (selected.interactionItems ?? []).map((item) => item.itemId === ledgerSelection.itemId
-      ? { ...item, status: "answered", answer: ledgerSelection.selectedOption }
-      : item);
+    const interactionItems = (Array.isArray(selected.interactionItems) ? selected.interactionItems : []).map((itemValue) => {
+      const item = asRecord(itemValue);
+      return item.itemId === ledgerSelection.itemId
+        ? { ...item, status: "answered", answer: ledgerSelection.selectedOption }
+        : item;
+    });
     const revision = Number(selected.revision ?? 1) + 1;
+    /** @type {UnknownRecord} */
     const updatedLedger = {
       ...selected,
       revision,
@@ -2898,17 +3145,20 @@ export async function handleEvent(input, options) {
       openQuestions: interactionItems.filter((item) => item.kind === "question" && item.status === "pending").map((item) => item.itemId),
       updatedAt: nowIso(),
       events: [
-        ...(selected.events ?? []),
+        ...(Array.isArray(selected.events) ? selected.events : []),
         { eventId: `event-${hashText(`${selected.planId}:${revision}:${ledgerSelection.itemId}`).slice(0, 10)}`, type: "user_selection_recorded", at: nowIso(), actor: "user", operationId: `feishu-selection:${event.eventId}` },
       ].slice(-500),
     };
     updatedLedger.userTodoProjection = {
-      ...(selected.userTodoProjection ?? {}),
+      ...asRecord(selected.userTodoProjection),
       revision,
-      awaitingUser: interactionItems.some((item) => item.status === "pending" && ["decision", "question"].includes(item.kind)),
-      items: (selected.userTodoProjection?.items ?? []).map((item) => item.itemId === ledgerSelection.itemId
-        ? { ...item, status: "answered", interactive: false }
-        : item),
+      awaitingUser: interactionItems.some((item) => item.status === "pending" && ["decision", "question"].includes(String(item.kind ?? ""))),
+      items: (Array.isArray(asRecord(selected.userTodoProjection).items) ? /** @type {unknown[]} */ (asRecord(selected.userTodoProjection).items) : []).map((itemValue) => {
+        const item = asRecord(itemValue);
+        return item.itemId === ledgerSelection.itemId
+          ? { ...item, status: "answered", interactive: false }
+          : item;
+      }),
     };
     writeJson(previousThreadLedger.path, updatedLedger);
     previousThreadLedger.ledger = updatedLedger;
@@ -2920,22 +3170,22 @@ export async function handleEvent(input, options) {
   // Source resolution rule: current attachments and explicit URLs outrank parent/root lookup and recent cache.
   const explicitFileReferences = extractFeishuFileReferences(event.message?.text ?? "");
   if (explicitFileReferences.length > 0) {
-    event.message.attachments = dedupeAttachments([...(event.message?.attachments ?? []), ...explicitFileReferences]);
+    event.message.attachments = /** @type {import("../dist/index.js").FeishuAttachment[]} */ (dedupeAttachments([...(event.message?.attachments ?? []), ...explicitFileReferences]));
   }
   const attachmentResolution = await resolveReferencedAttachments(root, event, options);
-  if ((event.message?.attachments ?? []).length === 0 && attachmentResolution.attachments?.length > 0) {
-    event.message.attachments = dedupeAttachments(attachmentResolution.attachments);
+  if ((event.message?.attachments ?? []).length === 0 && attachmentResolution.attachments.length > 0) {
+    event.message.attachments = /** @type {import("../dist/index.js").FeishuAttachment[]} */ (dedupeAttachments(attachmentResolution.attachments));
   }
   event.attachmentResolution = {
     status: attachmentResolution.status,
     reason: attachmentResolution.reason,
     sourceMessageId: attachmentResolution.sourceMessageId ?? null,
     messageIds: attachmentResolution.messageIds ?? [],
-    parentStatus: attachmentResolution.parentResolution?.status ?? null,
-    parentReason: attachmentResolution.parentResolution?.reason ?? null,
-    parentExitCode: attachmentResolution.parentResolution?.exitCode ?? null,
-    cacheStatus: attachmentResolution.cacheResolution?.status ?? null,
-    cacheReason: attachmentResolution.cacheResolution?.reason ?? null,
+    parentStatus: asRecord(attachmentResolution.parentResolution).status ?? null,
+    parentReason: asRecord(attachmentResolution.parentResolution).reason ?? null,
+    parentExitCode: asRecord(attachmentResolution.parentResolution).exitCode ?? null,
+    cacheStatus: asRecord(attachmentResolution.cacheResolution).status ?? null,
+    cacheReason: asRecord(attachmentResolution.cacheResolution).reason ?? null,
     explicitFileReferenceCount: explicitFileReferences.length,
   };
   const runId = options.runId ?? runIdFor(event);
@@ -2953,6 +3203,7 @@ export async function handleEvent(input, options) {
     attachmentResolution: event.attachmentResolution,
   });
   writeRunMetrics(paths, metrics);
+  /** @type {FeishuRunState} */
   const state = {
     schemaVersion: "feishu-run-state-v1",
     runId,
@@ -3016,7 +3267,7 @@ export async function handleEvent(input, options) {
   writeState(paths, state);
 
   const taskIntent = classifyTaskIntent(event, attachments, fileContexts, attachmentResolution);
-  if (ledgerSelection?.requestedDocuments?.length > 0) {
+  if (ledgerSelection && previousThreadLedger && ledgerSelection.requestedDocuments.length > 0) {
     taskIntent.taskType = "doc_writer";
     taskIntent.responseMode = "document_pipeline";
     taskIntent.executionProfile = "document_generation";
@@ -3031,17 +3282,20 @@ export async function handleEvent(input, options) {
       sourceLedgerPath: workspaceRelative(previousThreadLedger.path),
       conflictPolicy: "source_attribution",
     };
-  } else if (ledgerSelection?.selectedOption === "review-customer-questions") {
-    const questions = (previousThreadLedger.ledger.interactionItems ?? [])
+  } else if (ledgerSelection?.selectedOption === "review-customer-questions" && previousThreadLedger) {
+    const questions = (Array.isArray(previousThreadLedger.ledger.interactionItems) ? previousThreadLedger.ledger.interactionItems : []).map(asRecord)
       .filter((item) => item.kind === "question" && item.status === "pending")
-      .sort((left, right) => ({ high: 0, medium: 1, low: 2 }[left.priority] ?? 3) - ({ high: 0, medium: 1, low: 2 }[right.priority] ?? 3))
+      .sort((left, right) => {
+        const rank = /** @type {Record<string, number>} */ ({ high: 0, medium: 1, low: 2 });
+        return (rank[String(left.priority ?? "")] ?? 3) - (rank[String(right.priority ?? "")] ?? 3);
+      })
       .slice(0, 10);
     taskIntent.taskType = "task_management";
     taskIntent.responseMode = "direct_answer";
     taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
     taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = questions.length > 0
-      ? ["建议下一轮优先向客户确认：", ...questions.map((item, index) => `${index + 1}. ${item.label}${item.description ? `（${safeShortText(item.description, 160)}）` : ""}`)].join("\n")
+      ? ["建议下一轮优先向客户确认：", ...questions.map((item, index) => `${index + 1}. ${String(item.label ?? "待确认问题")}${item.description ? `（${safeShortText(item.description, 160)}）` : ""}`)].join("\n")
       : "当前 Execution Ledger 没有尚待确认的客户问题。";
   } else if (ledgerSelection?.selectedOption === "keep-meeting-minutes-only") {
     taskIntent.taskType = "task_management";
@@ -3049,7 +3303,7 @@ export async function handleEvent(input, options) {
     taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
     taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = "已记录：本轮仅保留会议纪要，不继续生成 PRD、技术架构或客户需求确认表。";
-  } else if (ledgerSelection?.selectedOption === "review-source-pack") {
+  } else if (ledgerSelection?.selectedOption === "review-source-pack" && previousThreadLedger) {
     const sourcePackPath = join(dirname(previousThreadLedger.path), "artifacts", "public-source", "source-pack", "source-pack.readable.md");
     const sourcePackPreview = existsSync(sourcePackPath) ? readFileSync(sourcePackPath, "utf8").slice(0, 2600).trim() : "";
     taskIntent.taskType = "task_management";
@@ -3059,7 +3313,7 @@ export async function handleEvent(input, options) {
     taskIntent.immediateResponse = sourcePackPreview
       ? [`以下是 source pack 的有界预览：`, sourcePackPreview, `本地交接包：${workspaceRelative(sourcePackPath)}`].join("\n\n")
       : "未找到上一轮 source pack 的本地文件，请重新处理原 URL。";
-  } else if (ledgerSelection?.selectedOption === "keep-source-pack-local") {
+  } else if (ledgerSelection?.selectedOption === "keep-source-pack-local" && previousThreadLedger) {
     const sourcePackPath = join(dirname(previousThreadLedger.path), "artifacts", "public-source", "source-pack", "source-pack.readable.md");
     taskIntent.taskType = "task_management";
     taskIntent.responseMode = "direct_answer";
@@ -3067,7 +3321,8 @@ export async function handleEvent(input, options) {
     taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = `已记录：本轮仅保留本地 source pack，不执行外部知识库写入。交接路径：${workspaceRelative(sourcePackPath)}`;
   }
-  const task = {
+  /** @type {HandlerTask} */
+  const task = /** @type {HandlerTask} */ ({
     schemaVersion: "feishu-task-v1",
     runId,
     status: "running",
@@ -3087,7 +3342,7 @@ export async function handleEvent(input, options) {
     publishPath: paths.publishPath,
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-  };
+  });
   writeJson(paths.taskPath, assertFeishuTask(task));
   addStep(state, "task_created", "completed", { artifact: paths.taskPath });
   metrics.taskType = taskIntent.taskType ?? "feishu_agent";
@@ -3130,6 +3385,7 @@ export async function handleEvent(input, options) {
 
   const runnerOptions = {
     ...options,
+    /** @param {string} text @param {string} stage */
     progressReply: async (text, stage) => {
       if (options.progressReplyMode !== "live") {
         const progress = { stage, status: "skipped", reason: "progress_reply_disabled_for_two_phase_stable_runtime", replyMode: options.replyMode, rawSecretsReturned: false };
@@ -3155,6 +3411,7 @@ export async function handleEvent(input, options) {
       writeRunMetrics(paths, metrics);
       return progress;
     },
+    /** @param {string} name @param {string} status @param {UnknownRecord} [details] */
     onStep: async (name, status, details = {}) => {
       mergeLatestStateFromDisk();
       if (status === "running") state.status = "running";
@@ -3163,13 +3420,14 @@ export async function handleEvent(input, options) {
         name,
         status,
         mode: details?.dockerWorker === true ? "local-docker-document-worker" : "task-execution-runner",
-        ...sanitize(details),
+        ...asRecord(sanitize(details)),
       });
       writeRunMetrics(paths, metrics);
       writeState(paths, state);
     },
   };
 
+  /** @type {AgentRun | undefined} */
   let agent;
   const sourceGate = sourceAcquisitionGate(task, attachments, fileContexts);
   if (sourceGate.status === "blocked") {
@@ -3184,11 +3442,16 @@ export async function handleEvent(input, options) {
     await runnerOptions.onStep("source_acquisition_gate", "completed", sourceGate);
   }
   if (!agent && options.executionMode === "execute" && shouldUseTaskExecutionRunner(task)) {
-    agent = await runViaLocalDockerDocumentWorker(task, paths, runnerOptions);
-    if (!agent) agent = await runTaskExecutionPipeline(task, paths, runnerOptions);
+    const dockerAgent = await runViaLocalDockerDocumentWorker(task, paths, runnerOptions);
+    if (dockerAgent) agent = /** @type {AgentRun} */ ({ ...dockerAgent, output: /** @type {AgentOutput} */ (asRecord(dockerAgent.output)), rawSecretsReturned: false });
+    if (!agent) {
+      const runnerAgent = await runTaskExecutionPipeline(task, paths, runnerOptions);
+      agent = /** @type {AgentRun} */ ({ ...runnerAgent, output: /** @type {AgentOutput} */ (asRecord(runnerAgent.output)), rawSecretsReturned: false });
+    }
   } else if (!agent) {
     agent = await runPiAgent(task, paths, options);
   }
+  if (!agent) throw new Error("agent_execution_result_missing");
   if (!["task-execution-runner", "local-docker-document-worker"].includes(agent.mode)) {
     addStep(state, "pi_agent_pipeline", agent.status === "completed" ? "completed" : agent.status, { artifact: paths.agentOutputPath });
     appendMetric(metrics, "tool", {
@@ -3271,52 +3534,58 @@ export async function handleEvent(input, options) {
   };
 }
 
+/** @param {CliArgs} args @returns {HandlerOptions} */
 function optionsFromArgs(args) {
+  /** @param {string} key @param {string} fallback */
+  const stringArg = (key, fallback) => typeof args[key] === "string" ? args[key] : fallback;
   const executionMode = args.execute ? "execute" : args["mock-agent"] ? "mock" : process.env.FEISHU_AGENT_EXEC_MODE || "mock";
-  const publishMode = args["publish-mode"] ?? (args["dry-run"] ? "dry-run" : process.env.FEISHU_AGENT_PUBLISH_MODE ?? "dry-run");
-  const replyMode = args["reply-mode"] ?? (args["dry-run"] ? "dry-run" : process.env.FEISHU_AGENT_REPLY_MODE ?? "dry-run");
+  const publishMode = stringArg("publish-mode", args["dry-run"] ? "dry-run" : process.env.FEISHU_AGENT_PUBLISH_MODE ?? "dry-run");
+  const replyMode = stringArg("reply-mode", args["dry-run"] ? "dry-run" : process.env.FEISHU_AGENT_REPLY_MODE ?? "dry-run");
   const modelTimeoutMs = optionalPositiveNumber(args["model-timeout-ms"] ?? process.env.FEISHU_AGENT_MODEL_TIMEOUT_MS);
+  const folderToken = typeof args["folder-token"] === "string" ? args["folder-token"] : process.env.FEISHU_AGENT_FOLDER_TOKEN;
+  const piCliBin = typeof args["pi-cli-bin"] === "string" ? args["pi-cli-bin"] : process.env.PI_CLI_BIN;
   return {
-    outputRoot: args["output-root"] ?? process.env.FEISHU_AGENT_OUTPUT_ROOT ?? DEFAULT_OUTPUT_ROOT,
+    outputRoot: stringArg("output-root", process.env.FEISHU_AGENT_OUTPUT_ROOT ?? DEFAULT_OUTPUT_ROOT),
     executionMode,
     publishMode,
     replyMode,
-    publishTarget: args["publish-target"] ?? process.env.FEISHU_AGENT_PUBLISH_TARGET ?? "auto",
-    publishAs: args["publish-as"] ?? process.env.FEISHU_AGENT_PUBLISH_AS ?? "bot",
-    folderToken: args["folder-token"] ?? process.env.FEISHU_AGENT_FOLDER_TOKEN,
-    wikiSpaceId: args["wiki-space-id"] ?? process.env.FEISHU_WIKI_SPACE_ID,
-    wikiRootNodeToken: args["wiki-root-node-token"] ?? process.env.FEISHU_WIKI_ROOT_NODE_TOKEN,
+    publishTarget: stringArg("publish-target", process.env.FEISHU_AGENT_PUBLISH_TARGET ?? "auto"),
+    publishAs: stringArg("publish-as", process.env.FEISHU_AGENT_PUBLISH_AS ?? "bot"),
+    ...(folderToken ? { folderToken } : {}),
+    ...(typeof args["wiki-space-id"] === "string" ? { wikiSpaceId: args["wiki-space-id"] } : process.env.FEISHU_WIKI_SPACE_ID ? { wikiSpaceId: process.env.FEISHU_WIKI_SPACE_ID } : {}),
+    ...(typeof args["wiki-root-node-token"] === "string" ? { wikiRootNodeToken: args["wiki-root-node-token"] } : process.env.FEISHU_WIKI_ROOT_NODE_TOKEN ? { wikiRootNodeToken: process.env.FEISHU_WIKI_ROOT_NODE_TOKEN } : {}),
     cliTimeoutMs: Number(args["cli-timeout-ms"] ?? process.env.FEISHU_AGENT_CLI_TIMEOUT_MS ?? 120000),
-    attachmentDownloadAs: args["attachment-download-as"] ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_AS ?? DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES.join(","),
+    attachmentDownloadAs: stringArg("attachment-download-as", process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_AS ?? DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES.join(",")),
     attachmentDownloadMaxAttempts: Number(args["attachment-download-max-attempts"] ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS ?? DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS),
     attachmentDownloadTimeoutMs: Number(args["attachment-download-timeout-ms"] ?? process.env.FEISHU_AGENT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS ?? DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS),
     piTimeoutMs: Number(args["pi-timeout-ms"] ?? process.env.FEISHU_AGENT_PI_TIMEOUT_MS ?? 900000),
     ...(modelTimeoutMs ? { modelTimeoutMs } : {}),
     captureModelStream: !/^(0|false|no|off)$/i.test(String(args["capture-model-stream"] ?? process.env.FEISHU_AGENT_CAPTURE_MODEL_STREAM ?? "1")),
-    piCliBin: args["pi-cli-bin"] ?? process.env.PI_CLI_BIN,
+    ...(piCliBin ? { piCliBin } : {}),
     dryRun: args["dry-run"] === true || /^(1|true|yes|on)$/i.test(process.env.FEISHU_AGENT_DRY_RUN ?? ""),
     asyncMode: args.async === true || /^(1|true|yes|on)$/i.test(process.env.FEISHU_AGENT_ASYNC ?? ""),
     asyncVisibleAck: /^(1|true|yes|on)$/i.test(String(args["async-visible-ack"] ?? process.env.FEISHU_AGENT_ASYNC_VISIBLE_ACK ?? "0")),
-    fileAckReplyMode: args["file-ack-reply-mode"] ?? process.env.FEISHU_AGENT_FILE_ACK_REPLY_MODE ?? "silent",
-    progressReplyMode: args["progress-reply-mode"] ?? process.env.FEISHU_AGENT_PROGRESS_REPLY_MODE ?? "silent",
-    documentWorkerMode: args["document-worker-mode"] ?? process.env.FEISHU_AGENT_DOCUMENT_WORKER_MODE ?? "host",
-    dockerQueueHost: args["docker-queue-host"] ?? process.env.FEISHU_AGENT_DOCKER_QUEUE_HOST,
+    fileAckReplyMode: stringArg("file-ack-reply-mode", process.env.FEISHU_AGENT_FILE_ACK_REPLY_MODE ?? "silent"),
+    progressReplyMode: stringArg("progress-reply-mode", process.env.FEISHU_AGENT_PROGRESS_REPLY_MODE ?? "silent"),
+    documentWorkerMode: stringArg("document-worker-mode", process.env.FEISHU_AGENT_DOCUMENT_WORKER_MODE ?? "host"),
+    ...(typeof args["docker-queue-host"] === "string" ? { dockerQueueHost: args["docker-queue-host"] } : process.env.FEISHU_AGENT_DOCKER_QUEUE_HOST ? { dockerQueueHost: process.env.FEISHU_AGENT_DOCKER_QUEUE_HOST } : {}),
     dockerQueuePort: Number(args["docker-queue-port"] ?? process.env.FEISHU_AGENT_DOCKER_QUEUE_PORT ?? 6379),
-    dockerQueueName: args["docker-queue-name"] ?? process.env.FEISHU_AGENT_DOCKER_QUEUE_NAME,
+    ...(typeof args["docker-queue-name"] === "string" ? { dockerQueueName: args["docker-queue-name"] } : process.env.FEISHU_AGENT_DOCKER_QUEUE_NAME ? { dockerQueueName: process.env.FEISHU_AGENT_DOCKER_QUEUE_NAME } : {}),
     dockerWorkerWaitTimeoutMs: Number(args["docker-worker-wait-timeout-ms"] ?? args["docker-worker-timeout-ms"] ?? process.env.FEISHU_AGENT_DOCKER_WORKER_WAIT_TIMEOUT_MS ?? process.env.FEISHU_AGENT_DOCKER_WORKER_TIMEOUT_MS ?? process.env.FEISHU_AGENT_LONG_DOCUMENT_JOB_TIMEOUT_MS ?? 7_200_000),
     dockerQueueMaxDepth: Number(args["docker-queue-max-depth"] ?? process.env.FEISHU_AGENT_DOCKER_QUEUE_MAX_DEPTH ?? 100),
     documentWorkerTimeoutMs: Number(args["document-worker-timeout-ms"] ?? process.env.FEISHU_AGENT_DOCUMENT_WORKER_TIMEOUT_MS ?? 1_800_000),
     longDocumentJobTimeoutMs: Number(args["long-document-job-timeout-ms"] ?? process.env.FEISHU_AGENT_LONG_DOCUMENT_JOB_TIMEOUT_MS ?? 7_200_000),
     documentWorkerDeadlineReserveMs: Number(args["document-worker-deadline-reserve-ms"] ?? process.env.FEISHU_AGENT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS ?? 30_000),
-    documentQualityMode: args["document-quality-mode"] ?? process.env.FEISHU_AGENT_DOCUMENT_QUALITY_MODE ?? "stable",
+    documentQualityMode: stringArg("document-quality-mode", process.env.FEISHU_AGENT_DOCUMENT_QUALITY_MODE ?? "stable"),
     documentWorkerMaxAttemptsPerUnit: Number(args["document-worker-max-attempts-per-unit"] ?? process.env.FEISHU_AGENT_DOCUMENT_WORKER_MAX_ATTEMPTS_PER_UNIT ?? 3),
     documentWorkerMaxRetryUnits: Number(args["document-worker-max-retry-units"] ?? process.env.FEISHU_AGENT_DOCUMENT_WORKER_MAX_RETRY_UNITS ?? 12),
-    runtimeStoreMode: args["runtime-store-mode"] ?? process.env.FEISHU_AGENT_RUNTIME_STORE_MODE ?? "index",
+    runtimeStoreMode: stringArg("runtime-store-mode", process.env.FEISHU_AGENT_RUNTIME_STORE_MODE ?? "index"),
     runtimeStoreCas: /^(1|true|yes|on)$/i.test(String(args["runtime-store-cas"] ?? process.env.FEISHU_AGENT_RUNTIME_STORE_CAS ?? "1")),
     runtimeStoreTimeoutMs: Number(args["runtime-store-timeout-ms"] ?? process.env.FEISHU_AGENT_RUNTIME_STORE_TIMEOUT_MS ?? 120000),
   };
 }
 
+/** @param {import("node:http").IncomingMessage} req @returns {Promise<string>} */
 async function readRequestBody(req) {
   return await new Promise((resolveBody, rejectBody) => {
     let body = "";
@@ -3333,12 +3602,14 @@ async function readRequestBody(req) {
   });
 }
 
+/** @param {import("node:http").ServerResponse} res @param {number} status @param {unknown} payload */
 function sendJson(res, status, payload) {
   const body = `${JSON.stringify(sanitize(payload), null, 2)}\n`;
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body) });
   res.end(body);
 }
 
+/** @param {HandlerOptions} options @param {string} host @param {number} port */
 function startServer(options, host, port) {
   const server = createServer(async (req, res) => {
     try {
@@ -3357,7 +3628,7 @@ function startServer(options, host, port) {
         const root = outputRoot(options.outputRoot);
         const runId = runIdFor(event);
         handleEvent(event, { ...options, runId }).catch((error) => {
-          console.error(JSON.stringify({ status: "async_failed", runId, reason: redactString(error.message), rawSecretsReturned: false }, null, 2));
+          console.error(JSON.stringify({ status: "async_failed", runId, reason: redactString(error instanceof Error ? error.message : error), rawSecretsReturned: false }, null, 2));
         });
         sendJson(res, 202, {
           status: "accepted",
@@ -3379,9 +3650,9 @@ function startServer(options, host, port) {
         return;
       }
       const result = await handleEvent(payload, options);
-      sendJson(res, result.status === "failed" || result.status === "blocked" ? 202 : 200, result);
+      sendJson(res, result.status === "blocked" ? 202 : 200, result);
     } catch (error) {
-      sendJson(res, 500, { status: "failed", reason: redactString(error.message), rawSecretsReturned: false });
+      sendJson(res, 500, { status: "failed", reason: redactString(error instanceof Error ? error.message : error), rawSecretsReturned: false });
     }
   });
   server.listen(port, host, () => {
@@ -3394,12 +3665,14 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const options = optionsFromArgs(args);
   if (args.fixture) {
+    if (typeof args.fixture !== "string") throw new Error("feishu_agent_fixture_path_invalid");
     const input = JSON.parse(readFileSync(resolve(args.fixture), "utf8"));
-    const result = await handleEvent(input, { ...options, runId: args["run-id"] });
+    const runId = typeof args["run-id"] === "string" ? args["run-id"] : undefined;
+    const result = await handleEvent(input, { ...options, ...(runId ? { runId } : {}) });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
-  const host = args.host ?? process.env.FEISHU_AGENT_HANDLER_HOST ?? DEFAULT_HOST;
+  const host = typeof args.host === "string" ? args.host : process.env.FEISHU_AGENT_HANDLER_HOST ?? DEFAULT_HOST;
   const port = Number(args.port ?? process.env.FEISHU_AGENT_HANDLER_PORT ?? DEFAULT_PORT);
   startServer(options, host, port);
 }
@@ -3408,7 +3681,7 @@ export { addStep, normalizeDirectEvent, optionsFromArgs };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error(JSON.stringify({ status: "failed", reason: redactString(error.message), rawSecretsReturned: false }, null, 2));
+    console.error(JSON.stringify({ status: "failed", reason: redactString(error instanceof Error ? error.message : error), rawSecretsReturned: false }, null, 2));
     process.exit(2);
   });
 }

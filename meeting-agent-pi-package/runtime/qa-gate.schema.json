@@ -1,156 +1,444 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://meeting-agent.local/schemas/qa-gate.schema.json",
-  "title": "Meeting Agent QA Gate",
   "type": "object",
-  "required": ["status", "issues", "checks"],
+  "required": [
+    "schemaVersion",
+    "evaluationId",
+    "inputHash",
+    "profile",
+    "publishIntent",
+    "status",
+    "reason",
+    "primaryDeliveryStatus",
+    "followUpDeliveryStatus",
+    "overallStatus",
+    "publishAllowed",
+    "evaluatedAt",
+    "artifacts",
+    "checks",
+    "issues",
+    "rawSecretsReturned"
+  ],
   "properties": {
-    "status": { "enum": ["pass", "needs_fix", "blocked"] },
-    "primaryDeliveryStatus": { "enum": ["ready", "needs_fix", "blocked"] },
-    "followUpDeliveryStatus": { "enum": ["pass", "needs_fix", "blocked", "not_applicable"] },
-    "overallStatus": { "enum": ["ready", "partial_ready", "blocked"] },
-    "issues": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["code", "severity", "message"],
-        "properties": {
-          "code": { "type": "string" },
-          "type": { "type": "string" },
-          "severity": { "enum": ["info", "warning", "needs_fix", "blocking"] },
-          "message": { "type": "string" },
-          "evidence": {
-            "oneOf": [
-              {
-                "type": "array",
-                "items": {
-                  "oneOf": [
-                    { "type": "string" },
-                    { "type": "object", "additionalProperties": true }
-                  ]
-                }
-              },
-              { "type": "object", "additionalProperties": true },
-              { "type": "string" }
-            ]
-          },
-          "fix": { "type": "string" },
-          "suggestedFix": { "type": "string" },
-          "artifactType": { "type": "string" },
-          "priority": { "enum": ["primary", "follow_up", "optional"] },
-          "blocksDelivery": { "type": "boolean" }
-        }
-      }
+    "schemaVersion": {
+      "type": "string",
+      "const": "qa-gate-v2"
     },
-    "checks": {
-      "type": "object",
-      "properties": {
-        "privacy": { "type": "object" },
-        "evidence": { "type": "object" },
-        "topicCoverage": {
-          "type": "object",
-          "properties": {
-            "omittedMacroTopics": {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  { "type": "string" },
-                  {
-                    "type": "object",
-                    "additionalProperties": true,
-                    "properties": {
-                      "topic": { "type": "string" },
-                      "topicId": { "type": "string" },
-                      "timeRange": { "type": "string" },
-                      "segmentRefs": { "type": "array", "items": { "type": "string" } },
-                      "evidenceRefs": { "type": "array", "items": { "type": "string" } },
-                      "reason": { "type": "string" }
-                    }
-                  }
-                ]
-              }
-            }
-          }
+    "evaluationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "profile": {
+      "enum": [
+        "source_pack",
+        "meeting_minutes",
+        "office_document",
+        "document_revision"
+      ]
+    },
+    "publishIntent": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "needs_fix",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
         },
-        "entitySafety": {
-          "type": "object",
-          "properties": {
-            "unsupportedEntities": {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": true }
-                ]
-              }
-            },
-            "crossMeetingTerms": {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": true }
-                ]
-              }
-            },
-            "ambiguousTermExpansions": {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": true }
-                ]
-              }
-            }
-          }
-        },
-        "titleSync": { "type": "object" },
-        "feishuReadiness": { "type": "object" },
-        "webAccess": { "type": "object" },
-        "contextBudget": { "type": "object" },
-        "documentOutputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": true,
-            "properties": {
-              "docType": { "type": "string" },
-              "artifactType": { "type": "string" },
-              "priority": { "enum": ["primary", "follow_up", "optional"] },
-              "deliveryTier": { "enum": ["primary", "follow_up", "optional"] },
-              "requiredSections": { "type": "array", "items": { "type": "string" } },
-              "missingSections": { "type": "array", "items": { "type": "string" } },
-              "dependsOn": { "type": "array", "items": { "type": "string" } },
-              "audience": { "type": ["string", "null"] },
-              "upstreamDocumentsUsed": { "type": "array", "items": { "type": "string" } },
-              "missingUpstreamDocuments": { "type": "array", "items": { "type": "string" } },
-              "absentUpstreamDocuments": { "type": "array", "items": { "type": "string" } },
-              "unsupportedClaims": { "type": "array" },
-              "openQuestions": { "type": "array" },
-              "routerReasonCovered": { "type": "boolean" },
-              "crossDocumentContamination": { "type": "array" }
-            }
-          }
+        {
+          "type": "null"
         }
-      }
+      ]
+    },
+    "fieldPath": {
+      "type": "string"
+    },
+    "recovery": {
+      "type": "string"
+    },
+    "primaryDeliveryStatus": {
+      "enum": [
+        "ready",
+        "needs_fix",
+        "blocked"
+      ]
+    },
+    "followUpDeliveryStatus": {
+      "enum": [
+        "pass",
+        "needs_fix",
+        "blocked",
+        "not_applicable"
+      ]
+    },
+    "overallStatus": {
+      "enum": [
+        "ready",
+        "partial_ready",
+        "blocked"
+      ]
+    },
+    "publishAllowed": {
+      "type": "boolean"
+    },
+    "evaluatedAt": {
+      "type": "string",
+      "minLength": 1
     },
     "artifacts": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["artifactType", "priority", "status", "blocksDelivery"],
-        "additionalProperties": true,
-        "properties": {
-          "artifactType": { "type": "string" },
-          "docType": { "type": "string" },
-          "priority": { "enum": ["primary", "follow_up", "optional"] },
-          "status": { "enum": ["pass", "needs_fix", "blocked"] },
-          "blocksDelivery": { "type": "boolean" },
-          "issueCodes": { "type": "array", "items": { "type": "string" } }
+        "patternProperties": {
+          "^.*$": {}
         }
       }
     },
-    "publishAllowed": { "type": "boolean" },
-    "evaluatedAt": { "type": "string" }
-  }
+    "checks": {
+      "type": "object",
+      "required": [
+        "security"
+      ],
+      "properties": {
+        "security": {
+          "type": "object",
+          "required": [
+            "rawSecretsReturned",
+            "secretsLeaked"
+          ],
+          "properties": {
+            "rawSecretsReturned": {
+              "type": "boolean"
+            },
+            "secretsLeaked": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": true
+        },
+        "privacy": {
+          "type": "object",
+          "required": [
+            "rawSecretsReturned",
+            "secretsLeaked"
+          ],
+          "properties": {
+            "rawSecretsReturned": {
+              "type": "boolean"
+            },
+            "secretsLeaked": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": true
+        },
+        "evidence": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "topicCoverage": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "entitySafety": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "asrEvidence": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "titleSync": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "feishuReadiness": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "webAccess": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "contextBudget": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "sourcePack": {
+          "type": "object",
+          "required": [
+            "required",
+            "completeTranscriptAvailable",
+            "failedChapterCount",
+            "allClaimsHaveEvidence",
+            "partialResultsPublished",
+            "qualityDisclosureRequired",
+            "qualityDisclosed",
+            "provenancePath"
+          ],
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            },
+            "completeTranscriptAvailable": {
+              "type": "boolean"
+            },
+            "failedChapterCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "allClaimsHaveEvidence": {
+              "type": "boolean"
+            },
+            "partialResultsPublished": {
+              "type": "boolean"
+            },
+            "qualityDisclosureRequired": {
+              "type": "boolean"
+            },
+            "qualityDisclosed": {
+              "type": "boolean"
+            },
+            "provenancePath": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": true
+        },
+        "reviewContext": {
+          "anyOf": [
+            {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {}
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "documentOutputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "docType",
+              "markdown"
+            ],
+            "properties": {
+              "docType": {
+                "type": "string",
+                "minLength": 1
+              },
+              "markdown": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "completed",
+                  "needs_fix",
+                  "blocked"
+                ]
+              },
+              "requiredSections": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "missingSections": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unsupportedClaims": {
+                "type": "array",
+                "items": {}
+              },
+              "openQuestions": {
+                "type": "array",
+                "items": {}
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "docType",
+              "markdown"
+            ],
+            "properties": {
+              "docType": {
+                "type": "string",
+                "minLength": 1
+              },
+              "markdown": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "completed",
+                  "needs_fix",
+                  "blocked"
+                ]
+              },
+              "requiredSections": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "missingSections": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unsupportedClaims": {
+                "type": "array",
+                "items": {}
+              },
+              "openQuestions": {
+                "type": "array",
+                "items": {}
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "sourceStructureSummary": {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {}
+          }
+        },
+        "documentIdentity": {
+          "anyOf": [
+            {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {}
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputContract": {
+          "anyOf": [
+            {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {}
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issues": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "additionalProperties": true
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "needs_fix",
+              "blocking"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "suggestedFix": {
+            "type": "string"
+          },
+          "evidence": {},
+          "artifactType": {
+            "type": "string"
+          },
+          "priority": {
+            "enum": [
+              "primary",
+              "follow_up",
+              "optional"
+            ]
+          },
+          "blocksDelivery": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rawSecretsReturned": {
+      "type": "boolean",
+      "const": false
+    }
+  },
+  "$id": "https://meeting-agent.local/schemas/qa-gate.schema.json",
+  "title": "Assignment Agent QA Gate",
+  "additionalProperties": false
 }

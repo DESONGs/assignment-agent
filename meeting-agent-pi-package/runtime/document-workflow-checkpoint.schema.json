@@ -1,0 +1,698 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "inputHash",
+    "createdAt",
+    "updatedAt",
+    "workflowStrategy",
+    "qualityMode",
+    "publishPartial",
+    "retry",
+    "docs",
+    "rawSecretsReturned"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "document-workflow-checkpoint-v2"
+    },
+    "runId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inputHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updatedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workflowStrategy": {
+      "enum": [
+        "checkpointed",
+        "single_pass"
+      ]
+    },
+    "qualityMode": {
+      "enum": [
+        "stable",
+        "balanced",
+        "fast"
+      ]
+    },
+    "publishPartial": {
+      "type": "boolean",
+      "const": false
+    },
+    "retry": {
+      "type": "object",
+      "required": [
+        "unitsUsed"
+      ],
+      "properties": {
+        "unitsUsed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "docs": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "object",
+          "required": [
+            "taskIndex",
+            "docType",
+            "status",
+            "createdAt",
+            "updatedAt",
+            "sections",
+            "repairs",
+            "completedSections",
+            "missingSections"
+          ],
+          "properties": {
+            "taskIndex": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "docType": {
+              "type": "string",
+              "minLength": 1
+            },
+            "promptFile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "status": {
+              "enum": [
+                "running",
+                "completed",
+                "needs_fix",
+                "blocked",
+                "failed"
+              ]
+            },
+            "createdAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "updatedAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sections": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "stage",
+                    "sections",
+                    "idempotencyKey",
+                    "updatedAt"
+                  ],
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "completed",
+                        "failed"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sections": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "batchIndex": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "const": "full"
+                        }
+                      ]
+                    },
+                    "repairIndex": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "repairRound": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "artifactPath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactRelativePath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactHash": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 64,
+                          "maxLength": 64
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "idempotencyKey": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    },
+                    "contextPackHash": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "provider": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "model": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "workUnitId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "contextPackId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "retryCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "retryExhausted": {
+                      "type": "boolean"
+                    },
+                    "retryBudgetExhausted": {
+                      "type": "boolean"
+                    },
+                    "lastProviderAttempt": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "patternProperties": {
+                            "^.*$": {}
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "repairs": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "stage",
+                    "sections",
+                    "idempotencyKey",
+                    "updatedAt"
+                  ],
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "completed",
+                        "failed"
+                      ]
+                    },
+                    "stage": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sections": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "batchIndex": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "const": "full"
+                        }
+                      ]
+                    },
+                    "repairIndex": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "repairRound": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "artifactPath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactRelativePath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactHash": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 64,
+                          "maxLength": 64
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "idempotencyKey": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    },
+                    "contextPackHash": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "provider": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "model": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "workUnitId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "contextPackId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "retryCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "retryExhausted": {
+                      "type": "boolean"
+                    },
+                    "retryBudgetExhausted": {
+                      "type": "boolean"
+                    },
+                    "lastProviderAttempt": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "patternProperties": {
+                            "^.*$": {}
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "blueprint": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "artifactPath",
+                    "updatedAt"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactRelativePath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactHash": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    },
+                    "contentChars": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "missingSections": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "assembly": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "artifactPath",
+                    "updatedAt"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactRelativePath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactHash": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    },
+                    "contentChars": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "missingSections": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "artifactPath",
+                    "updatedAt"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifactRelativePath": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "artifactHash": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    },
+                    "contentChars": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "missingSections": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "completedSections": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "missingSections": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "rawSecretsReturned": {
+      "type": "boolean",
+      "const": false
+    }
+  },
+  "$id": "https://meeting-agent.local/schemas/document-workflow-checkpoint.schema.json",
+  "title": "Document Workflow Checkpoint",
+  "additionalProperties": true
+}

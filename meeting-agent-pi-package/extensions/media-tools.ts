@@ -410,7 +410,7 @@ export default function (pi: ExtensionAPI) {
         [join(packageDir, "tools", "dashscope_asr_client.mjs"), "--params-file", paramsPath, "--out", resultPath],
         timeoutMs + 30_000,
       );
-      let details: any = null;
+      let details: unknown = null;
       try {
         details = result.stdout ? JSON.parse(result.stdout) : null;
       } catch {

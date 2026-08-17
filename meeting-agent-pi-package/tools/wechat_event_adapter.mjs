@@ -28,14 +28,33 @@ const SECRET_PATTERNS = [
   /\b(FEISHU_APP_SECRET|DEEPSEEK_API_KEY|XIAOMI_TOKEN_PLAN_SGP_API_KEY)\b/gi,
 ];
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {{ _: string[], [key: string]: string | boolean | string[] | undefined }} CliArgs
+ * @typedef {{ schemaVersion: string, channel: string, attachmentId: string, resourceType: string, fileName: string, name: string, mimeType: unknown, sourcePath: unknown, localPath: string | null, fileKey: unknown, sha256: unknown, sizeBytes: unknown, downloadStatus: string, unsupportedReason: string | null, fixtureOnly: boolean, rawMediaExternalUpload: false, rawSecretsReturned: false }} ImAttachment
+ * @typedef {{ schemaVersion: string, channel: string, eventId: string, actor: { actorId: string, displayName: unknown }, conversation: { conversationId: unknown, conversationType: unknown, threadId: unknown, rootId: unknown }, messageText: string, attachments: ImAttachment[], parentMessage: unknown, rootMessage: unknown, replyTarget: { messageId: unknown, channel: string }, permissions: UnknownRecord, timestamp: unknown, rawSecretsReturned: false, rawMediaExternalUpload: false }} ImEvent
+ * @typedef {{ status: string, unsupportedReason?: string | null, [key: string]: unknown }} FileContext
+ * @typedef {UnknownRecord & { message: UnknownRecord & { attachments: Array<UnknownRecord & { resourceType?: unknown }> } }} HandlerFixture
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string[]} argv @returns {CliArgs} */
 function parseArgs(argv) {
+  /** @type {CliArgs} */
   const args = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
+    if (item === undefined) continue;
     if (!item.startsWith("--")) {
       args._.push(item);
       continue;
@@ -56,37 +75,44 @@ function parseArgs(argv) {
   return args;
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeSegment(value, fallback = "item") {
   const cleaned = String(value || fallback).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
   if (!cleaned || cleaned === "." || cleaned === "..") return fallback;
   return cleaned;
 }
 
+/** @param {unknown} input */
 function outputRoot(input) {
-  const root = resolve(input ?? DEFAULT_OUTPUT_ROOT);
+  const root = resolve(typeof input === "string" ? input : DEFAULT_OUTPUT_ROOT);
   if (!isInside(workspaceDir, root)) throw new Error("wechat_adapter_output_root_outside_workspace_blocked");
   mkdirSync(root, { recursive: true });
   return root;
 }
 
+/** @param {unknown} value */
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
+/** @param {unknown} value @param {string} fallback */
 function stableId(value, fallback) {
   if (typeof value === "string" && value) return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (value && typeof value === "object") {
-    return String(value.open_id ?? value.openId ?? value.union_id ?? value.unionId ?? value.user_id ?? value.userId ?? value.id ?? hashText(JSON.stringify(value)).slice(0, 16));
+    const record = asRecord(value);
+    return String(record.open_id ?? record.openId ?? record.union_id ?? record.unionId ?? record.user_id ?? record.userId ?? record.id ?? hashText(JSON.stringify(value)).slice(0, 16));
   }
   return fallback;
 }
 
+/** @param {unknown} value @returns {unknown} */
 function parseJsonMaybe(value) {
   if (typeof value !== "string") return value ?? {};
   try {
@@ -96,21 +122,25 @@ function parseJsonMaybe(value) {
   }
 }
 
+/** @param {unknown} content */
 function parseText(content) {
-  const parsed = parseJsonMaybe(content);
-  if (typeof parsed?.text === "string") return parsed.text.trim();
+  const parsed = asRecord(parseJsonMaybe(content));
+  if (typeof parsed.text === "string") return parsed.text.trim();
   if (typeof content === "string") return content.trim();
   return "";
 }
 
+/** @param {unknown} value */
 function redactString(value) {
   return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), String(value ?? ""));
 }
 
+/** @param {unknown} value @returns {unknown} */
 function sanitize(value) {
   if (typeof value === "string") return redactString(value).slice(0, 20000);
   if (Array.isArray(value)) return value.map((item) => sanitize(item));
   if (value && typeof value === "object") {
+    /** @type {UnknownRecord} */
     const output = {};
     for (const [key, entryValue] of Object.entries(value)) {
       if (["rawSecretsReturned", "rawMediaExternalUpload", "userVisibleRunId"].includes(key)) {
@@ -126,19 +156,23 @@ function sanitize(value) {
   return value;
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(sanitize(value), null, 2)}\n`, "utf8");
   return path;
 }
 
-async function normalizeInput(input) {
-  const message = input.message ?? input;
+/** @param {unknown} inputValue @returns {Promise<ImEvent>} */
+async function normalizeInput(inputValue) {
+  const input = asRecord(inputValue);
+  const message = asRecord(input.message ?? input);
   const attachments = Array.isArray(input.attachments)
     ? input.attachments
     : Array.isArray(message.attachments)
       ? message.attachments
       : [];
+  /** @type {ImAttachment[]} */
   const normalizedAttachments = [];
   for (const [index, attachment] of attachments.entries()) {
     normalizedAttachments.push(await normalizeImAttachment(attachment, index));
@@ -146,7 +180,7 @@ async function normalizeInput(input) {
   const messageText = String(input.messageText ?? input.text ?? message.text ?? parseText(message.content) ?? "");
   const eventId = String(input.eventId ?? input.event_id ?? message.messageId ?? message.message_id ?? `wechat_${hashText(JSON.stringify(input)).slice(0, 16)}`);
   const actorId = stableId(
-    input.senderId ?? message.senderId ?? input.sender?.senderId ?? input.sender?.sender_id ?? input.sender?.id ?? input.contactId,
+    input.senderId ?? message.senderId ?? asRecord(input.sender).senderId ?? asRecord(input.sender).sender_id ?? asRecord(input.sender).id ?? input.contactId,
     "unknown_wechat_sender",
   );
   const conversationType = input.conversationType ?? input.chatType ?? message.chatType ?? message.chat_type ?? (input.groupId ? "group" : "direct");
@@ -187,12 +221,14 @@ async function normalizeInput(input) {
   };
 }
 
-async function normalizeImAttachment(input, index = 0) {
-  const localPath = input?.localPath ?? input?.sourcePath ?? null;
+/** @param {unknown} inputValue @param {number} [index] @returns {Promise<ImAttachment>} */
+async function normalizeImAttachment(inputValue, index = 0) {
+  const input = asRecord(inputValue);
+  const localPath = typeof input.localPath === "string" ? input.localPath : typeof input.sourcePath === "string" ? input.sourcePath : null;
   const resolvedLocalPath = localPath ? resolve(localPath) : null;
   const kind = attachmentKind({ ...input, localPath: resolvedLocalPath });
   const exists = resolvedLocalPath ? existsSync(resolvedLocalPath) : false;
-  const stat = exists ? statSync(resolvedLocalPath) : null;
+  const stat = exists && resolvedLocalPath ? statSync(resolvedLocalPath) : null;
   return {
     schemaVersion: "im-attachment-v1",
     channel: "wechat",
@@ -204,7 +240,7 @@ async function normalizeImAttachment(input, index = 0) {
     sourcePath: input?.sourcePath ?? input?.localPath ?? null,
     localPath: resolvedLocalPath,
     fileKey: input?.fileKey ?? null,
-    sha256: input?.sha256 ?? (exists ? await sha256File(resolvedLocalPath) : null),
+    sha256: input.sha256 ?? (exists && resolvedLocalPath ? await sha256File(resolvedLocalPath) : null),
     sizeBytes: input?.sizeBytes ?? stat?.size ?? null,
     downloadStatus: exists ? "local" : resolvedLocalPath ? "blocked" : "missing_local_path",
     unsupportedReason: kind === "image"
@@ -218,6 +254,7 @@ async function normalizeImAttachment(input, index = 0) {
   };
 }
 
+/** @param {string} runId @param {ImEvent} imEvent @param {FileContext[]} fileContexts */
 function buildOfficeState(runId, imEvent, fileContexts) {
   const unsupported = fileContexts.find((context) => context.status === "unsupported");
   return {
@@ -249,6 +286,7 @@ function buildOfficeState(runId, imEvent, fileContexts) {
   };
 }
 
+/** @param {ImEvent} imEvent @param {FileContext[]} fileContexts @returns {HandlerFixture} */
 function toHandlerFixture(imEvent, fileContexts) {
   const unsupported = fileContexts.find((context) => context.status === "unsupported");
   return {
@@ -289,22 +327,25 @@ function toHandlerFixture(imEvent, fileContexts) {
   };
 }
 
+/** @param {unknown} value */
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** @param {unknown} text @param {string} [runId] */
 function stripRunArtifacts(text, runId = "") {
   const runIdPattern = runId ? new RegExp(escapeRegExp(runId), "i") : null;
   const lines = String(text ?? "")
     .split(/\n+/)
     .filter((line) => !/(runId|run id|runDir|runtime-runs|agent-output|handler|本地 run artifact|Feishu Agent Dry Run|\b(?:feishu|wechat)_\d{4}-\d{2}-\d{2}T)/i.test(line))
     .filter((line) => !(runIdPattern && runIdPattern.test(line)));
-  while (lines.length > 0 && /^文档[：:]\s*$/.test(lines[lines.length - 1])) {
+  while (lines.length > 0 && /^文档[：:]\s*$/.test(lines.at(-1) ?? "")) {
     lines.pop();
   }
   return lines.join("\n").trim();
 }
 
+/** @param {ImEvent} imEvent */
 function localAttachmentPreflight(imEvent) {
   const missing = imEvent.attachments.filter((attachment) => !attachment.localPath || !existsSync(attachment.localPath));
   if (missing.length === 0) return { status: "ready" };
@@ -315,9 +356,11 @@ function localAttachmentPreflight(imEvent) {
   };
 }
 
+/** @param {HandlerFixture} handlerFixture @param {string} outputRootPath @param {string} runId @param {CliArgs} args */
 async function invokeSharedHandler(handlerFixture, outputRootPath, runId, args) {
   const hasAudio = handlerFixture.message.attachments.some((attachment) => attachment.resourceType === "audio");
   const executionMode = args["execute-local-asr"] && hasAudio ? "execute" : "mock";
+  const localAsrServiceUrl = args["local-asr-service-url"] ?? process.env.LOCAL_ASR_SERVICE_URL;
   const result = await handleEvent(handlerFixture, {
     outputRoot: outputRootPath,
     runId,
@@ -329,7 +372,7 @@ async function invokeSharedHandler(handlerFixture, outputRootPath, runId, args) 
     cliTimeoutMs: Number(args["cli-timeout-ms"] ?? 120000),
     piTimeoutMs: Number(args["pi-timeout-ms"] ?? 900000),
     runtimeToolTimeoutMs: Number(args["runtime-tool-timeout-ms"] ?? 600000),
-    localAsrServiceUrl: args["local-asr-service-url"] ?? process.env.LOCAL_ASR_SERVICE_URL,
+    ...(typeof localAsrServiceUrl === "string" ? { localAsrServiceUrl } : {}),
     localAsrTimeoutMs: Number(args["local-asr-timeout-ms"] ?? 7200000),
   });
   return {
@@ -354,7 +397,7 @@ async function invokeSharedHandler(handlerFixture, outputRootPath, runId, args) 
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.fixture) throw new Error("wechat_adapter_fixture_required");
+  if (typeof args.fixture !== "string") throw new Error("wechat_adapter_fixture_required");
   const fixture = JSON.parse(readFileSync(resolve(args.fixture), "utf8"));
   const root = outputRoot(args["output-root"]);
   const runId = safeSegment(args["run-id"] ?? `wechat_${nowIso().replace(/[:.]/g, "-")}_${randomUUID().slice(0, 8)}`);

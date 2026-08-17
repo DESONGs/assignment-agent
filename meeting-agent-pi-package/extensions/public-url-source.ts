@@ -60,14 +60,14 @@ export default function publicUrlSource(pi: ExtensionAPI): void {
       maxMediaBytes: Type.Optional(Type.Number()),
       maxDurationSec: Type.Optional(Type.Number()),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params) {
       const args = ["--url", params.url];
       if (params.runId) args.push("--run-id", params.runId);
       if (params.resolveOnly) args.push("--resolve-only");
       if (params.maxMediaBytes) args.push("--max-media-bytes", String(params.maxMediaBytes));
       if (params.maxDurationSec) args.push("--max-duration-sec", String(params.maxDurationSec));
       const run = await runCli(args, params.resolveOnly ? 180_000 : 7_200_000);
-      let details: any;
+      let details: unknown;
       try { details = JSON.parse(run.stdout); } catch {
         details = { status: "blocked", reason: run.timedOut ? "public_url_source_timeout" : "public_url_source_cli_failed", exitCode: run.exitCode, stderrTail: redactDiagnostic(run.stderr), rawSecretsReturned: false };
       }

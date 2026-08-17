@@ -43,14 +43,55 @@ const SECRET_PATTERNS = [
   /\b(FEISHU_APP_SECRET|DEEPSEEK_API_KEY|XIAOMI_TOKEN_PLAN_SGP_API_KEY)\b/gi,
 ];
 
+/**
+ * @typedef {{
+ *   resourceType?: unknown, type?: unknown, name?: unknown, fileName?: unknown,
+ *   localPath?: unknown, sourcePath?: unknown, fileKey?: unknown, mimeType?: unknown,
+ *   mime_type?: unknown, sha256?: unknown, attachmentId?: unknown, messageId?: unknown,
+ *   sourceMessageId?: unknown, cacheSourceMessageId?: unknown, downloadStatus?: unknown
+ * }} Attachment
+ * @typedef {{ cwd?: string, env?: NodeJS.ProcessEnv, timeoutMs?: number, stdin?: string }} CommandOptions
+ * @typedef {{ exitCode: number, signal: NodeJS.Signals | null, stdout: string, stderr: string, timedOut: boolean, error?: string }} CommandResult
+ * @typedef {{ status: "completed" | "failed", method: string, text: string, reason?: string, stderrTail?: string }} ExtractionResult
+ * @typedef {{
+ *   schemaVersion: string,
+ *   fileId: unknown,
+ *   fileName: unknown,
+ *   mimeType: unknown,
+ *   fileType: string,
+ *   extension: string,
+ *   sourcePath: string | null,
+ *   sourceMessageId: unknown,
+ *   taskPrompt: string,
+ *   externalLlmAllowed: boolean,
+ *   nativeFileInputSupported: boolean,
+ *   contextMode: string,
+ *   disclosurePlan: Record<string, unknown>,
+ *   progressiveDisclosureStatus: string,
+ *   extraction: null | { status: string, method: string, reason: string | null, chars: number, previewChars: number },
+ *   extractedTextPath: string | null,
+ *   contextPreview: string,
+ *   status: "ready" | "pending" | "blocked" | "unsupported",
+ *   unsupportedReason: string | null,
+ *   localSourceReady?: boolean,
+ *   audioValidation?: Record<string, unknown>,
+ *   rawSecretsReturned: false
+ * }} FileContext
+ * @typedef {{ message?: { text?: unknown, messageId?: unknown }, messageText?: unknown }} FileContextEvent
+ * @typedef {{ fileContextsDir: string }} FileContextPaths
+ * @typedef {{ nativeFileInputSupported?: boolean, providerFileInputEnv?: string }} FileContextOptions
+ */
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string} name */
 function envFlag(name) {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
 }
 
+/** @param {string} path */
 function existingNonEmptyFile(path) {
   try {
     const stat = statSync(path);
@@ -60,6 +101,7 @@ function existingNonEmptyFile(path) {
   }
 }
 
+/** @param {string} path */
 function audioSignatureStatus(path) {
   const stat = existingNonEmptyFile(path);
   if (!stat) return { ok: false, reason: "audio_file_missing" };
@@ -78,27 +120,32 @@ function audioSignatureStatus(path) {
   return { ...validation, sizeBytes: stat.size };
 }
 
+/** @param {unknown} value */
 function redactString(value) {
   return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), String(value ?? ""));
 }
 
+/** @param {string} parent @param {string} child */
 export function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 export function safeSegment(value, fallback = "item") {
   const cleaned = String(value || fallback).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
   if (!cleaned || cleaned === "." || cleaned === "..") return fallback;
   return cleaned;
 }
 
+/** @param {string | null | undefined} path */
 export function workspaceRelative(path) {
   if (!path) return null;
   const resolved = resolve(path);
   return isInside(workspaceDir, resolved) ? relative(workspaceDir, resolved) : "[outside-workspace]";
 }
 
+/** @param {Attachment} attachment */
 export function attachmentKind(attachment) {
   const resourceType = String(attachment.resourceType ?? attachment.type ?? "").toLowerCase();
   const name = String(attachment.name ?? attachment.fileName ?? attachment.localPath ?? attachment.sourcePath ?? attachment.fileKey ?? "").toLowerCase();
@@ -114,14 +161,17 @@ export function attachmentKind(attachment) {
   return "file";
 }
 
+/** @param {Attachment} attachment */
 export function fileExtension(attachment) {
   return extname(String(attachment.name ?? attachment.fileName ?? attachment.localPath ?? attachment.sourcePath ?? "")).toLowerCase();
 }
 
+/** @param {Attachment} attachment */
 export function isSupportedTextFile(attachment) {
   return attachmentKind(attachment) === "file" && SUPPORTED_TEXT_FILE_EXTENSIONS.has(fileExtension(attachment));
 }
 
+/** @param {string} path @returns {Promise<string>} */
 export function sha256File(path) {
   return new Promise((resolveHash, rejectHash) => {
     const hash = createHash("sha256");
@@ -132,12 +182,14 @@ export function sha256File(path) {
   });
 }
 
+/** @param {string} path @param {string} value */
 function writeText(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, value, "utf8");
   return path;
 }
 
+/** @param {unknown} text */
 function cleanUserPrompt(text) {
   return String(text ?? "")
     .replace(/@\S+/g, " ")
@@ -145,6 +197,7 @@ function cleanUserPrompt(text) {
     .trim();
 }
 
+/** @param {string} command @param {string[]} args @param {CommandOptions} [options] @returns {Promise<CommandResult>} */
 function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand) => {
     let stdout = "";
@@ -181,6 +234,7 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+/** @param {unknown} value */
 function xmlDecode(value) {
   return String(value ?? "")
     .replace(/&lt;/g, "<")
@@ -190,6 +244,7 @@ function xmlDecode(value) {
     .replace(/&apos;/g, "'");
 }
 
+/** @param {unknown} xml */
 function stripXmlToText(xml) {
   return xmlDecode(String(xml ?? "")
     .replace(/<w:p[^>]*>/g, "\n")
@@ -205,6 +260,7 @@ function stripXmlToText(xml) {
     .trim();
 }
 
+/** @param {unknown} text */
 function normalizeExtractedText(text) {
   return String(text ?? "")
     .replace(/\u0000/g, "")
@@ -214,10 +270,12 @@ function normalizeExtractedText(text) {
     .slice(0, MAX_EXTRACTED_TEXT_CHARS);
 }
 
+/** @param {string} path */
 function readTextPreview(path) {
   return normalizeExtractedText(readFileSync(path, "utf8"));
 }
 
+/** @param {string} path @returns {Promise<ExtractionResult>} */
 async function extractDocxText(path) {
   const xml = await runCommand("unzip", ["-p", path, "word/document.xml"], { timeoutMs: 60000 });
   if (xml.exitCode !== 0 || !xml.stdout.trim()) {
@@ -226,6 +284,7 @@ async function extractDocxText(path) {
   return { status: "completed", method: "docx-unzip", text: normalizeExtractedText(stripXmlToText(xml.stdout)) };
 }
 
+/** @param {string} path @returns {Promise<ExtractionResult>} */
 async function extractLegacyWordText(path) {
   const converted = await runCommand("textutil", ["-convert", "txt", "-stdout", path], { timeoutMs: 60000 });
   if (converted.exitCode !== 0 || !converted.stdout.trim()) {
@@ -234,11 +293,13 @@ async function extractLegacyWordText(path) {
   return { status: "completed", method: "textutil", text: normalizeExtractedText(converted.stdout) };
 }
 
+/** @param {string} path @returns {Promise<ExtractionResult>} */
 async function extractXlsxText(path) {
   const sharedStrings = await runCommand("unzip", ["-p", path, "xl/sharedStrings.xml"], { timeoutMs: 60000 });
   const strings = [...String(sharedStrings.stdout ?? "").matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((match) => xmlDecode(match[1]));
   const workbook = await runCommand("unzip", ["-p", path, "xl/workbook.xml"], { timeoutMs: 60000 });
   const sheetNames = [...String(workbook.stdout ?? "").matchAll(/<sheet[^>]*name="([^"]+)"/g)].map((match) => xmlDecode(match[1]));
+  /** @type {string[]} */
   const sections = [];
   if (sheetNames.length > 0) sections.push(`Sheets: ${sheetNames.join(", ")}`);
   if (strings.length > 0) sections.push(`Shared strings preview:\n${strings.slice(0, 400).join("\n")}`);
@@ -262,6 +323,7 @@ async function extractXlsxText(path) {
   return { status: "completed", method: "xlsx-unzip", text };
 }
 
+/** @param {string} path @returns {Promise<ExtractionResult>} */
 async function extractPdfText(path) {
   const output = await runCommand("strings", ["-n", "4", path], { timeoutMs: 60000 });
   const text = normalizeExtractedText(String(output.stdout ?? "")
@@ -275,8 +337,9 @@ async function extractPdfText(path) {
   return { status: "completed", method: "pdf-strings", text };
 }
 
+/** @param {Attachment} attachment @returns {Promise<ExtractionResult>} */
 export async function extractAttachmentText(attachment) {
-  const sourcePath = attachment.localPath ?? attachment.sourcePath ?? "";
+  const sourcePath = String(attachment.localPath ?? attachment.sourcePath ?? "");
   const localPath = sourcePath ? resolve(sourcePath) : "";
   if (!localPath || !existsSync(localPath)) {
     return { status: "failed", method: "none", reason: "local_file_missing", text: "" };
@@ -297,6 +360,7 @@ export async function extractAttachmentText(attachment) {
   return { status: "failed", method: "none", reason: "unsupported_text_file_extension", text: "" };
 }
 
+/** @param {Attachment} attachment @param {string} taskPrompt @returns {Record<string, unknown>} */
 function disclosurePlanFor(attachment, taskPrompt) {
   const ext = fileExtension(attachment);
   const shortTask = ONE_SENTENCE_PATTERN.test(taskPrompt);
@@ -321,16 +385,19 @@ function disclosurePlanFor(attachment, taskPrompt) {
   };
 }
 
+/** @param {FileContextEvent} event @param {Attachment[]} attachments @param {FileContextPaths} paths @param {FileContextOptions} [options] */
 export async function buildFileContexts(event, attachments, paths, options = {}) {
   mkdirSync(paths.fileContextsDir, { recursive: true });
   const taskPrompt = cleanUserPrompt(event.message?.text ?? event.messageText ?? "");
   const nativeFileInputSupported = options.nativeFileInputSupported ?? envFlag(options.providerFileInputEnv ?? "FEISHU_AGENT_PROVIDER_FILE_INPUT");
+  /** @type {FileContext[]} */
   const contexts = [];
   for (const [index, attachment] of attachments.entries()) {
     const kind = attachmentKind(attachment);
     const ext = fileExtension(attachment);
     const supportedText = isSupportedTextFile(attachment);
-    const baseName = safeSegment(`${index}-${basename(attachment.name ?? attachment.fileName ?? attachment.localPath ?? attachment.sourcePath ?? attachment.fileKey ?? attachment.attachmentId ?? "file")}`);
+    const baseName = safeSegment(`${index}-${basename(String(attachment.name ?? attachment.fileName ?? attachment.localPath ?? attachment.sourcePath ?? attachment.fileKey ?? attachment.attachmentId ?? "file"))}`);
+    /** @type {FileContext} */
     const context = {
       schemaVersion: FILE_CONTEXT_SCHEMA_VERSION,
       fileId: attachment.sha256 ?? attachment.fileKey ?? attachment.attachmentId ?? baseName,
@@ -338,7 +405,7 @@ export async function buildFileContexts(event, attachments, paths, options = {})
       mimeType: attachment.mimeType ?? null,
       fileType: kind,
       extension: ext,
-      sourcePath: attachment.localPath ?? attachment.sourcePath ?? null,
+      sourcePath: attachment.localPath === undefined && attachment.sourcePath === undefined ? null : String(attachment.localPath ?? attachment.sourcePath),
       sourceMessageId: attachment.messageId ?? attachment.sourceMessageId ?? attachment.cacheSourceMessageId ?? event.message?.messageId ?? null,
       taskPrompt,
       externalLlmAllowed: true,
@@ -372,7 +439,7 @@ export async function buildFileContexts(event, attachments, paths, options = {})
     }
     if (!context.sourcePath || !existingNonEmptyFile(context.sourcePath)) {
       context.status = "blocked";
-      context.unsupportedReason = ["failed", "blocked"].includes(attachment.downloadStatus)
+      context.unsupportedReason = ["failed", "blocked"].includes(String(attachment.downloadStatus ?? ""))
         ? "attachment_download_failed"
         : "local_source_file_missing";
       context.localSourceReady = false;
