@@ -16,6 +16,9 @@ const offline = process.env.PACK_SMOKE_OFFLINE === "1";
 mkdirSync(consumerDir, { recursive: true });
 mkdirSync(packDir, { recursive: true });
 
+/** @typedef {{ cwd?: string, env?: NodeJS.ProcessEnv }} RunOptions */
+
+/** @param {string} command @param {string[]} args @param {RunOptions} [options] */
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? packageDir,
@@ -29,6 +32,7 @@ function run(command, args, options = {}) {
   return result.stdout.trim();
 }
 
+/** @param {string} output */
 function parsePackJson(output) {
   const start = output.indexOf("[");
   assert(start >= 0, `npm pack did not return JSON: ${output.slice(-500)}`);
@@ -40,11 +44,14 @@ const packed = parsePackJson(run("npm", ["pack", "--json", "--silent", "--pack-d
 const tarballPath = join(packDir, packed.filename);
 
 const directDependencies = new Set(Object.keys(manifest.dependencies ?? {}));
+/** @type {Record<string, string>} */
 const overrides = {};
 for (const [path, record] of Object.entries(producerLock.packages ?? {})) {
-  if (!path.startsWith("node_modules/") || record.dev === true || !record.version) continue;
+  if (!record || typeof record !== "object") continue;
+  const packageRecord = /** @type {{ dev?: boolean, version?: string }} */ (record);
+  if (!path.startsWith("node_modules/") || packageRecord.dev === true || !packageRecord.version) continue;
   const packageName = path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length);
-  if (!directDependencies.has(packageName)) overrides[packageName] = record.version;
+  if (!directDependencies.has(packageName)) overrides[packageName] = packageRecord.version;
 }
 writeFileSync(join(consumerDir, "package.json"), `${JSON.stringify({
   name: "assignment-agent-package-consumer",
@@ -66,15 +73,24 @@ run("npm", [
 
 writeFileSync(join(consumerDir, "consumer.mts"), [
   `import { isTaskExecutionProfile, TASK_EXECUTION_PROFILES, type TaskExecutionProfile } from "${manifest.name}";`,
+  `import { parseQaGateResult, type QaGateResult } from "${manifest.name}/contracts/qa";`,
+  `import { parseSourceContextManifest, type SourceContextManifest } from "${manifest.name}/contracts/source-context";`,
+  `import { parseDocumentWorkflowCheckpoint, type DocumentWorkflowCheckpoint } from "${manifest.name}/contracts/document-runtime";`,
+  `import { parseOfficeObject, type OfficeObject } from "${manifest.name}/contracts/office-artifacts";`,
   `const profile: TaskExecutionProfile = "url_source_pack";`,
   `if (!isTaskExecutionProfile(profile) || !TASK_EXECUTION_PROFILES.includes(profile)) throw new Error("typed_contract_consumer_failed");`,
+  `const parsers: Array<(value: unknown) => QaGateResult | SourceContextManifest | DocumentWorkflowCheckpoint | OfficeObject> = [parseQaGateResult, parseSourceContextManifest, parseDocumentWorkflowCheckpoint, parseOfficeObject];`,
+  `if (parsers.length !== 4) throw new Error("typed_subpath_contract_consumer_failed");`,
   `console.log(profile);`,
   "",
 ].join("\n"));
 writeFileSync(join(consumerDir, "consumer.mjs"), [
   `import { isTaskExecutionProfile, TASK_EXECUTION_PROFILES } from "${manifest.name}";`,
+  `import { QA_GATE_SCHEMA_VERSION } from "${manifest.name}/contracts/qa";`,
+  `import { SOURCE_CONTEXT_SCHEMA_VERSION } from "${manifest.name}/contracts/source-context";`,
+  `import { DOCUMENT_CHECKPOINT_SCHEMA_VERSION } from "${manifest.name}/contracts/document-runtime";`,
   `if (!isTaskExecutionProfile("url_source_pack") || isTaskExecutionProfile("direct_answer")) throw new Error("runtime_contract_consumer_failed");`,
-  `console.log(JSON.stringify({ status: "passed", profileCount: TASK_EXECUTION_PROFILES.length }));`,
+  `console.log(JSON.stringify({ status: "passed", profileCount: TASK_EXECUTION_PROFILES.length, contracts: [QA_GATE_SCHEMA_VERSION, SOURCE_CONTEXT_SCHEMA_VERSION, DOCUMENT_CHECKPOINT_SCHEMA_VERSION] }));`,
   "",
 ].join("\n"));
 writeFileSync(join(consumerDir, "tsconfig.json"), `${JSON.stringify({
@@ -94,11 +110,11 @@ run(process.execPath, [join(packageDir, "node_modules", "typescript", "bin", "ts
 const runtimeSmoke = run(process.execPath, [join(consumerDir, "consumer.mjs")], { cwd: consumerDir });
 
 const forbiddenEntries = packed.files
-  .map((entry) => entry.path)
-  .filter((path) => /(^|\/)(tests?|__pycache__|runtime-runs)(\/|$)|\.pyc$|\.env(?:\.|$)/.test(path));
+  .map((/** @type {{ path: string }} */ entry) => entry.path)
+  .filter((/** @type {string} */ path) => /(^|\/)(tests?|__pycache__|runtime-runs)(\/|$)|\.pyc$|\.env(?:\.|$)/.test(path));
 assert.deepEqual(forbiddenEntries, [], `tarball contains forbidden files: ${forbiddenEntries.join(", ")}`);
 
-const packedPaths = new Set(packed.files.map((entry) => entry.path));
+const packedPaths = new Set(packed.files.map((/** @type {{ path: string }} */ entry) => entry.path));
 const requiredPiRuntimeEntries = [
   "dist/index.js",
   "dist/index.d.ts",

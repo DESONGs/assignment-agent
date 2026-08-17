@@ -17,20 +17,31 @@ const segments = normalizeMeetingSegments([
   { sourceIndex: 0, chunkIndex: 3, startSec: 12, endSec: 16, speakerId: 2, text: "负责人明天提交接口清单。", singleMixEvidence: { status: "needs_review", reviewIds: ["review-1"] } },
 ]);
 
+/** @template T @param {T | null | undefined} value @returns {T} */
+function required(value) {
+  assert.ok(value);
+  return value;
+}
+
+/** @param {number} index */
+function segmentId(index) {
+  return required(segments.at(index)).segmentId;
+}
+
 test("participant aliases are stable and explicit user mappings override aliases", () => {
   assert.equal(participantAlias(0), "参会人 A");
   assert.equal(participantAlias(26), "参会人 AA");
   const map = buildParticipantMap(segments, "参会人A=张三，参会人员：张三、李四、王五");
-  assert.equal(map.participants[0].displayName, "张三");
-  assert.equal(map.participants[0].nameStatus, "user_confirmed");
-  assert.equal(map.participants[1].displayName, "参会人 B");
-  assert.match(map.question, /参会人 B/);
+  assert.equal(required(map.participants.at(0)).displayName, "张三");
+  assert.equal(required(map.participants.at(0)).nameStatus, "user_confirmed");
+  assert.equal(required(map.participants.at(1)).displayName, "参会人 B");
+  assert.match(String(map.question), /参会人 B/);
   assert.equal(map.blocking, false);
 });
 
 test("evidence-backed identity guesses remain candidates and never replace stable aliases", () => {
   const participantMap = buildParticipantMap(segments, "");
-  const analysis = normalizeMeetingAnalysisResponse({
+  const analysis = required(normalizeMeetingAnalysisResponse({
     content: JSON.stringify({
       meetingType: "产品会议",
       participantIdentityCandidates: [{
@@ -39,7 +50,7 @@ test("evidence-backed identity guesses remain candidates and never replace stabl
         candidateName: "李四",
         confidence: "medium",
         basis: "addressed_by_name",
-        evidenceSegmentIds: [segments[1].segmentId],
+        evidenceSegmentIds: [segmentId(1)],
       }],
       topics: [{
         title: "旅游 Agent MVP",
@@ -51,21 +62,21 @@ test("evidence-backed identity guesses remain candidates and never replace stabl
     }),
     segments,
     participantMap,
-  });
-  const candidate = analysis.participantResolution.participants[1];
+  }));
+  const candidate = required(analysis.participantResolution.participants.at(1));
   assert.equal(candidate.alias, "参会人 B");
   assert.equal(candidate.displayName, "参会人 B");
   assert.equal(candidate.nameStatus, "alias");
   assert.equal(candidate.candidateName, "李四");
   assert.equal(candidate.candidateConfidence, "medium");
   assert.deepEqual(candidate.candidateBasis, ["addressed_by_name"]);
-  assert.deepEqual(candidate.candidateEvidenceSegmentIds, [segments[1].segmentId]);
+  assert.deepEqual(candidate.candidateEvidenceSegmentIds, [segmentId(1)]);
   assert.equal(analysis.participantResolution.candidateCount, 1);
 });
 
 test("identity candidates with cross-meeting evidence are discarded", () => {
   const participantMap = buildParticipantMap(segments, "");
-  const analysis = normalizeMeetingAnalysisResponse({
+  const analysis = required(normalizeMeetingAnalysisResponse({
     content: JSON.stringify({
       meetingType: "产品会议",
       participantIdentityCandidates: [{
@@ -86,8 +97,8 @@ test("identity candidates with cross-meeting evidence are discarded", () => {
     }),
     segments,
     participantMap,
-  });
-  assert.equal(analysis.participantResolution.participants[1].candidateName, undefined);
+  }));
+  assert.equal(required(analysis.participantResolution.participants.at(1)).candidateName, undefined);
   assert.equal(analysis.participantResolution.candidateCount, 0);
 });
 
@@ -111,16 +122,16 @@ test("voiceprint identity candidates require upstream enrolled-match metadata", 
     }],
     agentPlan: {},
   };
-  const withoutRegistry = normalizeMeetingAnalysisResponse({ content: JSON.stringify(response), segments, participantMap });
+  const withoutRegistry = required(normalizeMeetingAnalysisResponse({ content: JSON.stringify(response), segments, participantMap }));
   assert.equal(withoutRegistry.participantResolution.candidateCount, 0);
-  const withRegistry = normalizeMeetingAnalysisResponse({
+  const withRegistry = required(normalizeMeetingAnalysisResponse({
     content: JSON.stringify(response),
     segments,
     participantMap,
     asrSummary: { speakerDiarization: { identityMatches: [{ speakerId: 1, displayName: "李四", status: "matched" }] } },
-  });
-  assert.equal(withRegistry.participantResolution.participants[1].candidateName, "李四");
-  assert.deepEqual(withRegistry.participantResolution.participants[1].candidateBasis, ["enrolled_voiceprint"]);
+  }));
+  assert.equal(required(withRegistry.participantResolution.participants.at(1)).candidateName, "李四");
+  assert.deepEqual(required(withRegistry.participantResolution.participants.at(1)).candidateBasis, ["enrolled_voiceprint"]);
 });
 
 test("meeting timeline keeps speaker aliases, evidence ids, and ASR review quality", () => {
@@ -142,20 +153,20 @@ test("model meeting analysis is evidence-validated and unsafe owner attribution 
       timeRange: { startSec: 0, endSec: 16 },
       evidenceSegmentIds: segments.map((segment) => segment.segmentId),
       coreJudgment: "先聚焦单一区域的信息检索能力。",
-      decisions: [{ text: "先做云南地区信息检索。", state: "agreed", evidenceSegmentIds: [segments[1].segmentId, segments[2].segmentId] }],
-      actions: [{ text: "明天提交接口清单。", ownerSpeakerId: 2, dueDate: "明天", evidenceSegmentIds: [segments[3].segmentId] }],
-      risks: [{ text: "数据接口待确认。", evidenceSegmentIds: [segments[2].segmentId] }],
-      openQuestions: [{ text: "接口来源是什么？", evidenceSegmentIds: [segments[2].segmentId] }],
+      decisions: [{ text: "先做云南地区信息检索。", state: "agreed", evidenceSegmentIds: [segmentId(1), segmentId(2)] }],
+      actions: [{ text: "明天提交接口清单。", ownerSpeakerId: 2, dueDate: "明天", evidenceSegmentIds: [segmentId(3)] }],
+      risks: [{ text: "数据接口待确认。", evidenceSegmentIds: [segmentId(2)] }],
+      openQuestions: [{ text: "接口来源是什么？", evidenceSegmentIds: [segmentId(2)] }],
     }],
     productDiscovery: {
-      userProblems: [{ text: "用户需要更快获得区域旅游信息。", state: "inferred", evidenceSegmentIds: [segments[0].segmentId, segments[1].segmentId] }],
-      targetUsers: [{ text: "旅游规划用户", state: "inferred", evidenceSegmentIds: [segments[0].segmentId] }],
-      workflows: [{ text: "用户提出目的地后检索云南信息。", state: "inferred", evidenceSegmentIds: [segments[1].segmentId] }],
-      desiredOutcomes: [{ text: "获得可用的目的地信息。", state: "inferred", evidenceSegmentIds: [segments[1].segmentId] }],
-      constraints: [{ text: "数据接口尚未确定。", state: "confirmed", evidenceSegmentIds: [segments[2].segmentId] }],
-      acceptanceSignals: [{ text: "云南地区信息可以稳定检索。", state: "inferred", evidenceSegmentIds: [segments[1].segmentId] }],
-      assumptions: [{ text: "单一区域足以验证价值。", state: "inferred", evidenceSegmentIds: [segments[0].segmentId] }],
-      clarificationQuestions: [{ question: "首期数据接口来自哪里？", why: "接口来源会影响架构和数据质量。", priority: "high", blocks: ["architecture", "implementation"], evidenceSegmentIds: [segments[2].segmentId] }],
+      userProblems: [{ text: "用户需要更快获得区域旅游信息。", state: "inferred", evidenceSegmentIds: [segmentId(0), segmentId(1)] }],
+      targetUsers: [{ text: "旅游规划用户", state: "inferred", evidenceSegmentIds: [segmentId(0)] }],
+      workflows: [{ text: "用户提出目的地后检索云南信息。", state: "inferred", evidenceSegmentIds: [segmentId(1)] }],
+      desiredOutcomes: [{ text: "获得可用的目的地信息。", state: "inferred", evidenceSegmentIds: [segmentId(1)] }],
+      constraints: [{ text: "数据接口尚未确定。", state: "confirmed", evidenceSegmentIds: [segmentId(2)] }],
+      acceptanceSignals: [{ text: "云南地区信息可以稳定检索。", state: "inferred", evidenceSegmentIds: [segmentId(1)] }],
+      assumptions: [{ text: "单一区域足以验证价值。", state: "inferred", evidenceSegmentIds: [segmentId(0)] }],
+      clarificationQuestions: [{ question: "首期数据接口来自哪里？", why: "接口来源会影响架构和数据质量。", priority: "high", blocks: ["architecture", "implementation"], evidenceSegmentIds: [segmentId(2)] }],
     },
     agentPlan: {
       meetingComplexity: "simple",
@@ -165,22 +176,25 @@ test("model meeting analysis is evidence-validated and unsafe owner attribution 
       suggestedFollowUpDocuments: ["prd", "unknown"],
     },
   });
-  const analysis = normalizeMeetingAnalysisResponse({ content, segments, participantMap, asrSummary: { speakerDiarization: { speakerLabelsAvailable: true } } });
+  const analysis = required(normalizeMeetingAnalysisResponse({ content, segments, participantMap, asrSummary: { speakerDiarization: { speakerLabelsAvailable: true } } }));
   assert.equal(analysis.status, "complete");
-  assert.equal(analysis.topicMap[0].actions[0].ownerSpeakerId, null);
-  assert.equal(analysis.topicMap[0].actions[0].dueDate, null);
+  const firstTopic = required(analysis.topicMap.at(0));
+  const firstAction = required(firstTopic.actions.at(0));
+  assert.equal(firstAction.ownerSpeakerId, null);
+  assert.equal(firstAction.dueDate, null);
   assert.deepEqual(analysis.agentPlan.suggestedFollowUpDocuments, ["prd"]);
-  assert.equal(analysis.productDiscovery.userProblems[0].state, "inferred");
-  assert.equal(analysis.productDiscovery.clarificationQuestions[0].question, "首期数据接口来自哪里？");
+  assert.equal(required(analysis.productDiscovery.userProblems.at(0)).state, "inferred");
+  assert.equal(required(analysis.productDiscovery.clarificationQuestions.at(0)).question, "首期数据接口来自哪里？");
   assert.equal(analysis.productDiscovery.prdReadiness.status, "needs_clarification");
   assert.equal(analysis.agentPlan.prdReadiness.status, "needs_clarification");
   const actionClaim = analysis.evidenceMap.find((claim) => claim.claimType === "action");
+  assert.ok(actionClaim);
   assert.equal(actionClaim.evidenceQuality, "needs_review_only");
 });
 
 test("meeting QA derives real topic and uncertain-claim findings from analysis", () => {
   const participantMap = buildParticipantMap(segments, "");
-  const analysis = normalizeMeetingAnalysisResponse({
+  const analysis = required(normalizeMeetingAnalysisResponse({
     content: JSON.stringify({
       meetingType: "产品会议",
       topics: [{
@@ -188,7 +202,7 @@ test("meeting QA derives real topic and uncertain-claim findings from analysis",
         evidenceSegmentIds: segments.map((segment) => segment.segmentId),
         coreJudgment: "先聚焦云南信息检索。",
         decisions: [],
-        actions: [{ text: "明天提交接口清单。", ownerSpeakerId: 2, dueDate: "明天", evidenceSegmentIds: [segments[3].segmentId] }],
+        actions: [{ text: "明天提交接口清单。", ownerSpeakerId: 2, dueDate: "明天", evidenceSegmentIds: [segmentId(3)] }],
         risks: [],
         openQuestions: [],
       }],
@@ -196,7 +210,7 @@ test("meeting QA derives real topic and uncertain-claim findings from analysis",
     }),
     segments,
     participantMap,
-  });
+  }));
   const findings = buildMeetingQaFindings(analysis, [{ markdown: "# 会议纪要\n\n## 行动项\n\n明天提交接口清单。" }]);
   assert.equal(findings.omittedMacroTopics.length, 1);
   assert.equal(findings.uncertainEvidenceClaims.length, 1);
@@ -212,6 +226,6 @@ test("meeting QA blocks cross-meeting ids introduced by delegated review", () =>
       missingEvidencePaths: ["$.result.actionFindings[0]"],
     },
   }, []);
-  assert.equal(findings.crossMeetingTerms[0].segmentId, "audio-99:chunk-9999");
-  assert.equal(findings.uncertainEvidenceClaims[0].claimType, "delegated_review");
+  assert.equal(required(findings.crossMeetingTerms.at(0)).segmentId, "audio-99:chunk-9999");
+  assert.equal(required(findings.uncertainEvidenceClaims.at(0)).claimType, "delegated_review");
 });

@@ -1,6 +1,6 @@
 # Meeting Agent Pi Package
 
-更新时间：2026-08-17。
+更新时间：2026-08-18。
 
 当前 Planner 使用 `adaptive-execution-ledger-v1`：它是复杂任务的唯一任务控制真相源，并派生 Pi `/todos`、飞书下一步选择、channel state 和 document checkpoint。Meeting Intelligence 同时输出 `productDiscovery`，用于把客户会议转换为潜在需求、产品假设、PRD 就绪度和下一次沟通问题。显式公开媒体 URL 使用独立 `url_source_pack` profile，不套用会议语义。
 
@@ -23,9 +23,9 @@ npm test
 
 ## 类型与本地发包验证
 
-`src/contracts/task-contracts.ts` 与 `src/contracts/runtime-boundary-contracts.ts` 是 Task/Ledger/Todo、Provider、ASR、飞书和 runtime store 状态的权威 TypeScript 来源；构建产物位于 `dist/`，包含 ESM、准确的 `.d.ts`、declaration map 和 source map。构建同时生成语言中立的 `runtime/contract-manifest.json`，供 Node、Python runtime store 和 Swift Workbench 共用；`contracts:check` 再核对 JSON Schema。
+`src/contracts/` 是 Task/Ledger/Todo、Provider/ASR/飞书、QA、Source Context、Document Runtime 与 Office Artifact 的权威 TypeScript 来源；构建产物位于 `dist/`，包含 ESM、准确的 `.d.ts`、declaration map 和 source map。构建同时生成语言中立的 `runtime/contract-manifest.json` 与对应 JSON Schema，供 Node、Python runtime store 和 Swift Workbench 共用；`contracts:check` 会阻止 manifest、schema 与实现漂移。
 
-20 个直接编写的 TypeScript extension 已全部进入 strict、`noUncheckedIndexedAccess` 和 `exactOptionalPropertyTypes`；27 个 `.mjs` runtime/tool、10 个 `.mjs` 测试和 7 个 `.mjs` 构建/发布脚本全部进入 `checkJs`。JavaScript 层仍是非 strict 迁移层，不因检查通过而冒充完整强类型实现。详细事实与业务影响见 [TypeScript、运行合同与 npm 包可靠性](../wiki/18-typescript-contract-and-package-reliability.md)。
+20 个直接编写的 TypeScript extension，以及 27 个 `.mjs` runtime/tool、11 个 `.mjs` 测试和 7 个 `.mjs` 构建/发布脚本，全部进入 `strict`、`noUncheckedIndexedAccess` 与 `exactOptionalPropertyTypes`；`.mjs` 通过 strict `checkJs` 校验，无需为提高 TypeScript 百分比机械改后缀。详细事实与业务影响见 [TypeScript、运行合同与 npm 包可靠性](../wiki/18-typescript-contract-and-package-reliability.md)。
 
 ```bash
 npm run typecheck
@@ -34,7 +34,14 @@ npm run pack:dry-run
 npm run release:local
 ```
 
-`release:local` 会创建临时 tgz consumer，执行真实 `npm install`、NodeNext strict 类型消费和 ESM runtime import，不发布到 registry。Pi、sub-agent、Dynamic Workflow 和 TypeBox 使用受控 peer range；仓库仍以当前锁定版本做开发与回归，不在此流程中自动升级。
+`release:local` 会创建临时 tgz consumer，执行真实 `npm install`、NodeNext strict 类型消费和 ESM runtime import，不发布到 registry。Pi、sub-agent 和 Dynamic Workflow 使用受控 peer range；公开合同直接依赖的 TypeBox 作为锁定的生产依赖随包安装。仓库不在此流程中自动升级关键依赖。
+
+## 阻断与恢复
+
+- QA、Source Context 或任务合同缺失/非法时一律返回 `blocked`，不会把未知或部分结果当成可发布成功。
+- `document-workflow-checkpoint-v1`、损坏或 hash 不匹配的 checkpoint 只保留为诊断副本；修复输入后重新执行会创建 v2 checkpoint。同一 `runId` 的并发执行由本地单写者锁阻断，超时遗留锁会被隔离。
+- task-state、Todo、飞书或 Workbench 投影写入失败时，真实文档产物保留，并记录 `projection_write_failed`；恢复时从 Adaptive Execution Ledger 重建投影。
+- 若公开 URL、ASR 或章节分析只完成一部分，Source Pack 不交付。修复来源、凭证或失败章节后重试同一任务。
 
 ## 目录职责
 

@@ -47,6 +47,52 @@ const vtt = `WEBVTT
 第二段官方文稿。
 `;
 
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {};
+}
+
+/** @param {unknown} value @returns {unknown[]} */
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/** @template T @param {T | null | undefined} value @returns {T} */
+function required(value) {
+  assert.ok(value);
+  return value;
+}
+
+/** @param {string} runId @param {string} url */
+function createRunnerTask(runId, url) {
+  const receivedAt = new Date().toISOString();
+  return {
+    schemaVersion: "feishu-task-v1",
+    runId,
+    status: "running",
+    sourceEvent: {
+      schemaVersion: "feishu-event-v1",
+      eventId: `event-${runId}`,
+      eventType: "local.public_url",
+      receivedAt,
+      message: { messageId: `message-${runId}`, chatId: "local-test", msgType: "text", text: url, attachments: [] },
+      rawSecretsReturned: false,
+    },
+    attachments: [],
+    fileContexts: { contexts: [] },
+    taskIntent: {
+      schemaVersion: "task-intent-v1",
+      taskType: "knowledge_source",
+      responseMode: "source_pack",
+      executionProfile: "url_source_pack",
+      reasoningDepth: "deep",
+      requestedDocuments: [],
+      sourcePreparation: { publicUrls: [url] },
+    },
+    rawSecretsReturned: false,
+  };
+}
+
 function rssFixture({ transcript = true } = {}) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
@@ -81,8 +127,8 @@ test("SSRF, dangerous redirects and oversized responses are blocked", async () =
   assert.equal(isBlockedNetworkAddress("10.1.2.3"), true);
   assert.equal(isBlockedNetworkAddress("fec0::1"), true);
   assert.equal(isBlockedNetworkAddress("93.184.216.34"), false);
-  assert.equal((await validatePublicUrl("http://127.0.0.1/admin")).reason, "public_url_private_address_blocked");
-  assert.match((await validatePublicRedirect("https://example.com", "http://169.254.169.254/latest")).reason, /redirect_public_url_private_address_blocked/);
+  assert.equal(asRecord(await validatePublicUrl("http://127.0.0.1/admin")).reason, "public_url_private_address_blocked");
+  assert.match(String(asRecord(await validatePublicRedirect("https://example.com", "http://169.254.169.254/latest")).reason), /redirect_public_url_private_address_blocked/);
   assert.equal((await validatePublicUrl("https://example.com", { lookupFn: publicLookup })).status, "ready");
   assert.equal(enforceContentLength({ "content-length": "5001" }, 5000).reason, "public_url_size_limit_exceeded");
 });
@@ -100,11 +146,13 @@ test("YouTube json3 captions preserve millisecond timestamps and segmented text"
 
 test("RSS parser preserves podcast transcript and enclosure metadata", () => {
   const parsed = parseRssFeed(rssFixture(), feedUrl);
+  const source = required(parsed.source);
+  const transcriptCandidate = required(parsed.transcriptCandidates?.at(0));
   assert.equal(parsed.status, "completed");
-  assert.equal(parsed.source.title, "第一期");
-  assert.equal(parsed.source.program, "测试节目");
-  assert.equal(parsed.source.durationSec, 60);
-  assert.equal(parsed.transcriptCandidates[0].url, transcriptUrl);
+  assert.equal(source.title, "第一期");
+  assert.equal(source.program, "测试节目");
+  assert.equal(source.durationSec, 60);
+  assert.equal(transcriptCandidate.url, transcriptUrl);
   assert.equal(parsed.mediaUrl, mediaUrl);
 });
 
@@ -115,45 +163,48 @@ test("RSS episode lookup never falls back to the latest item when the requested 
 });
 
 test("official timestamped podcast transcript is preferred over cloud ASR fallback", async () => {
-  const fetched = async (url) => {
+  const fetched = async (/** @type {string} */ url) => {
     if (url === feedUrl) return { status: "completed", finalUrl: feedUrl, contentType: "application/rss+xml", body: Buffer.from(rssFixture()) };
     if (url === transcriptUrl) return { status: "completed", finalUrl: transcriptUrl, contentType: "text/vtt", body: Buffer.from(vtt) };
     throw new Error(`unexpected fetch ${url}`);
   };
-  const resolved = await resolvePublicMediaSource(feedUrl, { resolveOnly: true, lookupFn: publicLookup, fetchResource: fetched });
+  const resolved = asRecord(await resolvePublicMediaSource(feedUrl, { resolveOnly: true, lookupFn: publicLookup, fetchResource: fetched }));
+  const source = asRecord(resolved.source);
+  const transcript = asRecord(resolved.transcript);
+  const media = asRecord(resolved.media);
   assert.equal(resolved.status, "resolved");
-  assert.equal(resolved.source.acquisitionMethod, "official_podcast_transcript");
-  assert.equal(resolved.transcript.origin, "official_podcast_transcript");
-  assert.equal(resolved.transcript.segments.length, 2);
-  assert.equal(resolved.media.status, "not_required");
+  assert.equal(source.acquisitionMethod, "official_podcast_transcript");
+  assert.equal(transcript.origin, "official_podcast_transcript");
+  assert.equal(asArray(transcript.segments).length, 2);
+  assert.equal(media.status, "not_required");
 });
 
 test("podcast without reliable transcript plans cloud ASR and does not claim completion", async () => {
   const fetched = async () => ({ status: "completed", finalUrl: feedUrl, contentType: "application/rss+xml", body: Buffer.from(rssFixture({ transcript: false })) });
-  const resolved = await resolvePublicMediaSource(feedUrl, {
+  const resolved = asRecord(await resolvePublicMediaSource(feedUrl, {
     resolveOnly: true,
     lookupFn: publicLookup,
     fetchResource: fetched,
     probeResource: async () => ({ status: "ready", finalUrl: mediaUrl, contentType: "audio/mpeg", contentLength: 12345 }),
-  });
+  }));
   assert.equal(resolved.status, "resolved");
   assert.equal(resolved.transcript, null);
-  assert.deepEqual(resolved.fallback, { required: true, method: "cloud_asr" });
-  assert.equal(resolved.media.status, "available_not_downloaded");
+  assert.deepEqual(asRecord(resolved.fallback), { required: true, method: "cloud_asr" });
+  assert.equal(asRecord(resolved.media).status, "available_not_downloaded");
 });
 
 test("extensionless public media URL is detected from content type before HTML parsing", async () => {
   const url = "https://cdn.example/public-media?id=episode-1";
-  const resolved = await resolvePublicMediaSource(url, {
+  const resolved = asRecord(await resolvePublicMediaSource(url, {
     resolveOnly: true,
     lookupFn: publicLookup,
     probeResource: async () => ({ status: "ready", finalUrl: url, contentType: "audio/mpeg", contentLength: 4567 }),
     fetchResource: async () => { throw new Error("media URL must not be fetched as HTML"); },
-  });
+  }));
   assert.equal(resolved.status, "resolved");
-  assert.equal(resolved.source.platform, "direct");
-  assert.equal(resolved.media.contentType, "audio/mpeg");
-  assert.deepEqual(resolved.fallback, { required: true, method: "cloud_asr" });
+  assert.equal(asRecord(resolved.source).platform, "direct");
+  assert.equal(asRecord(resolved.media).contentType, "audio/mpeg");
+  assert.deepEqual(asRecord(resolved.fallback), { required: true, method: "cloud_asr" });
 });
 
 test("YouTube adapter uses official subtitles before media download", async () => {
@@ -166,28 +217,28 @@ test("YouTube adapter uses official subtitles before media download", async () =
     availability: "public",
     subtitles: { en: [{ ext: "vtt", url: "https://www.youtube.com/api/timedtext?v=fixture" }] },
   };
-  const resolved = await resolvePublicMediaSource(youtubeUrl, {
+  const resolved = asRecord(await resolvePublicMediaSource(youtubeUrl, {
     resolveOnly: true,
     lookupFn: publicLookup,
     youtubeMetadata: metadata,
     fetchResource: async () => ({ status: "completed", contentType: "text/vtt", body: Buffer.from(vtt) }),
-  });
+  }));
   assert.equal(resolved.status, "resolved");
-  assert.equal(resolved.source.acquisitionMethod, "official_subtitle");
-  assert.equal(resolved.transcript.segments.length, 2);
-  assert.equal(resolved.media.status, "not_required");
+  assert.equal(asRecord(resolved.source).acquisitionMethod, "official_subtitle");
+  assert.equal(asArray(asRecord(resolved.transcript).segments).length, 2);
+  assert.equal(asRecord(resolved.media).status, "not_required");
 });
 
 test("YouTube adapter falls back to cloud ASR when official subtitles are absent", async () => {
   const youtubeUrl = "https://youtu.be/fixture";
-  const resolved = await resolvePublicMediaSource(youtubeUrl, {
+  const resolved = asRecord(await resolvePublicMediaSource(youtubeUrl, {
     resolveOnly: true,
     lookupFn: publicLookup,
     youtubeMetadata: { title: "No subtitle", webpage_url: youtubeUrl, duration: 20, availability: "public", subtitles: {} },
-  });
+  }));
   assert.equal(resolved.status, "resolved");
-  assert.deepEqual(resolved.fallback, { required: true, method: "cloud_asr" });
-  assert.equal(resolved.media.status, "available_not_downloaded");
+  assert.deepEqual(asRecord(resolved.fallback), { required: true, method: "cloud_asr" });
+  assert.equal(asRecord(resolved.media).status, "available_not_downloaded");
 });
 
 test("YouTube boundaries block live, restricted, oversized and overlong sources while disabling playlist and cookies", async () => {
@@ -209,6 +260,7 @@ test("YouTube boundaries block live, restricted, oversized and overlong sources 
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
+  /** @type {string[]} */
   let metadataArgs = [];
   const viaRunner = await resolvePublicMediaSource(youtubeUrl, {
     resolveOnly: true,
@@ -254,7 +306,7 @@ test("source pack partitions long evidence and traces every claim to transcript 
   const analyses = chapters.map((chapter, index) => normalizeSourceChapterAnalysis({
     chapterTitle: `章节 ${index + 1}`,
     summary: "摘要",
-    claims: [{ claimType: index === 0 ? "author_view" : "explicit_fact", text: chapter.segments[0].text, evidenceSegmentIds: [chapter.segmentIds[0]], confidence: "high" }],
+    claims: [{ claimType: index === 0 ? "author_view" : "explicit_fact", text: required(chapter.segments.at(0)).text, evidenceSegmentIds: [required(chapter.segmentIds.at(0))], confidence: "high" }],
     suggestedRelatedTopics: ["Agent 产品"],
   }, chapter));
   const provenance = buildProvenanceIndex({ originalUrl: episodeUrl, finalSourceUrl: episodeUrl, platform: "rss", title: "第一期" }, segments, "official_podcast_transcript");
@@ -266,18 +318,18 @@ test("source pack partitions long evidence and traces every claim to transcript 
     transcriptMethod: "official_podcast_transcript",
     provenancePath: "artifacts/public-source/provenance/evidence-index.json",
   });
-  assert.equal(pack.status, "complete");
+  if (pack.status !== "complete") assert.fail(String(asRecord(pack).reason));
   assert.equal(pack.chapters.length, 2);
   assert.equal(pack.provenance.allClaimsHaveEvidence, true);
   assert.equal(pack.quality.transcriptQualityDisclosed, true);
   assert.equal(pack.quality.transcriptReviewRequired, false);
-  assert.equal(provenance.segments[0].originType, "official_podcast_transcript");
+  assert.equal(required(provenance.segments.at(0)).originType, "official_podcast_transcript");
 });
 
 test("source pack discloses ASR review items without treating a complete transcript as partial", () => {
   const segments = normalizeSourceSegments({ segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text: "待复核的转写。", quality: "needs_review" }] }, { originType: "aliyun_dashscope_paraformer" });
-  const chapter = partitionSourceSegments(segments)[0];
-  const analysis = normalizeSourceChapterAnalysis({ chapterTitle: "复核章节", summary: "摘要", claims: [{ claimType: "controversy_or_risk", text: "该片段需复核。", evidenceSegmentIds: [chapter.segmentIds[0]], confidence: "low" }] }, chapter);
+  const chapter = required(partitionSourceSegments(segments).at(0));
+  const analysis = normalizeSourceChapterAnalysis({ chapterTitle: "复核章节", summary: "摘要", claims: [{ claimType: "controversy_or_risk", text: "该片段需复核。", evidenceSegmentIds: [required(chapter.segmentIds.at(0))], confidence: "low" }] }, chapter);
   const pack = buildKnowledgeSourcePack({
     source: { originalUrl: mediaUrl, finalSourceUrl: mediaUrl, platform: "direct", title: "测试音频", acquisitionMethod: "direct_public_media+cloud_asr" },
     transcript: { status: "complete", quality: { status: "complete", reviewRequired: true, reviewItemCount: 1, highSeverityReviewItemCount: 1 } },
@@ -286,26 +338,34 @@ test("source pack discloses ASR review items without treating a complete transcr
     transcriptMethod: "aliyun_dashscope_paraformer",
     provenancePath: "artifacts/public-source/provenance/evidence-index.json",
   });
+  if (pack.status !== "complete") assert.fail(String(asRecord(pack).reason));
   assert.equal(pack.quality.completeTranscriptAvailable, true);
   assert.equal(pack.quality.transcriptReviewRequired, true);
   assert.match(renderKnowledgeSourcePack(pack), /需人工复核：1 个复核项/);
 });
 
 test("source chapter prompt bounds claim volume to avoid truncated JSON", () => {
-  const prompt = buildSourceChapterPrompt({
+  const promptChapter = {
     chapterId: "chapter-001",
+    order: 1,
     officialTitle: "测试章节",
-    segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text: "测试内容", speaker: null, quality: "ready" }],
-  }, { title: "测试来源" }, { maxClaims: 8 });
+    startMs: 0,
+    endMs: 1000,
+    segmentIds: ["s1"],
+    segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text: "测试内容", speaker: null, language: null, quality: "ready", provenance: { originType: "fixture", sourceUrl: null, sourceFile: null, sourceHashSha256: null } }],
+    charCount: 4,
+    bounded: true,
+  };
+  const prompt = buildSourceChapterPrompt(promptChapter, { title: "测试来源" }, { maxClaims: 8 });
   assert.match(prompt, /summary 最多 400 个字/);
   assert.match(prompt, /claims 最多 8 条/);
   assert.match(prompt, /每条 text 最多 160 个字/);
-  const chapter = { chapterId: "chapter-001", order: 1, officialTitle: "测试章节", startMs: 0, endMs: 1000, segmentIds: ["s1"] };
   const normalized = normalizeSourceChapterAnalysis({
     summary: "摘".repeat(500),
     claims: Array.from({ length: 20 }, (_, index) => ({ claimType: "author_view", text: `${index}-${"观".repeat(200)}`, evidenceSegmentIds: ["s1"], confidence: "medium" })),
     suggestedRelatedTopics: Array.from({ length: 10 }, (_, index) => `${index}-${"题".repeat(100)}`),
-  }, chapter);
+  }, promptChapter);
+  if (normalized.status !== "completed") assert.fail(normalized.reason);
   assert.equal(normalized.summary.length, 400);
   assert.equal(normalized.claims.length, 12);
   assert.ok(normalized.claims.every((claim) => claim.text.length <= 160));
@@ -314,18 +374,18 @@ test("source chapter prompt bounds claim volume to avoid truncated JSON", () => 
 });
 
 test("official chapter markers keep the prelude and remain bounded without losing transcript segments", () => {
-  const segments = [
+  const segments = normalizeSourceSegments({ segments: [
     { segmentId: "s1", startMs: 0, endMs: 9000, text: "开场内容" },
     { segmentId: "s2", startMs: 10_000, endMs: 20_000, text: "第一章内容一" },
     { segmentId: "s3", startMs: 20_000, endMs: 30_000, text: "第一章内容二" },
     { segmentId: "s4", startMs: 60_000, endMs: 70_000, text: "第二章内容" },
-  ];
+  ] }, { originType: "fixture" });
   const chapters = partitionSourceSegments(segments, {
     chapterMarkers: [{ startMs: 10_000, title: "第一章" }, { startMs: 60_000, title: "第二章" }],
     maxChapterChars: 7,
     maxChapterDurationMs: 60_000,
   });
-  assert.equal(chapters[0].officialTitle, "开场");
+  assert.equal(required(chapters.at(0)).officialTitle, "开场");
   assert.deepEqual(chapters.flatMap((chapter) => chapter.segmentIds), ["s1", "s2", "s3", "s4"]);
   assert.ok(chapters.every((chapter) => chapter.charCount <= 7));
 });
@@ -336,8 +396,8 @@ test("Feishu and local Agent router send explicit public URLs to the real source
   assert.equal(intent.taskType, "knowledge_source");
   assert.equal(intent.executionProfile, "url_source_pack");
   assert.equal(intent.responseMode, "source_pack");
-  assert.equal(intent.sourcePreparation.publicUrls[0], feedUrl);
-  assert.equal(shouldUseTaskExecutionRunner({ taskIntent: intent }), true);
+  assert.equal(asArray(asRecord(intent.sourcePreparation).publicUrls).at(0), feedUrl);
+  assert.equal(shouldUseTaskExecutionRunner(createRunnerTask("router-fixture", feedUrl)), true);
   const feishuDoc = classifyTaskIntent({ message: { text: "请看 https://example.larksuite.com/wiki/abc123" } }, [], { contexts: [] }, {});
   assert.notEqual(feishuDoc.executionProfile, "url_source_pack");
 });
@@ -383,18 +443,7 @@ test("local source-pack profile produces complete handoff artifacts without meet
     artifactsDir: join(runDir, "artifacts"),
     agentOutputPath: join(runDir, "agent-output.json"),
   };
-  const task = {
-    runId: "fixture-run",
-    sourceEvent: { message: { text: episodeUrl } },
-    attachments: [],
-    taskIntent: {
-      taskType: "knowledge_source",
-      responseMode: "source_pack",
-      executionProfile: "url_source_pack",
-      requestedDocuments: [],
-      sourcePreparation: { publicUrls: [episodeUrl] },
-    },
-  };
+  const task = createRunnerTask("fixture-run", episodeUrl);
   try {
     const result = await runTaskExecutionPipeline(task, paths, {
       pipelineMockModel: true,
@@ -422,8 +471,9 @@ test("local source-pack profile produces complete handoff artifacts without meet
       }),
     });
     assert.equal(result.status, "completed");
-    assert.equal(result.output.details.transcriptMethod, "official_podcast_transcript");
-    assert.equal(result.output.details.knowledgeBaseWritePerformed, false);
+    const outputDetails = asRecord(result.output.details);
+    assert.equal(outputDetails.transcriptMethod, "official_podcast_transcript");
+    assert.equal(outputDetails.knowledgeBaseWritePerformed, false);
     const pack = JSON.parse(await readFile(join(paths.artifactsDir, "public-source", "source-pack", "source-pack.json"), "utf8"));
     const provenance = JSON.parse(await readFile(join(paths.artifactsDir, "public-source", "provenance", "evidence-index.json"), "utf8"));
     const ledger = JSON.parse(await readFile(join(runDir, "planner-envelope.json"), "utf8"));
@@ -432,14 +482,14 @@ test("local source-pack profile produces complete handoff artifacts without meet
     assert.equal(pack.status, "complete");
     assert.equal(pack.quality.partialResultsPublished, false);
     assert.equal(provenance.claims[0].transcriptOrigin, "official_podcast_transcript");
-    assert.equal(ledger.steps.find((step) => step.stepId === "verify-source-pack").status, "completed");
-    assert.equal(ledger.steps.some((step) => step.stepId === "generate-meeting-minutes"), false);
+    assert.equal(ledger.steps.find((/** @type {{ stepId?: string }} */ step) => step.stepId === "verify-source-pack").status, "completed");
+    assert.equal(ledger.steps.some((/** @type {{ stepId?: string }} */ step) => step.stepId === "generate-meeting-minutes"), false);
     assert.equal(qaGate.status, "pass");
     assert.equal(qaGate.checks.sourcePack.allClaimsHaveEvidence, true);
     assert.equal(policyGate.status, "pass");
     assert.equal(policyGate.actionIntent, "external_web");
-    assert.equal(result.output.qaGate.evaluatedAt, qaGate.evaluatedAt);
-    assert.equal(result.output.policyGate.evaluatedAt, policyGate.evaluatedAt);
+    assert.equal(asRecord(result.output.qaGate).evaluatedAt, qaGate.evaluatedAt);
+    assert.equal(asRecord(result.output.policyGate).evaluatedAt, policyGate.evaluatedAt);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -451,12 +501,7 @@ test("source-pack profile executes cloud ASR fallback when official transcript i
   const runDir = join(temp, "runs", "fixture-asr-run");
   const mediaPath = join(runDir, "inputs", "source-media.mp3");
   const paths = { runDir, inputsDir: join(runDir, "inputs"), artifactsDir: join(runDir, "artifacts"), agentOutputPath: join(runDir, "agent-output.json") };
-  const task = {
-    runId: "fixture-asr-run",
-    sourceEvent: { message: { text: mediaUrl } },
-    attachments: [],
-    taskIntent: { taskType: "knowledge_source", responseMode: "source_pack", executionProfile: "url_source_pack", requestedDocuments: [], sourcePreparation: { publicUrls: [mediaUrl] } },
-  };
+  const task = createRunnerTask("fixture-asr-run", mediaUrl);
   try {
     await mkdir(paths.inputsDir, { recursive: true });
     await writeFile(mediaPath, Buffer.from("ID3-public-url-mock-audio"));
@@ -477,7 +522,7 @@ test("source-pack profile executes cloud ASR fallback when official transcript i
       }),
     });
     assert.equal(result.status, "completed");
-    assert.equal(result.output.details.transcriptMethod, "aliyun_dashscope_paraformer");
+    assert.equal(asRecord(result.output.details).transcriptMethod, "aliyun_dashscope_paraformer");
     const summary = JSON.parse(await readFile(join(paths.artifactsDir, "summary.json"), "utf8"));
     const pack = JSON.parse(await readFile(join(paths.artifactsDir, "public-source", "source-pack", "source-pack.json"), "utf8"));
     const qaGate = JSON.parse(await readFile(join(runDir, "qa-gate.json"), "utf8"));
@@ -496,20 +541,17 @@ test("blocked public-source run exposes the blocked step and recovery Todo", asy
   const temp = await mkdtemp(join(workspaceRoot, "runtime-runs", "public-url-blocked-"));
   const runDir = join(temp, "runs", "fixture-blocked-run");
   const paths = { runDir, inputsDir: join(runDir, "inputs"), artifactsDir: join(runDir, "artifacts"), agentOutputPath: join(runDir, "agent-output.json") };
-  const task = {
-    runId: "fixture-blocked-run",
-    sourceEvent: { message: { text: "https://www.youtube.com/watch?v=fixture" } },
-    attachments: [],
-    taskIntent: { taskType: "knowledge_source", responseMode: "source_pack", executionProfile: "url_source_pack", requestedDocuments: [], sourcePreparation: { publicUrls: ["https://www.youtube.com/watch?v=fixture"] } },
-  };
+  const task = createRunnerTask("fixture-blocked-run", "https://www.youtube.com/watch?v=fixture");
   try {
     const result = await runTaskExecutionPipeline(task, paths, {
       publicUrlResolver: async () => ({ status: "blocked", reason: "youtube_yt_dlp_unavailable", recovery: "Install yt-dlp and retry without cookies." }),
     });
     assert.equal(result.status, "blocked");
-    assert.equal(result.output.details.todo.awaitingUser, true);
-    assert.equal(result.output.details.todo.items.find((item) => item.itemId === "resolve-public-url").status, "blocked");
-    assert.ok(result.output.details.todo.items.some((item) => item.interactive === true));
+    const todo = asRecord(asRecord(result.output.details).todo);
+    const todoItems = asArray(todo.items).map(asRecord);
+    assert.equal(todo.awaitingUser, true);
+    assert.equal(todoItems.find((item) => item.itemId === "resolve-public-url")?.status, "blocked");
+    assert.ok(todoItems.some((item) => item.interactive === true));
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

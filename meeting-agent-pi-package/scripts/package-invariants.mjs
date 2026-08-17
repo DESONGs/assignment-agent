@@ -28,7 +28,28 @@ for (const relativePath of [
   "dist/contracts/runtime-boundary-contracts.js.map",
   "dist/contracts/runtime-boundary-contracts.d.ts",
   "dist/contracts/runtime-boundary-contracts.d.ts.map",
+  "dist/contracts/contract-validation.js",
+  "dist/contracts/contract-validation.d.ts",
+  "dist/contracts/qa-contracts.js",
+  "dist/contracts/qa-contracts.js.map",
+  "dist/contracts/qa-contracts.d.ts",
+  "dist/contracts/qa-contracts.d.ts.map",
+  "dist/contracts/source-context-contracts.js",
+  "dist/contracts/source-context-contracts.js.map",
+  "dist/contracts/source-context-contracts.d.ts",
+  "dist/contracts/source-context-contracts.d.ts.map",
+  "dist/contracts/document-runtime-contracts.js",
+  "dist/contracts/document-runtime-contracts.js.map",
+  "dist/contracts/document-runtime-contracts.d.ts",
+  "dist/contracts/document-runtime-contracts.d.ts.map",
+  "dist/contracts/office-artifact-contracts.js",
+  "dist/contracts/office-artifact-contracts.js.map",
+  "dist/contracts/office-artifact-contracts.d.ts",
+  "dist/contracts/office-artifact-contracts.d.ts.map",
   "runtime/contract-manifest.json",
+  "runtime/qa-gate.schema.json",
+  "runtime/source-context.schema.json",
+  "runtime/document-workflow-checkpoint.schema.json",
 ]) {
   assert(existsSync(join(packageDir, relativePath)), `missing build artifact: ${relativePath}`);
 }
@@ -44,10 +65,10 @@ for (const requiredPeer of [
   "@earendil-works/pi-tui",
   "@quintinshaw/pi-dynamic-workflows",
   "pi-subagents",
-  "typebox",
 ]) {
   assert(manifest.peerDependencies?.[requiredPeer], `missing Pi runtime peer: ${requiredPeer}`);
 }
+assert.equal(manifest.dependencies?.typebox, "1.3.7", "public contract runtime requires an exact TypeBox production dependency");
 
 for (const dependency of manifest.bundledDependencies ?? []) {
   assert(manifest.dependencies?.[dependency], `bundled dependency ${dependency} must be a production dependency`);
@@ -65,6 +86,17 @@ const boundaryDeclaration = readFileSync(join(packageDir, "dist", "contracts", "
 assert.match(boundaryDeclaration, /ModelGenerationResult/);
 assert.match(boundaryDeclaration, /CloudAsrSummary/);
 assert.match(boundaryDeclaration, /FeishuRunState/);
+/** @type {Array<[string, string, string]>} */
+const contractExports = [
+  ["./contracts/qa", "dist/contracts/qa-contracts.d.ts", "QaGateResult"],
+  ["./contracts/source-context", "dist/contracts/source-context-contracts.d.ts", "SourceContextManifest"],
+  ["./contracts/document-runtime", "dist/contracts/document-runtime-contracts.d.ts", "DocumentWorkflowCheckpoint"],
+  ["./contracts/office-artifacts", "dist/contracts/office-artifact-contracts.d.ts", "OfficeObject"],
+];
+for (const [subpath, declarationPath, marker] of contractExports) {
+  assert(manifest.exports?.[subpath], `missing package export: ${subpath}`);
+  assert.match(readFileSync(join(packageDir, declarationPath), "utf8"), new RegExp(marker));
+}
 
 console.log(JSON.stringify({
   status: "passed",

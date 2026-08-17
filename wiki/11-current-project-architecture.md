@@ -37,9 +37,9 @@ flowchart LR
 
 ### TypeScript 与运行合同边界
 
-任务控制字面量不再分别散落在 Router、Runner、Planner、Todo UI 和飞书后续选择中：`src/contracts/task-contracts.ts` 与 `runtime-boundary-contracts.ts` 生成 `dist/` 公开入口及语言中立 `runtime/contract-manifest.json`，运行代码、Python store 和 Swift Workbench 共用同一状态集合；`contracts:check` 将其与 Planner、飞书、Provider 和 Execution Profile schema 做集合一致性检查。
+任务控制字面量不再分别散落在 Router、Runner、Planner、Todo UI 和飞书后续选择中：`src/contracts/` 同时定义 Task/Ledger、运行边界、QA、Source Context、Document Runtime 和 Office Artifact 合同，并生成 `dist/` 公开入口、JSON Schema 及语言中立 `runtime/contract-manifest.json`。运行代码、Python store 和 Swift Workbench 共用同一状态集合；`contracts:check` 将 manifest、schema、Planner、飞书、Provider 和 Execution Profile 做一致性检查。
 
-迁移按“状态/合同/Agent Runtime → Provider/HTTP/飞书/持久化 → Workbench/测试/发布”完成：20 个直接编写 TS extension 全部 strict；27 个 `.mjs` runtime/tool、10 个 `.mjs` 测试和 7 个 `.mjs` 构建/发布脚本全部 checkJs；Python store 与 Swift Workbench 消费同一 manifest。`.mjs` 仍是非 strict 层，不为提高 TypeScript 百分比机械改后缀。细节见 [TypeScript、运行合同与 npm 包可靠性](18-typescript-contract-and-package-reliability.md)。
+迁移按“状态/合同/Agent Runtime → Provider/HTTP/飞书/持久化 → Workbench/测试/发布”完成：20 个直接编写 TS extension，以及 27 个 `.mjs` runtime/tool、11 个 `.mjs` 测试和 7 个 `.mjs` 构建/发布脚本，全部启用 strict、`noUncheckedIndexedAccess` 与 `exactOptionalPropertyTypes`；Python store 与 Swift Workbench 消费同一 manifest。`.mjs` 保留 ESM 形态，但已通过 strict `checkJs`，不为语言占比机械改后缀。细节见 [TypeScript、运行合同与 npm 包可靠性](18-typescript-contract-and-package-reliability.md)。
 
 ## 2. 仓库分层
 

@@ -27,6 +27,11 @@ const EXPECTED_FILE_EXTENSIONS = [
   ".mp4", ".mpeg", ".ogg", ".opus", ".wav", ".webm", ".wma", ".wmv",
 ];
 
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {};
+}
+
 test("cloud file ASR accepts the complete documented recorded-file matrix", () => {
   assert.deepEqual([...DASHSCOPE_FILE_EXTENSIONS].sort(), EXPECTED_FILE_EXTENSIONS);
   assert.deepEqual([...DASHSCOPE_REALTIME_FORMATS].sort(), ["aac", "amr", "mp3", "opus", "pcm", "speex", "wav"]);
@@ -116,8 +121,12 @@ test("single mixed recording review exposes overlap and model conflicts without 
   assert.ok(result.explicitOverlapCount >= 1);
   assert.ok(result.reviewItems.some((item) => item.reasons.includes("cross_model_text_conflict")));
   assert.ok(result.reviewItems.some((item) => item.reasons.includes("speech_missing_in_primary_model")));
-  assert.equal(result.transcriptSegments[0].text, primary[0].text);
-  assert.equal(result.transcriptSegments[0].singleMixEvidence.status, "needs_review");
+  const firstTranscriptSegment = result.transcriptSegments.at(0);
+  const firstPrimarySegment = primary.at(0);
+  assert.ok(firstTranscriptSegment);
+  assert.ok(firstPrimarySegment);
+  assert.equal(firstTranscriptSegment.text, firstPrimarySegment.text);
+  assert.equal(firstTranscriptSegment.singleMixEvidence.status, "needs_review");
 });
 
 test("file-mode client emits the standard artifact contract without using the realtime endpoint", async () => {
@@ -139,19 +148,23 @@ test("file-mode client emits the standard artifact contract without using the re
       ],
     });
     assert.equal(result.status, "completed");
-    assert.equal(result.summary.model, "fun-asr");
-    assert.deepEqual(result.summary.inputModes, ["file"]);
-    assert.equal(result.summary.transcriptSegments, 2);
-    assert.equal(result.summary.speakerDiarization.enabled, true);
-    assert.equal(result.summary.speakerDiarization.speakerLabelsAvailable, true);
-    assert.equal(result.summary.singleMix.enabled, true);
-    assert.equal(result.summary.singleMix.reviewItemCount, 0);
-    assert.equal(result.summary.singleMix.bySource[0].reviewItems, undefined);
+    const summary = asRecord(result.summary);
+    const speakerDiarization = asRecord(summary.speakerDiarization);
+    const singleMixSummary = asRecord(summary.singleMix);
+    const singleMixSource = asRecord(Array.isArray(singleMixSummary.bySource) ? singleMixSummary.bySource[0] : null);
+    assert.equal(summary.model, "fun-asr");
+    assert.deepEqual(summary.inputModes, ["file"]);
+    assert.equal(summary.transcriptSegments, 2);
+    assert.equal(speakerDiarization.enabled, true);
+    assert.equal(speakerDiarization.speakerLabelsAvailable, true);
+    assert.equal(singleMixSummary.enabled, true);
+    assert.equal(singleMixSummary.reviewItemCount, 0);
+    assert.equal(singleMixSource.reviewItems, undefined);
     const transcript = JSON.parse(readFileSync(join(dir, "artifacts", "transcripts", "transcript.full.json"), "utf8"));
     assert.equal(transcript.transcription.endpoint, "dashscope-file-transcription-mock");
     assert.deepEqual(transcript.transcription.inputModes, ["file"]);
     assert.equal(transcript.sources[0].format, "m4a");
-    assert.deepEqual(transcript.transcriptSegments.map((segment) => segment.speakerLabel), ["speaker_0", "speaker_1"]);
+    assert.deepEqual(transcript.transcriptSegments.map((/** @type {{ speakerLabel?: unknown }} */ segment) => segment.speakerLabel), ["speaker_0", "speaker_1"]);
     const evidence = JSON.parse(readFileSync(join(dir, "artifacts", "evidence", "evidence-index.json"), "utf8"));
     assert.equal(evidence.speakerDiarization.speakerLabelsAvailable, true);
     const run = JSON.parse(readFileSync(join(dir, "artifacts", "asr", "cloud-asr-run.json"), "utf8"));
@@ -178,10 +191,12 @@ test("realtime-mode client remains a distinct WebSocket path", async () => {
       inputMode: "realtime",
     });
     assert.equal(result.status, "completed");
-    assert.equal(result.summary.model, "paraformer-realtime-v2");
-    assert.deepEqual(result.summary.inputModes, ["realtime"]);
-    assert.equal(result.summary.speakerDiarization.enabled, false);
-    assert.deepEqual(result.summary.speakerDiarization.statuses, ["unsupported_realtime_endpoint"]);
+    const summary = asRecord(result.summary);
+    const speakerDiarization = asRecord(summary.speakerDiarization);
+    assert.equal(summary.model, "paraformer-realtime-v2");
+    assert.deepEqual(summary.inputModes, ["realtime"]);
+    assert.equal(speakerDiarization.enabled, false);
+    assert.deepEqual(speakerDiarization.statuses, ["unsupported_realtime_endpoint"]);
     const transcript = JSON.parse(readFileSync(join(dir, "artifacts", "transcripts", "transcript.full.json"), "utf8"));
     assert.equal(transcript.transcription.endpoint, "dashscope-websocket-mock");
     assert.equal(transcript.transcription.speakerDiarization.speakerLabelsAvailable, false);

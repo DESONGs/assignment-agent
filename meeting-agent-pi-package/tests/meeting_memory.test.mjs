@@ -43,7 +43,7 @@ test("memory curator is one fresh persistent-role subagent, not a workflow", () 
   assert.match(plan.executor.request.workflowScript, /meeting-memory-curator/);
   assert.match(plan.executor.request.workflowScript, /acceptance: \{ level: "none"/);
   assert.doesNotMatch(plan.executor.request.workflowScript, /workflow\s*\(/);
-  assert.equal(plan.executor.request.outputSchema, undefined);
+  assert.equal("outputSchema" in plan.executor.request, false);
   assert.equal(plan.executor.structuredOutputMode, "parent_validated_json");
   assert.equal(plan.executor.outputContract.required.includes("candidates"), true);
 
@@ -77,10 +77,10 @@ test("parent accepts supported memories and rejects low confidence or cross-meet
   }, { meetingAnalysis: analysis, knownSegmentIds: ["audio-01:chunk-0001", "audio-01:chunk-0002", "audio-01:chunk-0003"], runId: "run-1" });
   assert.equal(reconciled.accepted.length, 3);
   assert.equal(reconciled.rejected.length, 4);
-  assert.ok(reconciled.rejected.some((item) => item.reasons.includes("segment_outside_current_meeting")));
-  assert.ok(reconciled.rejected.some((item) => item.reasons.includes("memory_confidence_not_high")));
-  assert.ok(reconciled.rejected.some((item) => item.reasons.includes("evidence_not_owned_by_source_claim")));
-  assert.ok(reconciled.rejected.some((item) => item.reasons.includes("memory_content_not_grounded_in_source_claim")));
+  assert.ok(reconciled.rejected.some((item) => Array.isArray(item.reasons) && item.reasons.includes("segment_outside_current_meeting")));
+  assert.ok(reconciled.rejected.some((item) => Array.isArray(item.reasons) && item.reasons.includes("memory_confidence_not_high")));
+  assert.ok(reconciled.rejected.some((item) => Array.isArray(item.reasons) && item.reasons.includes("evidence_not_owned_by_source_claim")));
+  assert.ok(reconciled.rejected.some((item) => Array.isArray(item.reasons) && item.reasons.includes("memory_content_not_grounded_in_source_claim")));
 });
 
 test("parent store deduplicates exact memories and blocks conflicting keys", () => {

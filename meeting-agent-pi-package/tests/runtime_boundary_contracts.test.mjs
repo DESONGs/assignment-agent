@@ -110,17 +110,26 @@ test("Feishu event, task and run-state share canonical status contracts", () => 
 });
 
 test("Feishu step details cannot override canonical timeline fields", () => {
-  const state = { status: "running", updatedAt: "2026-08-17T00:00:00Z", steps: [] };
+  const state = assertFeishuRunState({
+    schemaVersion: "feishu-run-state-v1",
+    runId: "run-1",
+    status: "running",
+    updatedAt: "2026-08-17T00:00:00Z",
+    steps: [],
+    rawSecretsReturned: false,
+  });
   addStep(state, "source_gate", "completed", {
     name: "wrong_name",
     status: "pass",
     at: "wrong_time",
     reason: "source_gate_passed",
   });
-  assert.equal(state.steps[0].name, "source_gate");
-  assert.equal(state.steps[0].status, "completed");
-  assert.notEqual(state.steps[0].at, "wrong_time");
-  assert.equal(state.steps[0].reason, "source_gate_passed");
+  const step = state.steps.at(0);
+  assert.ok(step);
+  assert.equal(step.name, "source_gate");
+  assert.equal(step.status, "completed");
+  assert.notEqual(step.at, "wrong_time");
+  assert.equal(step.reason, "source_gate_passed");
 });
 
 test("language-neutral manifest is generated from the TypeScript contract", async () => {
