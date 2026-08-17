@@ -303,6 +303,14 @@ function evaluateGate(checks: any, publishIntent: boolean) {
         suggestedFix: "将任务标记为 blocked，完整恢复后再生成 source pack。",
       });
     }
+    if (sourcePack.qualityDisclosureRequired === true && sourcePack.qualityDisclosed !== true) {
+      issues.push({
+        code: "source_pack_transcript_quality_undisclosed",
+        severity: "blocking",
+        message: "转写存在待复核质量项，但 source pack 没有披露。",
+        suggestedFix: "在机器包与可读交接包中保留 review item 数量、严重度和时间戳 quality 回溯说明。",
+      });
+    }
     if (!sourcePack.provenancePath) {
       issues.push({
         code: "source_pack_provenance_artifact_missing",
@@ -617,7 +625,13 @@ export default function (pi: ExtensionAPI) {
         const details = { ok: true, runId: params.runId, qaGatePath: path };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {
-        const blocked = { status: "blocked", reason: error instanceof Error ? error.message : String(error), runId: params.runId };
+        const blocked = {
+          ok: false,
+          status: "blocked",
+          reason: error instanceof Error ? error.message : String(error),
+          runId: params.runId,
+          qaGatePath: "",
+        };
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
       }
     },

@@ -117,6 +117,8 @@ node meeting-agent-pi-package/tools/public_url_source_cli.mjs \
 
 成功后 stdout 返回 `sourcePackPath`；产物位于已忽略的 `runtime-runs/public-url/runs/{runId}/`。`--resolve-only` 只检查来源元数据和获取计划。YouTube 无官方字幕时使用成熟的 `yt-dlp` 取得受限音频；不会读取浏览器 Cookie，也不会绕过登录、付费、DRM 或地区限制。
 
+首次处理 YouTube 可在 macOS 运行 `brew install yt-dlp ffmpeg`。当前真实环境验证与成本口径见 [公开 URL 真实环境验证](wiki/17-public-url-live-validation.md)；Assignment Agent 只生成交接包，是否写入 AI Harness SaaS 或 Obsidian 由外部知识库 Agent 决定。
+
 ## 安全与数据边界
 
 办公内容、会议录音、转录、纪要和相关文件可以被当前任务选中的 ASR、模型、sub-agent、workflow、文档与 QA 能力使用。上下文分层、检索与容量控制用于质量和性能，不是内容禁用规则。

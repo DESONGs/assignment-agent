@@ -197,7 +197,7 @@ def checks() -> list[dict[str, Any]]:
         results.append(run_command(f"node-check:{target}", ["node", "--check", target], timeout=90.0))
     for target in TS_CHECK_TARGETS:
         results.append(run_command(f"ts-strip-check:{target}", ["node", "--experimental-strip-types", "--check", target], timeout=120.0))
-    results.append(run_command("npm-test-meeting-agent", ["npm", "test"], cwd=ROOT / "meeting-agent-pi-package", timeout=180.0))
+    results.append(run_command("npm-test-meeting-agent", ["npm", "test"], cwd=ROOT / "meeting-agent-pi-package", timeout=300.0))
     results.append(parse_json_files())
     docker = docker_cli()
     if docker:

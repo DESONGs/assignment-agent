@@ -24,6 +24,9 @@ type GenerateTextParams = {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  thinkingMode?: "enabled" | "disabled";
+  reasoningEffort?: "high" | "max";
+  responseFormat?: "json_object";
   timeoutMs?: number;
   mockResponse?: string;
   stream?: boolean;
@@ -291,6 +294,15 @@ export async function generateText(params: GenerateTextParams) {
         ].filter(Boolean),
         temperature: params.temperature ?? 0.2,
         max_tokens: params.maxTokens ?? 4000,
+        ...(record.provider === "deepseek" && params.thinkingMode
+          ? { thinking: { type: params.thinkingMode } }
+          : {}),
+        ...(record.provider === "deepseek" && params.reasoningEffort
+          ? { reasoning_effort: params.reasoningEffort }
+          : {}),
+        ...(record.provider === "deepseek" && params.responseFormat === "json_object"
+          ? { response_format: { type: "json_object" } }
+          : {}),
         ...(params.stream === true ? { stream: true } : {}),
       }),
       signal: controller.signal,
@@ -599,6 +611,9 @@ export default function (pi: ExtensionAPI) {
       systemPrompt: Type.Optional(Type.String()),
       temperature: Type.Optional(Type.Number()),
       maxTokens: Type.Optional(Type.Number()),
+      thinkingMode: Type.Optional(Type.Union([Type.Literal("enabled"), Type.Literal("disabled")])),
+      reasoningEffort: Type.Optional(Type.Union([Type.Literal("high"), Type.Literal("max")])),
+      responseFormat: Type.Optional(Type.Literal("json_object")),
       timeoutMs: Type.Optional(Type.Number()),
       mockResponse: Type.Optional(Type.String()),
       modelRoute: Type.Optional(Type.Any({ description: "Output from model_route_plan. Required for non-mock provider calls." })),

@@ -32,6 +32,7 @@ HANDLER_HEALTH_URL = "http://127.0.0.1:8788/health"
 LAUNCHD_LABELS = ("com.assignment-agent.feishu-handler", "com.assignment-agent.feishu-gateway")
 MANAGED_PROCESS_MARKERS = (
     "meeting-agent-pi-package/tools/feishu_agent_task_handler.mjs",
+    "meeting-agent-pi-package/tools/feishu_event_runner.mjs",
     "meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs",
     "runtime-runs/feishu-agent/start-handler.zsh",
     "runtime-runs/feishu-agent/start-gateway.zsh",

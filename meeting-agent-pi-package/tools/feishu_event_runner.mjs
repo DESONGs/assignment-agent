@@ -384,20 +384,28 @@ async function consumeLarkCli(options) {
   const args = ["event", "consume", options.eventKey, "--as", options.asIdentity, "--quiet"];
   if (options.maxEvents) args.push("--max-events", String(options.maxEvents));
   if (options.timeout) args.push("--timeout", String(options.timeout));
-  const child = spawn("lark-cli", args, { cwd: workspaceDir, stdio: ["ignore", "pipe", "pipe"], shell: false });
+  // lark-cli treats stdin EOF as an explicit shutdown signal. Keep a writable
+  // pipe open for the lifetime of the bounded consumer instead of attaching
+  // /dev/null, otherwise the real event path exits immediately after "ready".
+  const child = spawn("lark-cli", args, { cwd: workspaceDir, stdio: ["pipe", "pipe", "pipe"], shell: false });
   const seen = loadSeen(options.outputRoot);
   const rl = createInterface({ input: child.stdout });
   const results = [];
-  rl.on("line", async (line) => {
+  const pending = new Set();
+  rl.on("line", (line) => {
     if (!line.trim()) return;
-    try {
-      const raw = JSON.parse(line);
-      const result = await processRawEvent(raw, { ...options, source: "lark-cli-event-consume" }, seen);
-      results.push(result);
-      if (!options.quiet) console.log(JSON.stringify(result));
-    } catch (error) {
-      console.error(JSON.stringify({ status: "event_parse_failed", error: redactString(error.message), rawSecretsReturned: false }));
-    }
+    const task = (async () => {
+      try {
+        const raw = JSON.parse(line);
+        const result = await processRawEvent(raw, { ...options, source: "lark-cli-event-consume" }, seen);
+        results.push(result);
+        if (!options.quiet) console.log(JSON.stringify(result));
+      } catch (error) {
+        console.error(JSON.stringify({ status: "event_parse_failed", error: redactString(error.message), rawSecretsReturned: false }));
+      }
+    })();
+    pending.add(task);
+    task.finally(() => pending.delete(task));
   });
   child.stderr.on("data", (chunk) => {
     if (!options.quiet) process.stderr.write(redactString(chunk.toString("utf8")));
@@ -406,7 +414,8 @@ async function consumeLarkCli(options) {
     child.on("error", (error) => {
       resolveRunner({ status: "blocked", reason: error.code === "ENOENT" ? "lark_cli_not_found" : redactString(error.message), results });
     });
-    child.on("close", (code, signal) => {
+    child.on("close", async (code, signal) => {
+      await Promise.allSettled([...pending]);
       resolveRunner({ status: code === 0 ? "completed" : "failed", exitCode: code, signal, results, rawSecretsReturned: false });
     });
   });

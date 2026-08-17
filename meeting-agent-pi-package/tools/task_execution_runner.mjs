@@ -722,6 +722,54 @@ function publicSourceProvenancePath(outputDir) {
   return join(publicSourceDir(outputDir), "provenance", "evidence-index.json");
 }
 
+function sourceChapterEvidenceHash(chapter) {
+  return createHash("sha256")
+    .update(JSON.stringify(chapter.segments.map((segment) => [segment.segmentId, segment.startMs, segment.endMs, segment.text])))
+    .digest("hex");
+}
+
+function reusableSourceChapterAnalysis(path, chapter) {
+  if (!existsSync(path)) return null;
+  try {
+    const existing = loadJson(path);
+    const expectedIds = chapter.segmentIds.map(String);
+    const actualIds = Array.isArray(existing?.evidenceSegmentIds) ? existing.evidenceSegmentIds.map(String) : [];
+    const validIds = new Set(expectedIds);
+    const claimsValid = Array.isArray(existing?.claims) && existing.claims.length > 0 && existing.claims.every((claim) =>
+      Array.isArray(claim?.evidenceSegmentIds) &&
+      claim.evidenceSegmentIds.length > 0 &&
+      claim.evidenceSegmentIds.every((id) => validIds.has(String(id))),
+    );
+    const evidenceIdsMatch = actualIds.length === expectedIds.length && actualIds.every((id, index) => id === expectedIds[index]);
+    const evidenceHash = sourceChapterEvidenceHash(chapter);
+    if (
+      existing?.status !== "completed" ||
+      existing?.chapterId !== chapter.chapterId ||
+      Number(existing?.startMs) !== Number(chapter.startMs) ||
+      Number(existing?.endMs) !== Number(chapter.endMs) ||
+      !evidenceIdsMatch ||
+      !claimsValid ||
+      (existing?.evidenceHash && existing.evidenceHash !== evidenceHash)
+    ) return null;
+    const normalized = normalizeSourceChapterAnalysis({
+      chapterTitle: existing.title,
+      summary: existing.summary,
+      claims: existing.claims,
+      suggestedRelatedTopics: existing.suggestedRelatedTopics,
+    }, chapter);
+    if (normalized.status !== "completed") return null;
+    return {
+      ...normalized,
+      evidenceHash,
+      analysisAttempts: Array.isArray(existing.analysisAttempts) ? existing.analysisAttempts : [],
+      reusedFromCheckpoint: true,
+      checkpointNormalized: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function reviewContextPath(outputDir) {
   return join(outputDir, "review-context.json");
 }
@@ -3144,25 +3192,53 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
     if (routePlan.status !== "selected" || !candidate) return await finishBlocked("当前没有可用模型分析来源转写。", "public_source_model_unavailable", "analyze-source-content", routePlan);
     const chapterAnalyses = [];
     for (const chapter of chapters) {
-      const mockClaim = chapter.segments[0];
-      const generation = await callModelGenerateText({
-        provider: candidate.provider,
-        model: candidate.model,
-        prompt: buildSourceChapterPrompt(chapter, resolution.source),
-        systemPrompt: "你是知识来源分析器。只输出 JSON；每个判断必须引用当前章节给出的 segmentId。",
-        temperature: 0.1,
-        maxTokens: Number(options.publicUrlChapterMaxTokens ?? 1800),
-        timeoutMs: options.modelTimeoutMs ?? options.runtimeToolTimeoutMs ?? 600000,
-        mockResponse: JSON.stringify({ chapterTitle: `第 ${chapter.order} 章`, summary: mockClaim?.text ?? "测试章节", claims: [{ claimType: "author_view", text: mockClaim?.text ?? "测试观点", evidenceSegmentIds: [mockClaim?.segmentId], confidence: "medium" }], suggestedRelatedTopics: [resolution.source.program ?? resolution.source.title ?? "公开来源"] }),
-        modelRoute: candidate.provider === "mock" ? undefined : routePlan,
-      }, paths, options, executionProfile);
-      if (generation.status !== "completed") {
-        chapterAnalyses.push({ status: "blocked", reason: generation.reason ?? "source_chapter_generation_failed", chapterId: chapter.chapterId });
-        break;
+      const chapterPath = join(publicSourcePackDir(paths.artifactsDir), "chapters", `${chapter.chapterId}.json`);
+      const reusable = reusableSourceChapterAnalysis(chapterPath, chapter);
+      if (reusable) {
+        chapterAnalyses.push(reusable);
+        writeJson(chapterPath, reusable);
+        await hooks.onStep?.("public_source_chapter_reused", "completed", { chapterId: chapter.chapterId, artifact: chapterPath });
+        continue;
       }
-      const normalized = normalizeSourceChapterAnalysis(generation.content, chapter);
+      const mockClaim = chapter.segments[0];
+      const analysisAttempts = [];
+      let normalized = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const generation = await callModelGenerateText({
+          provider: candidate.provider,
+          model: candidate.model,
+          prompt: buildSourceChapterPrompt(chapter, resolution.source, { maxClaims: attempt === 1 ? 12 : 8 }),
+          systemPrompt: "你是知识来源分析器。只输出严格 JSON 对象；每个判断必须引用当前章节给出的 segmentId。",
+          temperature: attempt === 1 ? 0.1 : 0,
+          maxTokens: Number(options.publicUrlChapterMaxTokens ?? 2400),
+          thinkingMode: "disabled",
+          responseFormat: "json_object",
+          timeoutMs: options.modelTimeoutMs ?? options.runtimeToolTimeoutMs ?? 600000,
+          mockResponse: JSON.stringify({ chapterTitle: `第 ${chapter.order} 章`, summary: mockClaim?.text ?? "测试章节", claims: [{ claimType: "author_view", text: mockClaim?.text ?? "测试观点", evidenceSegmentIds: [mockClaim?.segmentId], confidence: "medium" }], suggestedRelatedTopics: [resolution.source.program ?? resolution.source.title ?? "公开来源"] }),
+          modelRoute: candidate.provider === "mock" ? undefined : routePlan,
+        }, paths, options, executionProfile);
+        normalized = generation.status === "completed"
+          ? normalizeSourceChapterAnalysis(generation.content, chapter)
+          : { status: "blocked", reason: generation.reason ?? "source_chapter_generation_failed", chapterId: chapter.chapterId };
+        analysisAttempts.push({
+          attempt,
+          status: normalized.status,
+          reason: normalized.reason ?? null,
+          provider: generation.provider ?? candidate.provider,
+          model: generation.model ?? candidate.model,
+          usage: generation.usage ?? null,
+          finishReason: generation.finishReason ?? null,
+        });
+        if (normalized.status === "completed") break;
+        if (attempt < 2) await hooks.onStep?.("public_source_chapter_retry", "running", { chapterId: chapter.chapterId, reason: normalized.reason });
+      }
+      normalized = {
+        ...normalized,
+        evidenceHash: sourceChapterEvidenceHash(chapter),
+        analysisAttempts,
+      };
       chapterAnalyses.push(normalized);
-      writeJson(join(publicSourcePackDir(paths.artifactsDir), "chapters", `${chapter.chapterId}.json`), normalized);
+      writeJson(chapterPath, normalized);
       if (normalized.status !== "completed") break;
     }
 
@@ -3173,11 +3249,34 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
         : resolution.source.acquisitionMethod,
     };
     writeJson(publicSourceMetadataPath(paths.artifactsDir), { schemaVersion: "public-source-metadata-v1", ...sourceForPack, rawSecretsReturned: false });
+    const asrSummary = transcriptInfo.summary ?? null;
+    const singleMixSummary = asrSummary?.singleMix ?? asrSummary?.speakerDiarization?.singleMix ?? null;
+    const highSeverityReviewItemCount = Number(singleMixSummary?.highSeverityCount ?? 0);
+    const reviewItemCount = Number(singleMixSummary?.reviewItemCount ?? 0);
+    const transcriptQuality = transcriptMethod === "aliyun_dashscope_paraformer"
+      ? {
+          status: asrSummary?.status ?? "complete",
+          partial: asrSummary?.partial === true,
+          failedChunks: Number(asrSummary?.failedChunks ?? 0),
+          diarizationEnabled: asrSummary?.speakerDiarization?.enabled === true,
+          speakerLabelsAvailable: asrSummary?.speakerDiarization?.speakerLabelsAvailable === true,
+          singleMixStatus: Array.isArray(singleMixSummary?.statuses) ? singleMixSummary.statuses[0] ?? null : singleMixSummary?.status ?? null,
+          reviewItemCount,
+          highSeverityReviewItemCount,
+          reviewRequired: reviewItemCount > 0 || highSeverityReviewItemCount > 0,
+          sourceSeparationPerformed: singleMixSummary?.sourceSeparationPerformed === true,
+        }
+      : {
+          status: resolution.transcript?.quality ?? "official_timestamped",
+          partial: false,
+          failedChunks: 0,
+          reviewRequired: false,
+        };
     const pack = buildKnowledgeSourcePack({
       source: sourceForPack,
       transcript: {
         status: "complete",
-        quality: transcriptInfo.summary?.status === "complete" ? "complete" : resolution.transcript?.quality ?? "ready",
+        quality: transcriptQuality,
         fullTranscriptPath: workspaceRelative(transcriptInfo.fullPath),
         readableTranscriptPath: workspaceRelative(transcriptInfo.readablePath),
       },
@@ -3205,6 +3304,8 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
           failedChapterCount: pack.quality.failedChapterCount,
           allClaimsHaveEvidence: pack.provenance.allClaimsHaveEvidence,
           partialResultsPublished: pack.quality.partialResultsPublished,
+          qualityDisclosureRequired: pack.quality.transcriptReviewRequired,
+          qualityDisclosed: pack.quality.transcriptQualityDisclosed,
           provenancePath: workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)),
         },
       },

@@ -65,6 +65,9 @@ SECRET_VALUE_PATTERNS = (
 GATEWAY_TIMEOUT_RE = re.compile(r"(ws|websocket|long_connection|stream).{0,40}(timeout|timed out)|timeout.{0,40}(ws|websocket|long_connection|stream)", re.I)
 
 DEFAULT_ENV = {
+    "FEISHU_INBOUND_MODE": "cli",
+    "FEISHU_EVENT_KEY": "im.message.receive_v1",
+    "FEISHU_EVENT_AS": "bot",
     "FEISHU_AGENT_EXEC_MODE": "execute",
     "FEISHU_AGENT_ASYNC": "1",
     "FEISHU_AGENT_ASYNC_VISIBLE_ACK": "0",
@@ -394,6 +397,23 @@ def build_services(args: argparse.Namespace, env: dict[str, str]) -> dict[str, M
     gateway_env = dict(env)
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         gateway_env.pop(key, None)
+    inbound_mode = (env.get("FEISHU_INBOUND_MODE") or DEFAULT_ENV["FEISHU_INBOUND_MODE"]).strip().lower()
+    if inbound_mode == "cli":
+        inbound_command = [
+            node,
+            "meeting-agent-pi-package/tools/feishu_event_runner.mjs",
+            "--event-key",
+            env.get("FEISHU_EVENT_KEY") or DEFAULT_ENV["FEISHU_EVENT_KEY"],
+            "--as",
+            env.get("FEISHU_EVENT_AS") or DEFAULT_ENV["FEISHU_EVENT_AS"],
+            "--handler-url",
+            env.get("FEISHU_AGENT_HANDLER_URL") or DEFAULT_ENV["FEISHU_BOT_HANDLER_URL"],
+            "--quiet",
+        ]
+    elif inbound_mode == "sdk":
+        inbound_command = [node, "meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs"]
+    else:
+        raise ValueError("FEISHU_INBOUND_MODE must be cli or sdk")
     return {
         "feishu-handler": ManagedService(
             name="feishu-handler",
@@ -410,7 +430,7 @@ def build_services(args: argparse.Namespace, env: dict[str, str]) -> dict[str, M
         ),
         "feishu-gateway": ManagedService(
             name="feishu-gateway",
-            command=[node, "meeting-agent-pi-package/tools/feishu_bot_event_gateway.mjs"],
+            command=inbound_command,
             env=gateway_env,
             log_path=SERVICE_DIR / "feishu-gateway.log",
         ),
@@ -470,6 +490,7 @@ def status_document(
             "fileAckReplyMode": runtime_env.get("FEISHU_AGENT_FILE_ACK_REPLY_MODE") or DEFAULT_ENV["FEISHU_AGENT_FILE_ACK_REPLY_MODE"],
             "asrProvider": asr_provider["provider"],
             "asrProviderRequested": asr_provider["requested"],
+            "feishuInboundMode": runtime_env.get("FEISHU_INBOUND_MODE") or DEFAULT_ENV["FEISHU_INBOUND_MODE"],
         },
         "supervisor": {
             "handlerHealthUrl": HANDLER_HEALTH_URL,

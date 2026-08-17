@@ -26,6 +26,8 @@ import {
   normalizeSourceChapterAnalysis,
   normalizeSourceSegments,
   partitionSourceSegments,
+  buildSourceChapterPrompt,
+  renderKnowledgeSourcePack,
 } from "../tools/public_url_source_pack_helpers.mjs";
 import { classifyTaskIntent } from "../tools/task_router.mjs";
 import { runTaskExecutionPipeline, shouldUseTaskExecutionRunner } from "../tools/task_execution_runner.mjs";
@@ -188,6 +190,38 @@ test("YouTube adapter falls back to cloud ASR when official subtitles are absent
   assert.equal(resolved.media.status, "available_not_downloaded");
 });
 
+test("YouTube boundaries block live, restricted, oversized and overlong sources while disabling playlist and cookies", async () => {
+  const youtubeUrl = "https://www.youtube.com/watch?v=fixture&list=playlist-fixture";
+  const baseMetadata = {
+    title: "Boundary fixture",
+    webpage_url: youtubeUrl,
+    duration: 60,
+    availability: "public",
+    subtitles: {},
+    formats: [{ format_id: "audio-1", acodec: "opus", vcodec: "none", filesize: 5000, protocol: "https" }],
+  };
+  assert.equal((await resolvePublicMediaSource(youtubeUrl, { resolveOnly: true, lookupFn: publicLookup, youtubeMetadata: { ...baseMetadata, is_live: true } })).reason, "youtube_live_stream_not_supported");
+  assert.equal((await resolvePublicMediaSource(youtubeUrl, { resolveOnly: true, lookupFn: publicLookup, youtubeMetadata: { ...baseMetadata, availability: "private" } })).reason, "youtube_access_restricted");
+  assert.equal((await resolvePublicMediaSource(youtubeUrl, { resolveOnly: true, lookupFn: publicLookup, maxDurationSec: 30, youtubeMetadata: baseMetadata })).reason, "public_media_duration_limit_exceeded");
+  const temp = await mkdtemp(join(fileURLToPath(new URL("../../runtime-runs/", import.meta.url)), "youtube-boundary-"));
+  try {
+    assert.equal((await resolvePublicMediaSource(youtubeUrl, { inputDir: temp, lookupFn: publicLookup, maxMediaBytes: 1000, youtubeMetadata: baseMetadata })).reason, "youtube_media_size_unknown_or_exceeded");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+  let metadataArgs = [];
+  const viaRunner = await resolvePublicMediaSource(youtubeUrl, {
+    resolveOnly: true,
+    lookupFn: publicLookup,
+    ytDlpRunner: async (_bin, args) => {
+      metadataArgs = args;
+      return { exitCode: 0, stdout: JSON.stringify(baseMetadata), stderr: "", timedOut: false };
+    },
+  });
+  assert.equal(viaRunner.status, "resolved");
+  for (const flag of ["--no-playlist", "--no-cookies", "--no-cookies-from-browser", "--no-config"]) assert.ok(metadataArgs.includes(flag));
+});
+
 test("Xiaoyuzhou page parser reads public episode metadata without treating show notes as transcript", () => {
   const data = {
     props: { pageProps: { episode: {
@@ -235,7 +269,48 @@ test("source pack partitions long evidence and traces every claim to transcript 
   assert.equal(pack.status, "complete");
   assert.equal(pack.chapters.length, 2);
   assert.equal(pack.provenance.allClaimsHaveEvidence, true);
+  assert.equal(pack.quality.transcriptQualityDisclosed, true);
+  assert.equal(pack.quality.transcriptReviewRequired, false);
   assert.equal(provenance.segments[0].originType, "official_podcast_transcript");
+});
+
+test("source pack discloses ASR review items without treating a complete transcript as partial", () => {
+  const segments = normalizeSourceSegments({ segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text: "待复核的转写。", quality: "needs_review" }] }, { originType: "aliyun_dashscope_paraformer" });
+  const chapter = partitionSourceSegments(segments)[0];
+  const analysis = normalizeSourceChapterAnalysis({ chapterTitle: "复核章节", summary: "摘要", claims: [{ claimType: "controversy_or_risk", text: "该片段需复核。", evidenceSegmentIds: [chapter.segmentIds[0]], confidence: "low" }] }, chapter);
+  const pack = buildKnowledgeSourcePack({
+    source: { originalUrl: mediaUrl, finalSourceUrl: mediaUrl, platform: "direct", title: "测试音频", acquisitionMethod: "direct_public_media+cloud_asr" },
+    transcript: { status: "complete", quality: { status: "complete", reviewRequired: true, reviewItemCount: 1, highSeverityReviewItemCount: 1 } },
+    segments,
+    chapterAnalyses: [analysis],
+    transcriptMethod: "aliyun_dashscope_paraformer",
+    provenancePath: "artifacts/public-source/provenance/evidence-index.json",
+  });
+  assert.equal(pack.quality.completeTranscriptAvailable, true);
+  assert.equal(pack.quality.transcriptReviewRequired, true);
+  assert.match(renderKnowledgeSourcePack(pack), /需人工复核：1 个复核项/);
+});
+
+test("source chapter prompt bounds claim volume to avoid truncated JSON", () => {
+  const prompt = buildSourceChapterPrompt({
+    chapterId: "chapter-001",
+    officialTitle: "测试章节",
+    segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text: "测试内容", speaker: null, quality: "ready" }],
+  }, { title: "测试来源" }, { maxClaims: 8 });
+  assert.match(prompt, /summary 最多 400 个字/);
+  assert.match(prompt, /claims 最多 8 条/);
+  assert.match(prompt, /每条 text 最多 160 个字/);
+  const chapter = { chapterId: "chapter-001", order: 1, officialTitle: "测试章节", startMs: 0, endMs: 1000, segmentIds: ["s1"] };
+  const normalized = normalizeSourceChapterAnalysis({
+    summary: "摘".repeat(500),
+    claims: Array.from({ length: 20 }, (_, index) => ({ claimType: "author_view", text: `${index}-${"观".repeat(200)}`, evidenceSegmentIds: ["s1"], confidence: "medium" })),
+    suggestedRelatedTopics: Array.from({ length: 10 }, (_, index) => `${index}-${"题".repeat(100)}`),
+  }, chapter);
+  assert.equal(normalized.summary.length, 400);
+  assert.equal(normalized.claims.length, 12);
+  assert.ok(normalized.claims.every((claim) => claim.text.length <= 160));
+  assert.equal(normalized.suggestedRelatedTopics.length, 5);
+  assert.ok(normalized.suggestedRelatedTopics.every((topic) => topic.length <= 80));
 });
 
 test("official chapter markers keep the prelude and remain bounded without losing transcript segments", () => {
@@ -265,6 +340,32 @@ test("Feishu and local Agent router send explicit public URLs to the real source
   assert.equal(shouldUseTaskExecutionRunner({ taskIntent: intent }), true);
   const feishuDoc = classifyTaskIntent({ message: { text: "请看 https://example.larksuite.com/wiki/abc123" } }, [], { contexts: [] }, {});
   assert.notEqual(feishuDoc.executionProfile, "url_source_pack");
+});
+
+test("production Feishu inbound keeps the CLI consumer alive and forwards to the shared handler", async () => {
+  const eventRunner = await readFile(new URL("../tools/feishu_event_runner.mjs", import.meta.url), "utf8");
+  const supervisor = await readFile(new URL("../tools/local_runtime_supervisor.py", import.meta.url), "utf8");
+  const runtimeCtl = await readFile(new URL("../tools/local_runtime_ctl.py", import.meta.url), "utf8");
+  assert.match(eventRunner, /stdio: \["pipe", "pipe", "pipe"\]/);
+  assert.match(eventRunner, /await Promise\.allSettled\(\[\.\.\.pending\]\)/);
+  assert.match(supervisor, /"FEISHU_INBOUND_MODE": "cli"/);
+  assert.match(supervisor, /meeting-agent-pi-package\/tools\/feishu_event_runner\.mjs/);
+  assert.match(supervisor, /FEISHU_EVENT_KEY/);
+  assert.match(runtimeCtl, /meeting-agent-pi-package\/tools\/feishu_event_runner\.mjs/);
+});
+
+test("public source chapter analysis disables DeepSeek thinking for bounded JSON output", async () => {
+  const runner = await readFile(new URL("../tools/task_execution_runner.mjs", import.meta.url), "utf8");
+  const provider = await readFile(new URL("../extensions/model-provider.ts", import.meta.url), "utf8");
+  assert.match(runner, /thinkingMode: "disabled"/);
+  assert.match(runner, /responseFormat: "json_object"/);
+  assert.match(runner, /public_source_chapter_reused/);
+  assert.match(runner, /checkpointNormalized: true/);
+  assert.match(runner, /writeJson\(chapterPath, reusable\)/);
+  assert.match(runner, /attempt <= 2/);
+  assert.match(provider, /thinking:\s*\{ type: params\.thinkingMode \}/);
+  assert.match(provider, /thinkingMode:\s*Type\.Optional/);
+  assert.match(provider, /response_format:\s*\{ type: "json_object" \}/);
 });
 
 test("VTT parsing preserves timestamps for evidence indexing", () => {

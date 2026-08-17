@@ -69,6 +69,8 @@ node meeting-agent-pi-package/tools/public_url_source_cli.mjs \
 
 Pi 对话使用 `public_url_source_ingest` 工具；飞书中的显式 URL 自动进入同一 profile。
 
+YouTube 依赖 `yt-dlp` 和 `ffprobe`；macOS 可运行 `brew install yt-dlp ffmpeg`。可执行文件路径可用 `YT_DLP_BIN`、`FFPROBE_BIN` 覆盖，但解析器固定禁用 Cookie、浏览器 Cookie、playlist 和 live。真实环境验证、成本与脱敏 artifact hash 见 [17-public-url-live-validation.md](17-public-url-live-validation.md)。
+
 ## 安全与已知边界
 
 - 只允许 HTTP(S) 公网目标；初始地址、DNS 结果和每次重定向都必须通过校验。

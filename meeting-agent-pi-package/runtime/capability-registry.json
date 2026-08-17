@@ -287,7 +287,7 @@
       "commands": ["lark-cli"],
       "cliOperations": ["lark-cli event consume", "lark-cli im +messages-reply", "lark-cli im +messages-resources-download", "lark-cli markdown +create", "lark-cli markdown +overwrite", "lark-cli drive +create-folder", "lark-cli drive +upload"],
       "env": ["FEISHU_EVENT_KEY"],
-      "optionalEnv": ["FEISHU_AGENT_HANDLER_URL", "FEISHU_AGENT_EXEC_MODE", "FEISHU_AGENT_PUBLISH_MODE", "FEISHU_AGENT_REPLY_MODE", "FEISHU_AGENT_FOLDER_TOKEN"],
+      "optionalEnv": ["FEISHU_INBOUND_MODE", "FEISHU_EVENT_AS", "FEISHU_AGENT_HANDLER_URL", "FEISHU_AGENT_EXEC_MODE", "FEISHU_AGENT_PUBLISH_MODE", "FEISHU_AGENT_REPLY_MODE", "FEISHU_AGENT_FOLDER_TOKEN"],
       "runtimeSchemas": ["feishu-event.schema.json", "feishu-task.schema.json", "feishu-run-state.schema.json"],
       "guardrails": ["lazy load only", "runner only normalizes and forwards events", "handler owns task artifacts and orchestration", "publisher reads QA/Policy results before live publish", "document structures come from prompt registry"]
     },
@@ -404,6 +404,8 @@
       },
       "triggers": ["public URL", "YouTube", "podcast", "RSS", "Xiaoyuzhou", "小宇宙", "公开视频", "公开音频", "source pack"],
       "commands": ["node meeting-agent-pi-package/tools/public_url_source_cli.mjs", "yt-dlp (YouTube fallback only)", "ffprobe"],
+      "optionalEnv": ["YT_DLP_BIN", "FFPROBE_BIN"],
+      "testCommand": "node --test meeting-agent-pi-package/tests/public_url_source.test.mjs",
       "guardrails": ["official timestamped transcript first", "cloud ASR only when needed", "SSRF and redirect validation", "bounded file size and duration", "no login/paywall/DRM/region bypass", "podcast is not meeting minutes", "partial result never marked complete"]
     },
     {

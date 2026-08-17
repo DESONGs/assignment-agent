@@ -145,8 +145,8 @@ flowchart LR
 
 ## 10. 飞书入口与交付
 
-- `feishu_event_runner.mjs`：推荐的 CLI event consume 入口，标准化并转发事件。
-- `feishu_bot_event_gateway.mjs`：可选 SDK 长连接入口，转发到同一 handler。
+- `feishu_event_runner.mjs`：默认的 CLI event consume 入口，保持消费进程 stdin、标准化并转发事件。
+- `feishu_bot_event_gateway.mjs`：设置 `FEISHU_INBOUND_MODE=sdk` 时使用的可选 SDK 长连接入口，转发到同一 handler。
 - `feishu_agent_task_handler.mjs`：拥有 run lifecycle、附件获取、runner 调用、发布和回复。
 - `task_router.mjs`：选择 execution profile。
 - `task_execution_runner.mjs`：执行 profile 阶段，并接入 ASR、Meeting Intelligence、Agentic 委派、文档和 gate。

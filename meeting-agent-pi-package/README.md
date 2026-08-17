@@ -57,6 +57,8 @@ node tools/public_url_source_cli.mjs --url "https://example.com/public-media" --
 
 完整运行返回 `sourcePackPath`，并在 `runtime-runs/public-url/runs/{runId}/artifacts/` 保存来源元数据、结构化/可读转录、章节分析、source pack 和 provenance。外部获取前运行 Policy Gate，交付前运行 QA Gate；长文稿按有界章节进入模型。播客不会误进 Meeting Intelligence 或会议纪要，也不会直接写外部 Obsidian/business-wiki。YouTube fallback 复用 `yt-dlp`，禁用 Cookie、playlist、live 与访问控制绕过。
 
+macOS 首次使用可运行 `brew install yt-dlp ffmpeg`。`YT_DLP_BIN` 与 `FFPROBE_BIN` 只用于覆盖可执行文件路径，不接受 Cookie 或登录参数。
+
 ## ASR
 
 `MEETING_ASR_PROVIDER=auto|aliyun_dashscope_paraformer|local_qwen3`。
@@ -140,7 +142,7 @@ node tools/feishu_event_runner.mjs \
   --handler-url http://127.0.0.1:8788/feishu/events
 ```
 
-长任务设置 `FEISHU_AGENT_ASYNC=1`。SDK long-connection gateway 是可选入口，也转发到同一 handler。MCP 可用于额外 AI tool access，但不是收消息、回复或发布的必要条件。
+`local_runtime_ctl.py start` 默认使用上述 CLI event consume 入口；设置 `FEISHU_INBOUND_MODE=sdk` 才启用可选 SDK long-connection gateway。长任务设置 `FEISHU_AGENT_ASYNC=1`。两种入口都转发到同一 handler；MCP 不是收消息、回复或发布的必要条件。
 
 Handler 写入 `runtime-runs/feishu-agent/runs/{runId}/`，并分别记录 event、task/state、source context、ASR、Meeting Intelligence、model/document、QA/Policy、publish/reply、metrics/manifest。
 

@@ -47,7 +47,8 @@ git diff --check
 - source pack 每个事实/观点/推断都引用当前 transcript segment，并记录来自官方文稿还是 ASR。
 - 成功路径必须写出真实 `policy-gate.json` 与 `qa-gate.json`，输出引用同一决策时间；不得由 runner 直接构造伪 pass。
 - 真实小宇宙 smoke 至少验证公开页面元数据、媒体 probe、文稿可用性和 fallback 状态；`--resolve-only` 不得下载媒体或声称已转写。
-- YouTube live fallback 只有在本机安装 `yt-dlp` 且样例公开可访问时才算实测；否则 fixture 通过并记录环境未验证项。
+- YouTube 官方字幕路径与无可靠字幕的云端 ASR fallback 都要至少完成一次公开短样例真实运行；live、private、playlist、大小和时长边界可用稳定 fixture/公开样例组合验证。
+- 当前 2026-08-17 的小宇宙、YouTube 与飞书环境证据记录在 [17-public-url-live-validation.md](17-public-url-live-validation.md)，完整媒体和逐字稿仍只留在 ignored runtime。
 
 ## 3. Meeting Intelligence 验收
 
