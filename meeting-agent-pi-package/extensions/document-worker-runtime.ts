@@ -1,56 +1,37 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateText } from "./model-provider.ts";
 import { planRoute, recordRouteArtifact } from "./model-routing.ts";
-
-type DocumentWorkItem = {
-  docType: string;
-  promptFile?: string | undefined;
-  promptPath?: string | undefined;
-  promptInstructions?: string | undefined;
-  promptInstructionChars?: number | undefined;
-  contextPlane?: {
-    enabled?: boolean | undefined;
-    contextEnvelopeRef?: string | undefined;
-    workUnitCount?: number | undefined;
-    promptMode?: string | undefined;
-    fullContentAvailableByArtifact?: boolean | undefined;
-  } | null;
-  workUnits?: Array<{
-    workUnitId: string;
-    docType: string;
-    sections: string[];
-    contextPackRef: string;
-    contextPackId?: string | undefined;
-    contextPackHash?: string | undefined;
-    sourceSegmentIds?: string[] | undefined;
-    sourceBlockIds?: string[] | undefined;
-    tableBlockCount?: number | undefined;
-    promptBudgetChars?: number | undefined;
-    evidenceBudgetChars?: number | undefined;
-    retrievalReasons?: string[] | undefined;
-    outputContractVersion?: string | undefined;
-    documentIdentityConfidence?: "high" | "medium" | "low" | undefined;
-    taskStateRef?: string | undefined;
-    sourceRecordsRef?: string | undefined;
-    sourceSegmentsRef?: string | undefined;
-    sourceStructureRef?: string | undefined;
-  }> | undefined;
-  upstreamDependencyContext?: unknown | undefined;
-  requiredSections?: string[] | undefined;
-  dependsOn?: string[] | undefined;
-  audience?: string | null | undefined;
-  upstreamDocumentsUsed?: string[] | undefined;
-  missingUpstreamDocuments?: string[] | undefined;
-  absentUpstreamDocuments?: string[] | undefined;
-};
+import {
+  ContractValidationError,
+  parseContextPack,
+  DocumentWorkItemSchema,
+  isRecord,
+  parseDocumentWorkItem,
+  parseDocumentWorkflowCheckpoint,
+  parseDocumentWorkerResult,
+  stableStringify,
+  type DocumentCheckpointUnit,
+  type DocumentCheckpointDocument,
+  type DocumentWorkItem,
+  type DocumentWorkerResult,
+  type DocumentWorkerStatus,
+  type DocumentWorkflowCheckpoint,
+  type LedgerEvent,
+  type ModelGenerationResult,
+  type ModelRouteCandidate,
+  type ModelUsage,
+} from "../dist/index.js";
 
 type DocumentWorkersRunDetails = {
   status: string;
   reason: string | null;
+  fieldPath?: string | undefined;
+  recovery?: string | undefined;
   runId?: string | undefined;
   rawSecretsReturned?: boolean | undefined;
 };
@@ -59,6 +40,63 @@ type SectionBatch = {
   batchIndex: number;
   sections: string[];
 };
+
+type RoutePlan = {
+  status: "selected" | "blocked";
+  reason?: string | null;
+  selected?: ModelRouteCandidate;
+  candidates?: ModelRouteCandidate[];
+  resolvedTaskType?: string;
+  taskType?: string;
+  [key: string]: unknown;
+};
+
+type AttemptFailure = {
+  provider?: string | null;
+  model?: string | null;
+  status?: string | null;
+  reason?: string | null;
+  missingEnv?: unknown[];
+  httpStatus?: number | null;
+  timeoutMs?: number | null;
+  [key: string]: unknown;
+};
+
+type WorkflowRetrySummary = {
+  unitId: string;
+  stage: string;
+  attempts: number;
+  retryCount: number;
+  retryExhausted?: boolean;
+  retryBudgetExhausted?: boolean;
+};
+
+type DocumentGenerationCommon = {
+  reason?: string | null;
+  usage?: ModelUsage | null;
+  modelRoute?: RoutePlan;
+  attemptFailures: AttemptFailure[];
+  workflowRetry?: WorkflowRetrySummary;
+  fallbackSkippedReason?: string | null;
+  httpStatus?: number;
+  streamTracePath?: string | null;
+  streamTraceSummaryPath?: string | null;
+  deadline?: unknown;
+};
+
+type DocumentGeneration =
+  | (DocumentGenerationCommon & { status: "completed"; content: string })
+  | (DocumentGenerationCommon & { status: "blocked"; reason: string; content?: never });
+
+type DocumentAttempt = Record<string, unknown>;
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
 
 const DEFAULT_MAX_WORKERS = 6;
 const MAX_WORKERS = 6;
@@ -74,6 +112,7 @@ const DEFAULT_RETRY_ATTEMPTS_PER_UNIT = 3;
 const DEFAULT_MAX_RETRY_UNITS = 12;
 const MAX_RETRY_ATTEMPTS_PER_UNIT = 5;
 const MAX_RETRY_UNITS = 36;
+const WORKFLOW_RUN_LOCK_STALE_MS = 8 * 60 * 60 * 1000;
 const OPEN_QUESTION_PATTERN = /待确认|确认|问题|阻塞|缺口|未定|未明确/;
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
@@ -151,9 +190,14 @@ type WorkflowContext = {
   qualityMode: "stable" | "balanced" | "fast";
   workflowStrategy: "checkpointed" | "single_pass";
   resumeFromCheckpoint: boolean;
-  publishPartial: boolean;
+  publishPartial: false;
   retryPolicy: RetryPolicy;
-  checkpoint: any;
+  checkpoint: DocumentWorkflowCheckpoint;
+};
+
+type WorkflowRunLock = {
+  path: string;
+  token: string;
 };
 
 function deadlineContext(params: { deadlineAt?: unknown; runtimeBudgetMs?: unknown; deadlineReserveMs?: unknown }): DeadlineContext {
@@ -214,8 +258,8 @@ function deadlineBlockedResult(params: {
   taskIndex: number;
   requiredSections: string[];
   completedSections: string[];
-  sectionAttempts: any[];
-  repairAttempts: any[];
+  sectionAttempts: DocumentAttempt[];
+  repairAttempts: DocumentAttempt[];
   markdownParts: string[];
   traceRoot: string | null;
   deadline?: DeadlineContext | null | undefined;
@@ -250,37 +294,64 @@ function deadlineBlockedResult(params: {
 
 function normalizeDocumentWorkItems(value: unknown): DocumentWorkItem[] {
   if (!Array.isArray(value)) return [];
-  return value.map((item: any) => ({
-    docType: String(item?.docType ?? "document"),
-    promptFile: item?.promptFile,
-    promptPath: item?.promptPath,
-    promptInstructions: item?.promptInstructions ? String(item.promptInstructions) : undefined,
-    promptInstructionChars: Number(item?.promptInstructionChars ?? 0) || undefined,
-    contextPlane: item?.contextPlane ?? null,
-    workUnits: Array.isArray(item?.workUnits) ? item.workUnits.map((unit: any) => ({
-      workUnitId: String(unit?.workUnitId ?? ""),
-      docType: String(unit?.docType ?? item?.docType ?? "document"),
-      sections: Array.isArray(unit?.sections) ? unit.sections.map(String).filter(Boolean) : [],
-      contextPackRef: String(unit?.contextPackRef ?? ""),
-      contextPackId: unit?.contextPackId ? String(unit.contextPackId) : undefined,
-      contextPackHash: unit?.contextPackHash ? String(unit.contextPackHash) : undefined,
-      sourceSegmentIds: Array.isArray(unit?.sourceSegmentIds) ? unit.sourceSegmentIds.map(String).filter(Boolean) : [],
-      promptBudgetChars: Number(unit?.promptBudgetChars ?? 0) || undefined,
-      evidenceBudgetChars: Number(unit?.evidenceBudgetChars ?? 0) || undefined,
-      retrievalReasons: Array.isArray(unit?.retrievalReasons) ? unit.retrievalReasons.map(String).filter(Boolean) : [],
-      taskStateRef: unit?.taskStateRef ? String(unit.taskStateRef) : undefined,
-      sourceRecordsRef: unit?.sourceRecordsRef ? String(unit.sourceRecordsRef) : undefined,
-      sourceSegmentsRef: unit?.sourceSegmentsRef ? String(unit.sourceSegmentsRef) : undefined,
-      sourceStructureRef: unit?.sourceStructureRef ? String(unit.sourceStructureRef) : undefined,
-    })).filter((unit: any) => unit.workUnitId && unit.contextPackRef) : [],
-    upstreamDependencyContext: item?.upstreamDependencyContext ?? null,
-    requiredSections: Array.isArray(item?.requiredSections) ? item.requiredSections.map(String).filter(Boolean) : [],
-    dependsOn: Array.isArray(item?.dependsOn) ? item.dependsOn.map(String).filter(Boolean) : [],
-    audience: item?.audience === undefined || item?.audience === null ? null : String(item.audience),
-    upstreamDocumentsUsed: Array.isArray(item?.upstreamDocumentsUsed) ? item.upstreamDocumentsUsed.map(String).filter(Boolean) : [],
-    missingUpstreamDocuments: Array.isArray(item?.missingUpstreamDocuments) ? item.missingUpstreamDocuments.map(String).filter(Boolean) : [],
-    absentUpstreamDocuments: Array.isArray(item?.absentUpstreamDocuments) ? item.absentUpstreamDocuments.map(String).filter(Boolean) : [],
-  }));
+  return value.map((rawItem, itemIndex) => {
+    const item = isRecord(rawItem) ? rawItem : {};
+    const workUnits = Array.isArray(item.workUnits) ? item.workUnits.map((rawUnit) => {
+      const unit = isRecord(rawUnit) ? rawUnit : {};
+      const contextPackId = unit.contextPackId ? String(unit.contextPackId) : undefined;
+      const contextPackHash = unit.contextPackHash ? String(unit.contextPackHash) : undefined;
+      const promptBudgetChars = Number(unit.promptBudgetChars ?? 0) || undefined;
+      const evidenceBudgetChars = Number(unit.evidenceBudgetChars ?? 0) || undefined;
+      const outputContractVersion = unit.outputContractVersion ? String(unit.outputContractVersion) : undefined;
+      const confidence = ["high", "medium", "low"].includes(String(unit.documentIdentityConfidence))
+        ? unit.documentIdentityConfidence as "high" | "medium" | "low"
+        : undefined;
+      return {
+        workUnitId: String(unit.workUnitId ?? ""),
+        docType: String(unit.docType ?? item.docType ?? "document"),
+        sections: Array.isArray(unit.sections) ? unit.sections.map(String).filter(Boolean) : [],
+        contextPackRef: String(unit.contextPackRef ?? ""),
+        ...(contextPackId === undefined ? {} : { contextPackId }),
+        ...(contextPackHash === undefined ? {} : { contextPackHash }),
+        sourceSegmentIds: Array.isArray(unit.sourceSegmentIds) ? unit.sourceSegmentIds.map(String).filter(Boolean) : [],
+        sourceBlockIds: Array.isArray(unit.sourceBlockIds) ? unit.sourceBlockIds.map(String).filter(Boolean) : [],
+        tableBlockCount: Math.max(0, Number(unit.tableBlockCount ?? 0) || 0),
+        ...(promptBudgetChars === undefined ? {} : { promptBudgetChars }),
+        ...(evidenceBudgetChars === undefined ? {} : { evidenceBudgetChars }),
+        retrievalReasons: Array.isArray(unit.retrievalReasons) ? unit.retrievalReasons.map(String).filter(Boolean) : [],
+        ...(outputContractVersion === undefined ? {} : { outputContractVersion }),
+        ...(confidence === undefined ? {} : { documentIdentityConfidence: confidence }),
+        ...(unit.taskStateRef ? { taskStateRef: String(unit.taskStateRef) } : {}),
+        ...(unit.sourceRecordsRef ? { sourceRecordsRef: String(unit.sourceRecordsRef) } : {}),
+        ...(unit.sourceSegmentsRef ? { sourceSegmentsRef: String(unit.sourceSegmentsRef) } : {}),
+        ...(unit.sourceStructureRef ? { sourceStructureRef: String(unit.sourceStructureRef) } : {}),
+      };
+    }).filter((unit) => unit.workUnitId && unit.contextPackRef) : [];
+    const normalized = {
+      docType: String(item.docType ?? "document"),
+      ...(item.promptFile ? { promptFile: String(item.promptFile) } : {}),
+      ...(item.promptPath ? { promptPath: String(item.promptPath) } : {}),
+      ...(item.promptInstructions ? { promptInstructions: String(item.promptInstructions) } : {}),
+      ...(Number(item.promptInstructionChars ?? 0) > 0 ? { promptInstructionChars: Number(item.promptInstructionChars) } : {}),
+      contextPlane: isRecord(item.contextPlane) ? item.contextPlane : null,
+      workUnits,
+      upstreamDependencyContext: item.upstreamDependencyContext ?? null,
+      requiredSections: Array.isArray(item.requiredSections) ? item.requiredSections.map(String).filter(Boolean) : [],
+      dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn.map(String).filter(Boolean) : [],
+      audience: item.audience === undefined || item.audience === null ? null : String(item.audience),
+      upstreamDocumentsUsed: Array.isArray(item.upstreamDocumentsUsed) ? item.upstreamDocumentsUsed.map(String).filter(Boolean) : [],
+      missingUpstreamDocuments: Array.isArray(item.missingUpstreamDocuments) ? item.missingUpstreamDocuments.map(String).filter(Boolean) : [],
+      absentUpstreamDocuments: Array.isArray(item.absentUpstreamDocuments) ? item.absentUpstreamDocuments.map(String).filter(Boolean) : [],
+    };
+    try {
+      return parseDocumentWorkItem(normalized);
+    } catch (error) {
+      if (error instanceof ContractValidationError) {
+        throw new ContractValidationError({ ...error, fieldPath: `documentWorkItems[${itemIndex}]${error.fieldPath === "$" ? "" : error.fieldPath}` }, error.message);
+      }
+      throw error;
+    }
+  });
 }
 
 function uniqueStrings(values: string[]) {
@@ -357,7 +428,9 @@ function workflowRootFor(runId?: string, outputRoot?: string) {
 
 function writeJson(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  renameSync(tempPath, path);
 }
 
 function readJson(path: string) {
@@ -375,7 +448,18 @@ function appendNdjson(path: string, value: unknown) {
 
 function writeText(path: string, value: string) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, value, "utf8");
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, value, "utf8");
+  renameSync(tempPath, path);
+}
+
+function sha256(value: unknown) {
+  const input = typeof value === "string" || value instanceof Uint8Array ? value : stableStringify(value);
+  return createHash("sha256").update(input).digest("hex");
+}
+
+function artifactHash(path: string) {
+  return sha256(readFileSync(path));
 }
 
 function relativeWorkflowPath(workflow: WorkflowContext | null | undefined, path: string | null | undefined) {
@@ -417,11 +501,41 @@ function normalizeWorkflowStrategy(value: unknown): WorkflowContext["workflowStr
   return String(value ?? "checkpointed").trim().toLowerCase() === "single_pass" ? "single_pass" : "checkpointed";
 }
 
-function normalizeRetryPolicy(value: any): RetryPolicy {
+function normalizeRetryPolicy(value: unknown): RetryPolicy {
+  const record = isRecord(value) ? value : {};
   return {
-    maxAttemptsPerUnit: boundedPositiveInteger(value?.maxAttemptsPerUnit, DEFAULT_RETRY_ATTEMPTS_PER_UNIT, MAX_RETRY_ATTEMPTS_PER_UNIT),
-    maxRetryUnits: boundedPositiveInteger(value?.maxRetryUnits, DEFAULT_MAX_RETRY_UNITS, MAX_RETRY_UNITS),
+    maxAttemptsPerUnit: boundedPositiveInteger(record.maxAttemptsPerUnit, DEFAULT_RETRY_ATTEMPTS_PER_UNIT, MAX_RETRY_ATTEMPTS_PER_UNIT),
+    maxRetryUnits: boundedPositiveInteger(record.maxRetryUnits, DEFAULT_MAX_RETRY_UNITS, MAX_RETRY_UNITS),
   };
+}
+
+function newCheckpoint(params: {
+  runId?: string | undefined;
+  inputHash: string;
+  workflowStrategy: WorkflowContext["workflowStrategy"];
+  qualityMode: WorkflowContext["qualityMode"];
+}): DocumentWorkflowCheckpoint {
+  const at = nowIso();
+  return {
+    schemaVersion: "document-workflow-checkpoint-v2",
+    runId: params.runId ?? null,
+    inputHash: params.inputHash,
+    createdAt: at,
+    updatedAt: at,
+    workflowStrategy: params.workflowStrategy,
+    qualityMode: params.qualityMode,
+    publishPartial: false,
+    retry: { unitsUsed: 0 },
+    docs: {},
+    rawSecretsReturned: false,
+  };
+}
+
+function quarantineCheckpoint(path: string, reason: string) {
+  if (!existsSync(path)) return null;
+  const target = path.replace(/\.json$/i, `.${safeSegment(reason, "invalid")}.${Date.now()}.json`);
+  renameSync(path, target);
+  return target;
 }
 
 function workflowContext(params: {
@@ -432,42 +546,39 @@ function workflowContext(params: {
   resumeFromCheckpoint?: unknown | undefined;
   publishPartial?: unknown | undefined;
   retryPolicy?: unknown | undefined;
+  inputHash: string;
 }): WorkflowContext {
   const root = workflowRootFor(params.runId, params.outputRoot);
   const checkpointPath = root ? join(root, "checkpoint.json") : null;
   const retryLedgerPath = root ? join(root, "retry-ledger.ndjson") : null;
   const workflowStrategy = normalizeWorkflowStrategy(params.workflowStrategy);
-  const checkpoint = checkpointPath && params.resumeFromCheckpoint !== false && existsSync(checkpointPath)
-    ? readJson(checkpointPath)
-    : {
-        schemaVersion: "document-workflow-checkpoint-v1",
-        runId: params.runId ?? null,
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-        workflowStrategy,
-        qualityMode: normalizeQualityMode(params.qualityMode),
-        publishPartial: params.publishPartial === true,
-        retry: { unitsUsed: 0 },
-        docs: {},
-        rawSecretsReturned: false,
-      };
-  checkpoint.schemaVersion = "document-workflow-checkpoint-v1";
-  checkpoint.runId = params.runId ?? checkpoint.runId ?? null;
+  const qualityMode = normalizeQualityMode(params.qualityMode);
+  let checkpoint = newCheckpoint({ runId: params.runId, inputHash: params.inputHash, workflowStrategy, qualityMode });
+  if (checkpointPath && params.resumeFromCheckpoint !== false && existsSync(checkpointPath)) {
+    try {
+      const candidate = parseDocumentWorkflowCheckpoint(readJson(checkpointPath));
+      if (candidate.inputHash !== params.inputHash || candidate.runId !== (params.runId ?? null)) {
+        quarantineCheckpoint(checkpointPath, "stale-input");
+      } else {
+        checkpoint = candidate;
+      }
+    } catch (error) {
+      quarantineCheckpoint(checkpointPath, error instanceof ContractValidationError ? "legacy-or-invalid" : "unreadable");
+    }
+  }
   checkpoint.workflowStrategy = workflowStrategy;
-  checkpoint.qualityMode = normalizeQualityMode(params.qualityMode);
-  checkpoint.publishPartial = params.publishPartial === true;
+  checkpoint.qualityMode = qualityMode;
+  checkpoint.publishPartial = false;
   checkpoint.updatedAt = nowIso();
-  checkpoint.retry = checkpoint.retry && typeof checkpoint.retry === "object" ? checkpoint.retry : { unitsUsed: 0 };
-  checkpoint.docs = checkpoint.docs && typeof checkpoint.docs === "object" ? checkpoint.docs : {};
   return {
     runId: params.runId,
     root,
     checkpointPath,
     retryLedgerPath,
-    qualityMode: normalizeQualityMode(params.qualityMode),
+    qualityMode,
     workflowStrategy,
     resumeFromCheckpoint: params.resumeFromCheckpoint !== false,
-    publishPartial: params.publishPartial === true,
+    publishPartial: false,
     retryPolicy: normalizeRetryPolicy(params.retryPolicy),
     checkpoint,
   };
@@ -476,9 +587,67 @@ function workflowContext(params: {
 function writeCheckpoint(workflow?: WorkflowContext | null) {
   if (!workflow?.checkpointPath) return;
   workflow.checkpoint.updatedAt = nowIso();
-  workflow.checkpoint.retryPolicy = workflow.retryPolicy;
-  workflow.checkpoint.publishPartial = workflow.publishPartial;
-  writeJson(workflow.checkpointPath, workflow.checkpoint);
+  workflow.checkpoint.publishPartial = false;
+  writeJson(workflow.checkpointPath, parseDocumentWorkflowCheckpoint(workflow.checkpoint));
+}
+
+function acquireWorkflowRunLock(workflow: WorkflowContext): WorkflowRunLock | null {
+  if (!workflow.root || workflow.workflowStrategy !== "checkpointed") return null;
+  mkdirSync(workflow.root, { recursive: true });
+  const path = join(workflow.root, "run.lock");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = randomUUID();
+    try {
+      const fd = openSync(path, "wx", 0o600);
+      try {
+        writeFileSync(fd, `${JSON.stringify({
+          schemaVersion: "document-workflow-run-lock-v1",
+          runId: workflow.runId ?? null,
+          token,
+          pid: process.pid,
+          acquiredAt: nowIso(),
+          inputHash: workflow.checkpoint.inputHash,
+        })}\n`, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+      return { path, token };
+    } catch (error) {
+      const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+      if (code !== "EEXIST") throw error;
+      const stale = (() => {
+        try {
+          return Date.now() - statSync(path).mtimeMs > WORKFLOW_RUN_LOCK_STALE_MS;
+        } catch {
+          return false;
+        }
+      })();
+      if (stale && attempt === 0) {
+        try {
+          renameSync(path, `${path}.stale.${Date.now()}.${randomUUID()}.json`);
+          continue;
+        } catch {
+          // Another process changed the lock; fail closed below.
+        }
+      }
+      throw new ContractValidationError({
+        reason: "document_workflow_already_running",
+        fieldPath: "runId",
+        recovery: "等待当前同 runId 执行完成，或在确认原进程已终止且锁超过安全时限后重试。",
+      });
+    }
+  }
+  return null;
+}
+
+function releaseWorkflowRunLock(lock: WorkflowRunLock | null) {
+  if (!lock || !existsSync(lock.path)) return;
+  try {
+    const current = JSON.parse(readFileSync(lock.path, "utf8")) as unknown;
+    if (isRecord(current) && current.token === lock.token) unlinkSync(lock.path);
+  } catch {
+    // Keep an unreadable lock for stale-lock quarantine instead of deleting another owner's lock.
+  }
 }
 
 function appendRetryLedger(workflow: WorkflowContext | null | undefined, value: Record<string, unknown>) {
@@ -494,25 +663,23 @@ function appendRetryLedger(workflow: WorkflowContext | null | undefined, value: 
 function docCheckpoint(workflow: WorkflowContext | null | undefined, item: DocumentWorkItem, taskIndex: number) {
   if (!workflow) return null;
   const key = `task-${taskIndex}-${safeSegment(item.docType, "document")}`;
-  const existing = workflow.checkpoint.docs[key] && typeof workflow.checkpoint.docs[key] === "object"
-    ? workflow.checkpoint.docs[key]
-    : {};
-  const doc = {
+  const existing = workflow.checkpoint.docs[key];
+  const doc: DocumentCheckpointDocument = {
     taskIndex,
     docType: item.docType,
     promptFile: item.promptFile ?? null,
     dependsOn: item.dependsOn ?? [],
-    status: existing.status ?? "running",
-    createdAt: existing.createdAt ?? nowIso(),
+    status: existing?.status ?? "running",
+    createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
-    blueprint: existing.blueprint ?? null,
-    sections: existing.sections && typeof existing.sections === "object" ? existing.sections : {},
-    repairs: existing.repairs && typeof existing.repairs === "object" ? existing.repairs : {},
-    assembly: existing.assembly ?? null,
-    review: existing.review ?? null,
-    reason: existing.reason ?? null,
-    completedSections: Array.isArray(existing.completedSections) ? existing.completedSections : [],
-    missingSections: Array.isArray(existing.missingSections) ? existing.missingSections : [],
+    blueprint: existing?.blueprint ?? null,
+    sections: existing?.sections ?? {},
+    repairs: existing?.repairs ?? {},
+    assembly: existing?.assembly ?? null,
+    review: existing?.review ?? null,
+    reason: existing?.reason ?? null,
+    completedSections: existing?.completedSections ?? [],
+    missingSections: existing?.missingSections ?? [],
   };
   workflow.checkpoint.docs[key] = doc;
   return { key, doc };
@@ -528,31 +695,52 @@ function sectionUnitKey(taskIndex: number, docType: string, batchIndex: number |
   return `task-${taskIndex}-${safeSegment(docType, "document")}-batch-${safeSegment(batchIndex, "full")}${contextSuffix}`;
 }
 
+function unitIdempotencyKey(params: {
+  runId?: string | undefined;
+  docType: string;
+  unitId: string;
+  stage: string;
+  contextPackHash?: string | null | undefined;
+}) {
+  return sha256({
+    runId: params.runId ?? null,
+    docType: params.docType,
+    unitId: params.unitId,
+    stage: params.stage,
+    contextPackHash: params.contextPackHash ?? null,
+  });
+}
+
+function reusableCheckpointUnit(unit: DocumentCheckpointUnit | undefined, expectedIdempotencyKey: string) {
+  if (!unit || unit.status !== "completed" || unit.idempotencyKey !== expectedIdempotencyKey || !unit.artifactPath || !unit.artifactHash) return false;
+  return existsSync(unit.artifactPath) && artifactHash(unit.artifactPath) === unit.artifactHash;
+}
+
 function repairUnitKey(taskIndex: number, docType: string, repairIndex: number) {
   return `task-${taskIndex}-${safeSegment(docType, "document")}-repair-${repairIndex}`;
 }
 
-function canRetryGeneration(generation: any) {
-  const reason = String(generation?.reason ?? "");
-  const attempts = Array.isArray(generation?.attemptFailures) ? generation.attemptFailures : [];
-  const hasRetryableProviderFailure = attempts.some((attempt: any) =>
-    ["model_provider_request_timeout", "model_provider_empty_response"].includes(String(attempt?.reason ?? "")),
+function canRetryGeneration(generation: DocumentGeneration) {
+  const reason = String(generation.reason ?? "");
+  const attempts = generation.attemptFailures;
+  const hasRetryableProviderFailure = attempts.some((attempt) =>
+    ["model_provider_request_timeout", "model_provider_empty_response"].includes(String(attempt.reason ?? "")),
   );
   if (reason === "no_candidate_model_available" && hasRetryableProviderFailure) return true;
-  if (attempts.some((attempt: any) => Array.isArray(attempt?.missingEnv) && attempt.missingEnv.length > 0)) return false;
+  if (attempts.some((attempt) => Array.isArray(attempt.missingEnv) && attempt.missingEnv.length > 0)) return false;
   if (reason === "model_provider_request_timeout") return true;
   if (reason === "model_provider_empty_response") return true;
   if (reason === "document_worker_deadline_exhausted") return true;
   if (reason === "model_provider_http_error") {
-    const status = Number(generation?.httpStatus ?? attempts.find((attempt: any) => attempt?.httpStatus)?.httpStatus ?? 0);
+    const status = Number(generation.httpStatus ?? attempts.find((attempt) => attempt.httpStatus)?.httpStatus ?? 0);
     return status >= 500 && status < 600;
   }
   if (reason === "no_candidate_model_available") return hasRetryableProviderFailure;
   return false;
 }
 
-function lastAttemptFailure(generation: any) {
-  const attempts = Array.isArray(generation?.attemptFailures) ? generation.attemptFailures : [];
+function lastAttemptFailure(generation: DocumentGeneration) {
+  const attempts = generation.attemptFailures;
   const last = attempts.at(-1) ?? null;
   if (!last) return null;
   return {
@@ -572,8 +760,8 @@ async function generateWithRetry(params: {
   sections?: string[] | undefined;
   workflow?: WorkflowContext | null | undefined;
   prompt: string;
-  initialRoute: any;
-  candidates: any[];
+  initialRoute: RoutePlan;
+  candidates: ModelRouteCandidate[];
   mockResponse?: string | undefined;
   temperature?: number | undefined;
   maxTokens?: number | undefined;
@@ -582,13 +770,13 @@ async function generateWithRetry(params: {
   traceRoot?: string | null | undefined;
   traceMeta?: Record<string, unknown> | undefined;
   deadline?: DeadlineContext | null | undefined;
-}) {
+}): Promise<DocumentGeneration> {
   const workflow = params.workflow;
   const maxAttempts = workflow?.workflowStrategy === "checkpointed" ? workflow.retryPolicy.maxAttemptsPerUnit : 1;
-  let lastGeneration: any = null;
+  let lastGeneration: DocumentGeneration | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (deadlineSnapshot(params.deadline).exhausted) {
-      const blocked = {
+      const blocked: DocumentGeneration = {
         status: "blocked",
         reason: "document_worker_deadline_exhausted",
         deadline: deadlineSnapshot(params.deadline),
@@ -678,7 +866,7 @@ async function generateWithRetry(params: {
     workflow.checkpoint.retry.unitsUsed = retryBudgetUsed + 1;
     writeCheckpoint(workflow);
   }
-  return lastGeneration ?? { status: "blocked", reason: "no_generation_attempts" };
+  return lastGeneration ?? { status: "blocked", reason: "no_generation_attempts", attemptFailures: [] };
 }
 
 function markdownExcerpt(markdown: string, maxChars = 12000) {
@@ -724,7 +912,7 @@ function dependencyWaves(items: DocumentWorkItem[]) {
 
 function injectUpstreamDocuments(
   item: DocumentWorkItem,
-  completedByDocType: Map<string, any>,
+  completedByDocType: Map<string, DocumentWorkerResult>,
   presentDocTypes: Set<string>,
 ) {
   const dependsOn = uniqueStrings(item.dependsOn ?? []);
@@ -796,7 +984,7 @@ function readContextPack(path?: string) {
   const resolved = safeContextPackPath(path);
   if (!resolved || !existsSync(resolved)) return null;
   try {
-    return JSON.parse(readFileSync(resolved, "utf8"));
+    return parseContextPack(JSON.parse(readFileSync(resolved, "utf8")) as unknown);
   } catch {
     return null;
   }
@@ -814,17 +1002,17 @@ function taskStatePathForItems(items: DocumentWorkItem[]) {
 
 function updateDocumentTaskState(
   items: DocumentWorkItem[],
-  results: any[],
+  results: DocumentWorkerResult[],
   phase: "running" | "completed" | "blocked" | "needs_fix" | "failed",
-) {
+): LedgerEvent | null {
   const path = taskStatePathForItems(items);
-  if (!path || !existsSync(path)) return;
+  if (!path || !existsSync(path)) return null;
   try {
     const current = JSON.parse(readFileSync(path, "utf8"));
     const completedWorkUnits = results.flatMap((result) =>
       (result?.sectionAttempts ?? [])
-        .filter((attempt: any) => attempt?.status === "completed")
-        .map((attempt: any) => ({
+        .filter((attempt) => attempt.status === "completed")
+        .map((attempt) => ({
           workUnitId: attempt.workUnitId ?? null,
           docType: result.docType,
           sections: attempt.sections ?? [],
@@ -832,7 +1020,10 @@ function updateDocumentTaskState(
           contextPackId: attempt.contextPackId ?? null,
         })),
     );
-    const openQuestions = uniqueStrings(results.flatMap((result) => result?.qaInput?.openQuestions ?? [])).slice(0, 100);
+    const openQuestions = uniqueStrings(results.flatMap((result) => {
+      const values = result.qaInput?.openQuestions;
+      return Array.isArray(values) ? values.map(String) : [];
+    })).slice(0, 100);
     writeJson(path, {
       ...current,
       phase,
@@ -842,8 +1033,18 @@ function updateDocumentTaskState(
       openQuestions,
       updatedAt: nowIso(),
     });
-  } catch {
-    // Task-state observability must not replace the document result.
+    return null;
+  } catch (error) {
+    return {
+      eventId: `event_${randomUUID()}`,
+      type: "projection_write_failed",
+      at: nowIso(),
+      actor: "document-worker-runtime",
+      operationId: `task-state:${phase}`,
+      reason: error instanceof Error ? error.message : String(error),
+      artifactRef: path,
+      recovery: "文档结果保留；从 Adaptive Execution Ledger 重新生成 task-state/Todo/飞书投影。",
+    };
   }
 }
 
@@ -858,9 +1059,9 @@ function contextWorkUnitForSections(item: DocumentWorkItem, sections: string[]) 
 function contextMetadataForSections(item: DocumentWorkItem, sections: string[]) {
   const unit = contextWorkUnitForSections(item, sections);
   const pack = readContextPack(unit?.contextPackRef);
-  const selectedSourceBlocks = Array.isArray(pack?.selectedSourceBlocks) ? pack.selectedSourceBlocks : [];
-  const sourceBlockIds = unit?.sourceBlockIds ?? pack?.sourceBlockIds ?? selectedSourceBlocks.map((block: any) => block.blockId).filter(Boolean);
-  const tableBlockCount = Number(unit?.tableBlockCount ?? pack?.tableBlockCount ?? selectedSourceBlocks.filter((block: any) => block.blockType === "table").length);
+  const selectedSourceBlocks = pack?.selectedSourceBlocks ?? [];
+  const sourceBlockIds = unit?.sourceBlockIds ?? pack?.sourceBlockIds ?? selectedSourceBlocks.map((block) => String(block.blockId ?? "")).filter(Boolean);
+  const tableBlockCount = Number(unit?.tableBlockCount ?? pack?.tableBlockCount ?? selectedSourceBlocks.filter((block) => block.blockType === "table").length);
   return {
     workUnitId: unit?.workUnitId ?? pack?.workUnitId ?? null,
     contextPackId: unit?.contextPackId ?? pack?.contextPackId ?? null,
@@ -971,7 +1172,7 @@ function buildSectionPrompt(params: {
       artifactIndex: contextMeta.artifactIndex,
       documentIdentity: contextMeta.documentIdentity,
       outputContract: contextMeta.outputContract,
-      selectedSourceBlocks: contextMeta.selectedSourceBlocks?.map((block: any) => ({
+      selectedSourceBlocks: contextMeta.selectedSourceBlocks?.map((block) => ({
         blockId: block.blockId,
         blockType: block.blockType,
         sourceFormat: block.sourceFormat,
@@ -1022,31 +1223,31 @@ function buildFullDocumentPrompt(item: DocumentWorkItem) {
   ].join("\n");
 }
 
-function isBlockedCandidate(candidate: any) {
-  return candidate?.provider?.toLowerCase?.() === "manual" || candidate?.strength?.toLowerCase?.() === "blocked";
+function isBlockedCandidate(candidate: ModelRouteCandidate) {
+  return candidate.provider.toLowerCase() === "manual" || candidate.strength?.toLowerCase() === "blocked";
 }
 
-function routeCandidates(route: any, mockProvider: boolean, unavailableProviders: string[]) {
+function routeCandidates(route: RoutePlan, mockProvider: boolean, unavailableProviders: string[]): ModelRouteCandidate[] {
   if (mockProvider) {
     return [{ provider: "mock", model: "mock-document-worker", strength: "test" }];
   }
   const unavailable = new Set(unavailableProviders.map((provider) => provider.toLowerCase()));
-  return (route?.candidates ?? [route?.selected].filter(Boolean)).filter((candidate: any) =>
-    candidate && !isBlockedCandidate(candidate) && !unavailable.has(String(candidate.provider).toLowerCase()),
+  const candidates = route.candidates ?? (route.selected ? [route.selected] : []);
+  return candidates.filter((candidate) => !isBlockedCandidate(candidate) && !unavailable.has(candidate.provider.toLowerCase()));
+}
+
+function selectedIndexFor(initialRoute: RoutePlan, candidates: ModelRouteCandidate[], candidate: ModelRouteCandidate) {
+  return (initialRoute.candidates ?? candidates).findIndex((routeCandidate) =>
+    routeCandidate.provider === candidate.provider && routeCandidate.model === candidate.model,
   );
 }
 
-function selectedIndexFor(initialRoute: any, candidates: any[], candidate: any) {
-  return (initialRoute.candidates ?? candidates).findIndex((routeCandidate: any) =>
-    routeCandidate?.provider === candidate.provider && routeCandidate?.model === candidate.model,
-  );
-}
-
-function isFallbackEligible(generation: any) {
-  if (generation?.reason === "model_provider_unavailable") return true;
-  if (generation?.reason === "model_provider_empty_response") return true;
-  if (generation?.reason === "model_provider_http_error") {
-    const status = Number(generation?.httpStatus ?? 0);
+function isFallbackEligible(generation: ModelGenerationResult) {
+  const reason = "reason" in generation ? generation.reason : null;
+  if (reason === "model_provider_unavailable") return true;
+  if (reason === "model_provider_empty_response") return true;
+  if (reason === "model_provider_http_error") {
+    const status = Number("httpStatus" in generation ? generation.httpStatus ?? 0 : 0);
     return status >= 500 && status < 600;
   }
   return false;
@@ -1055,8 +1256,8 @@ function isFallbackEligible(generation: any) {
 async function generateWithCandidates(params: {
   prompt: string;
   systemPrompt?: string | undefined;
-  initialRoute: any;
-  candidates: any[];
+  initialRoute: RoutePlan;
+  candidates: ModelRouteCandidate[];
   mockResponse?: string | undefined;
   temperature?: number | undefined;
   maxTokens?: number | undefined;
@@ -1065,8 +1266,8 @@ async function generateWithCandidates(params: {
   traceRoot?: string | null | undefined;
   traceMeta?: Record<string, unknown> | undefined;
   deadline?: DeadlineContext | null | undefined;
-}) {
-  const attempts: any[] = [];
+}): Promise<DocumentGeneration> {
+  const attempts: AttemptFailure[] = [];
   for (const [candidateIndex, candidate] of params.candidates.entries()) {
     const startedAt = new Date().toISOString();
     const timeoutMs = modelAttemptTimeoutMs(params.modelTimeoutMs, params.deadline);
@@ -1175,7 +1376,7 @@ async function generateWithCandidates(params: {
       model: candidate.model,
       status: generation.status,
       reason: generation.reason,
-      missingEnv: generation.missingEnv ?? [],
+      missingEnv: Array.isArray(generation.missingEnv) ? generation.missingEnv : [],
       httpStatus: generation.httpStatus ?? null,
       streamTracePath: generation.streamTracePath ?? streamTracePath ?? null,
       streamTraceSummaryPath: generation.streamTraceSummaryPath ?? streamTraceSummaryPath ?? null,
@@ -1270,7 +1471,7 @@ async function generateOne(params: {
     };
   }
 
-  const initialRoute = params.mockProvider
+  const initialRoute: RoutePlan = params.mockProvider
     ? {
       status: "selected",
       reason: null,
@@ -1288,7 +1489,7 @@ async function generateOne(params: {
         userRequestedDeepThinking: params.userRequestedDeepThinking,
         estimatedComplexity: params.estimatedComplexity,
         unavailableProviders: params.unavailableProviders,
-      });
+      }) as RoutePlan;
 
   if (initialRoute.status === "blocked") {
     return {
@@ -1309,10 +1510,10 @@ async function generateOne(params: {
     : [{ batchIndex: 0, sections: requiredSections }];
   const candidates = routeCandidates(initialRoute, params.mockProvider, params.unavailableProviders);
   const markdownParts: string[] = [];
-  const sectionAttempts: any[] = [];
+  const sectionAttempts: DocumentAttempt[] = [];
   const completedSections: string[] = [];
-  let docModelRoute: any = null;
-  let usage: any[] = [];
+  let docModelRoute: RoutePlan | null = null;
+  const usage: Array<ModelUsage | null> = [];
   const traceRoot = traceRootFor(params.runId, params.outputRoot);
   const checkpointRecord = docCheckpoint(params.workflow, item, taskIndex);
   const previousCheckpointDocStatus = checkpointRecord?.doc?.status ?? null;
@@ -1340,6 +1541,7 @@ async function generateOne(params: {
           status: "completed",
           artifactPath: blueprintPath,
           artifactRelativePath: relativeWorkflowPath(params.workflow, blueprintPath),
+          artifactHash: artifactHash(blueprintPath),
           updatedAt: nowIso(),
         };
       }
@@ -1367,7 +1569,9 @@ async function generateOne(params: {
     params.workflow?.resumeFromCheckpoint &&
     previousCheckpointDocStatus !== "completed" &&
     checkpointRecord.doc.assembly?.artifactPath &&
+    checkpointRecord.doc.assembly.artifactHash &&
     existsSync(checkpointRecord.doc.assembly.artifactPath) &&
+    artifactHash(checkpointRecord.doc.assembly.artifactPath) === checkpointRecord.doc.assembly.artifactHash &&
     Array.isArray(checkpointRecord.doc.missingSections) &&
     checkpointRecord.doc.missingSections.length > 0
   ) {
@@ -1387,13 +1591,13 @@ async function generateOne(params: {
     for (const batch of sectionBatches) {
       const contextMeta = contextMetadataForSections(item, batch.sections);
       const unitId = sectionUnitKey(taskIndex, item.docType, batch.batchIndex, contextMeta.contextPackHash);
+      const idempotencyKey = unitIdempotencyKey({ runId: params.runId, docType: item.docType, unitId, stage: "section_draft", contextPackHash: contextMeta.contextPackHash });
       const sectionCheckpoint = checkpointRecord?.doc?.sections?.[unitId] ?? null;
       if (
         params.workflow?.resumeFromCheckpoint &&
-        sectionCheckpoint?.status === "completed" &&
-        sectionCheckpoint?.artifactPath &&
-        existsSync(sectionCheckpoint.artifactPath)
+        reusableCheckpointUnit(sectionCheckpoint ?? undefined, idempotencyKey)
       ) {
+        if (!sectionCheckpoint?.artifactPath) throw new Error("checkpoint_artifact_path_missing_after_validation");
         const checkpointMarkdown = readText(sectionCheckpoint.artifactPath);
         markdownParts.push(checkpointMarkdown);
         completedSections.push(...batch.sections);
@@ -1495,8 +1699,8 @@ async function generateOne(params: {
       if (generation.status === "completed") {
         markdownParts.push(generation.content);
         completedSections.push(...batch.sections);
-        docModelRoute = docModelRoute ?? generation.modelRoute;
-        usage.push(generation.usage);
+        docModelRoute = docModelRoute ?? generation.modelRoute ?? initialRoute;
+        usage.push(generation.usage ?? null);
         if (traceRoot) {
           const partialPath = join(traceRoot, "partials", `task-${taskIndex}-${safeSegment(item.docType, "document")}-batch-${batch.batchIndex}.md`);
           writeText(partialPath, generation.content);
@@ -1525,6 +1729,8 @@ async function generateOne(params: {
             sections: batch.sections,
             artifactPath: sectionPath,
             artifactRelativePath: relativeWorkflowPath(params.workflow, sectionPath),
+            artifactHash: sectionPath ? artifactHash(sectionPath) : null,
+            idempotencyKey,
             retryCount: generation.workflowRetry?.retryCount ?? 0,
             attempts: generation.workflowRetry?.attempts ?? 1,
             provider: generation.modelRoute?.selected?.provider ?? null,
@@ -1551,6 +1757,7 @@ async function generateOne(params: {
           workUnitId: contextMeta.workUnitId,
           contextPackId: contextMeta.contextPackId,
           contextPackHash: contextMeta.contextPackHash,
+          idempotencyKey,
           lastProviderAttempt: lastAttemptFailure(generation),
           updatedAt: nowIso(),
         };
@@ -1560,18 +1767,21 @@ async function generateOne(params: {
   } else {
     const contextMeta = contextMetadataForSections(item, requiredSections);
     const unitId = sectionUnitKey(taskIndex, item.docType, "full", contextMeta.contextPackHash);
+    const idempotencyKey = unitIdempotencyKey({ runId: params.runId, docType: item.docType, unitId, stage: "full_document", contextPackHash: contextMeta.contextPackHash });
     const sectionCheckpoint = checkpointRecord?.doc?.sections?.[unitId] ?? null;
-    let generation: any = null;
+    let generation: DocumentGeneration | null = null;
     if (
       params.workflow?.resumeFromCheckpoint &&
-      sectionCheckpoint?.status === "completed" &&
-      sectionCheckpoint?.artifactPath &&
-      existsSync(sectionCheckpoint.artifactPath)
+      reusableCheckpointUnit(sectionCheckpoint ?? undefined, idempotencyKey)
     ) {
+      if (!sectionCheckpoint?.artifactPath) throw new Error("checkpoint_artifact_path_missing_after_validation");
       generation = {
         status: "completed",
         content: readText(sectionCheckpoint.artifactPath),
         reason: "checkpoint_reused",
+        usage: null,
+        modelRoute: initialRoute,
+        attemptFailures: [],
         workflowRetry: { unitId, stage: "full_document", retryCount: sectionCheckpoint.retryCount ?? 0, attempts: sectionCheckpoint.attempts ?? 1 },
       };
     } else {
@@ -1614,6 +1824,7 @@ async function generateOne(params: {
         },
       });
     }
+    if (!generation) throw new Error("document_generation_result_missing");
     sectionAttempts.push({
       batchIndex: 0,
       sections: requiredSections,
@@ -1642,8 +1853,8 @@ async function generateOne(params: {
     if (generation.status === "completed") {
       markdownParts.push(generation.content);
       completedSections.push(...requiredSections);
-      docModelRoute = generation.modelRoute;
-      usage.push(generation.usage);
+      docModelRoute = generation.modelRoute ?? initialRoute;
+      usage.push(generation.usage ?? null);
       if (checkpointRecord && generation.reason !== "checkpoint_reused") {
         const sectionPath = workflowArtifactPath(params.workflow, "sections", `${unitId}.md`);
         if (sectionPath) writeText(sectionPath, generation.content);
@@ -1654,6 +1865,9 @@ async function generateOne(params: {
           sections: requiredSections,
           artifactPath: sectionPath,
           artifactRelativePath: relativeWorkflowPath(params.workflow, sectionPath),
+          artifactHash: sectionPath ? artifactHash(sectionPath) : null,
+          idempotencyKey,
+          contextPackHash: contextMeta.contextPackHash,
           retryCount: generation.workflowRetry?.retryCount ?? 0,
           attempts: generation.workflowRetry?.attempts ?? 1,
           provider: generation.modelRoute?.selected?.provider ?? null,
@@ -1677,6 +1891,7 @@ async function generateOne(params: {
         workUnitId: contextMeta.workUnitId,
         contextPackId: contextMeta.contextPackId,
         contextPackHash: contextMeta.contextPackHash,
+        idempotencyKey,
         lastProviderAttempt: lastAttemptFailure(generation),
         updatedAt: nowIso(),
       };
@@ -1685,7 +1900,7 @@ async function generateOne(params: {
   }
 
   let markdown = mergeMarkdown(markdownParts);
-  const repairAttempts: any[] = [];
+  const repairAttempts: DocumentAttempt[] = [];
   let currentMissingSections = missingSections(markdown, requiredSections);
   let repairSequence = 0;
   for (let repairRound = 0; repairRound < params.maxRepairAttempts && currentMissingSections.length > 0 && markdown; repairRound += 1) {
@@ -1717,6 +1932,7 @@ async function generateOne(params: {
         missingSections: repairSections,
       });
       const unitId = repairUnitKey(taskIndex, item.docType, repairSequence);
+      const idempotencyKey = unitIdempotencyKey({ runId: params.runId, docType: item.docType, unitId, stage: "repair", contextPackHash: contextMeta.contextPackHash });
       const repair = await generateWithRetry({
         unitId,
         stage: "repair",
@@ -1794,6 +2010,8 @@ async function generateOne(params: {
             attempts: repair.workflowRetry?.attempts ?? 1,
             retryExhausted: repair.workflowRetry?.retryExhausted ?? false,
             retryBudgetExhausted: repair.workflowRetry?.retryBudgetExhausted ?? false,
+            idempotencyKey,
+            contextPackHash: contextMeta.contextPackHash,
             lastProviderAttempt: lastAttemptFailure(repair),
             updatedAt: nowIso(),
           };
@@ -1814,6 +2032,9 @@ async function generateOne(params: {
           sections: repairSections,
           artifactPath: repairPath,
           artifactRelativePath: relativeWorkflowPath(params.workflow, repairPath),
+          artifactHash: repairPath ? artifactHash(repairPath) : null,
+          idempotencyKey,
+          contextPackHash: contextMeta.contextPackHash,
           retryCount: repair.workflowRetry?.retryCount ?? 0,
           attempts: repair.workflowRetry?.attempts ?? 1,
           updatedAt: nowIso(),
@@ -1821,8 +2042,8 @@ async function generateOne(params: {
         writeCheckpoint(params.workflow);
       }
       repairedAnyInRound = true;
-      docModelRoute = docModelRoute ?? repair.modelRoute;
-      usage.push(repair.usage);
+      docModelRoute = docModelRoute ?? repair.modelRoute ?? initialRoute;
+      usage.push(repair.usage ?? null);
       repairSequence += 1;
       currentMissingSections = missingSections(markdown, requiredSections);
     }
@@ -1838,14 +2059,17 @@ async function generateOne(params: {
   if (checkpointRecord) {
     if (markdown) {
       assemblyPath = workflowArtifactPath(params.workflow, "assembly", `task-${taskIndex}-${safeSegment(item.docType, "document")}.md`);
-      if (assemblyPath) writeText(assemblyPath, markdown);
-      checkpointRecord.doc.assembly = {
-        status: "completed",
-        artifactPath: assemblyPath,
-        artifactRelativePath: relativeWorkflowPath(params.workflow, assemblyPath),
-        contentChars: markdown.length,
-        updatedAt: nowIso(),
-      };
+      if (assemblyPath) {
+        writeText(assemblyPath, markdown);
+        checkpointRecord.doc.assembly = {
+          status: "completed",
+          artifactPath: assemblyPath,
+          artifactRelativePath: relativeWorkflowPath(params.workflow, assemblyPath),
+          artifactHash: artifactHash(assemblyPath),
+          contentChars: markdown.length,
+          updatedAt: nowIso(),
+        };
+      }
     }
     reviewPath = workflowArtifactPath(params.workflow, "reviews", `task-${taskIndex}-${safeSegment(item.docType, "document")}.json`);
     if (reviewPath) {
@@ -1867,6 +2091,7 @@ async function generateOne(params: {
         status: status === "completed" ? "pass" : status,
         artifactPath: reviewPath,
         artifactRelativePath: relativeWorkflowPath(params.workflow, reviewPath),
+        artifactHash: artifactHash(reviewPath),
         missingSections: currentMissingSections,
         updatedAt: nowIso(),
       };
@@ -1961,8 +2186,8 @@ function routeTaskTypeFor(item: DocumentWorkItem, params: {
   return "document_shard_fast";
 }
 
-async function runLimited<T>(items: T[], maxWorkers: number, worker: (item: T, index: number) => Promise<any>) {
-  const results = new Array(items.length);
+async function runLimited<T, Result>(items: T[], maxWorkers: number, worker: (item: T, index: number) => Promise<Result>): Promise<Result[]> {
+  const results: Result[] = new Array<Result>(items.length);
   let next = 0;
   async function loop() {
     while (next < items.length) {
@@ -1977,28 +2202,32 @@ async function runLimited<T>(items: T[], maxWorkers: number, worker: (item: T, i
   return results;
 }
 
-function aggregateStatus(results: any[]) {
-  if (results.some((result) => result.status === "blocked")) return "blocked";
-  if (results.some((result) => result.status === "needs_fix")) return "needs_fix";
-  return "completed";
+function aggregateStatus(results: unknown[]): DocumentWorkerStatus {
+  const validated = results.map((result) => parseDocumentWorkerResult(result));
+  if (validated.some((result) => result.status === "blocked")) return "blocked";
+  if (validated.some((result) => result.status === "needs_fix")) return "needs_fix";
+  if (validated.every((result) => result.status === "completed")) return "completed";
+  throw new ContractValidationError({
+    reason: "document_worker_status_unknown",
+    fieldPath: "results[].status",
+    recovery: "阻断当前结果并重新运行产生未知状态的 work unit。",
+  });
 }
 
-function summarizeWorkflow(workflow: WorkflowContext | null | undefined, results: any[]) {
-  const docs = workflow?.checkpoint?.docs && typeof workflow.checkpoint.docs === "object"
-    ? Object.values(workflow.checkpoint.docs)
-    : [];
-  const completedUnits = docs.flatMap((doc: any) =>
-    Object.entries(doc.sections ?? {})
-      .filter((_entry: any) => _entry[1]?.status === "completed")
-      .map(([unitId, unit]: any) => ({ unitId, docType: doc.docType, stage: unit.stage ?? "section_draft" })),
+function summarizeWorkflow(workflow: WorkflowContext | null | undefined, results: DocumentWorkerResult[]) {
+  const docs = Object.values(workflow?.checkpoint.docs ?? {});
+  const completedUnits = docs.flatMap((doc) =>
+    Object.entries(doc.sections)
+      .filter(([, unit]) => unit.status === "completed")
+      .map(([unitId, unit]) => ({ unitId, docType: doc.docType, stage: unit.stage ?? "section_draft" })),
   );
-  const failedUnits = docs.flatMap((doc: any) =>
+  const failedUnits = docs.flatMap((doc) =>
     [
-      ...Object.entries(doc.sections ?? {}),
-      ...Object.entries(doc.repairs ?? {}),
+      ...Object.entries(doc.sections),
+      ...Object.entries(doc.repairs),
     ]
-      .filter((_entry: any) => _entry[1]?.status === "failed")
-      .map(([unitId, unit]: any) => ({
+      .filter(([, unit]) => unit.status === "failed")
+      .map(([unitId, unit]) => ({
         unitId,
         docType: doc.docType,
         stage: unit.stage ?? "section_draft",
@@ -2006,7 +2235,7 @@ function summarizeWorkflow(workflow: WorkflowContext | null | undefined, results
         retryExhausted: Boolean(unit.retryExhausted),
       })),
   );
-  const pendingUnits = results.flatMap((result: any) =>
+  const pendingUnits = results.flatMap((result) =>
     (result.missingSections ?? []).map((section: string) => ({
       docType: result.docType,
       stage: result.markdown ? "review" : "section_draft",
@@ -2019,25 +2248,25 @@ function summarizeWorkflow(workflow: WorkflowContext | null | undefined, results
     retryLedgerPath: workflow?.retryLedgerPath ?? null,
     qualityMode: workflow?.qualityMode ?? "stable",
     workflowStrategy: workflow?.workflowStrategy ?? "checkpointed",
-    publishPartial: workflow?.publishPartial === true,
+    publishPartial: false,
     retryPolicy: workflow?.retryPolicy ?? { maxAttemptsPerUnit: DEFAULT_RETRY_ATTEMPTS_PER_UNIT, maxRetryUnits: DEFAULT_MAX_RETRY_UNITS },
     retryUnitsUsed: Number(workflow?.checkpoint?.retry?.unitsUsed ?? 0),
     completedUnits,
     pendingUnits,
     failedUnits,
-    retryExhausted: failedUnits.some((unit: any) => unit.retryExhausted) ||
+    retryExhausted: failedUnits.some((unit) => unit.retryExhausted) ||
       Number(workflow?.checkpoint?.retry?.unitsUsed ?? 0) >= Number(workflow?.retryPolicy.maxRetryUnits ?? DEFAULT_MAX_RETRY_UNITS),
   };
 }
 
-function lastProviderAttemptFromResults(results: any[]) {
+function lastProviderAttemptFromResults(results: DocumentWorkerResult[]) {
   for (const result of [...results].reverse()) {
     const attempts = [
-      ...(Array.isArray(result?.repairAttempts) ? result.repairAttempts : []),
-      ...(Array.isArray(result?.sectionAttempts) ? result.sectionAttempts : []),
+      ...(result.repairAttempts ?? []),
+      ...(result.sectionAttempts ?? []),
     ];
     for (const attempt of attempts.reverse()) {
-      const failures = Array.isArray(attempt?.attemptFailures) ? attempt.attemptFailures : [];
+      const failures = recordArray(attempt.attemptFailures);
       const last = failures.at(-1);
       if (last) {
         return {
@@ -2068,7 +2297,7 @@ function lastProviderAttemptFromResults(results: any[]) {
   return null;
 }
 
-function nextActionForFailure(reason: string | null, lastAttempt: any, retryExhausted: boolean) {
+function nextActionForFailure(reason: string | null, lastAttempt: Record<string, unknown> | null, retryExhausted: boolean) {
   if (lastAttempt?.reason === "model_provider_unavailable" || reason === "model_provider_unavailable") {
     return "检查本地 provider 配置后按 checkpoint 继续运行。";
   }
@@ -2084,20 +2313,20 @@ function nextActionForFailure(reason: string | null, lastAttempt: any, retryExha
   return "保留本地 checkpoint，修复阻塞原因后继续运行。";
 }
 
-function buildFinalFailureReport(results: any[], workflowSummary: any, status: string) {
+function buildFinalFailureReport(results: DocumentWorkerResult[], workflowSummary: ReturnType<typeof summarizeWorkflow>, status: DocumentWorkerStatus) {
   if (status === "completed") return null;
-  const failed = results.find((result: any) => result?.status === "blocked") ??
-    results.find((result: any) => result?.status === "needs_fix") ??
+  const failed = results.find((result) => result.status === "blocked") ??
+    results.find((result) => result.status === "needs_fix") ??
     null;
   const lastAttempt = lastProviderAttemptFromResults(results);
   const terminalReason = failed?.reason ?? workflowSummary?.failedUnits?.[0]?.reason ?? "document_workflow_not_completed";
   const completedDocs = results
-    .filter((result: any) => result?.status === "completed")
-    .map((result: any) => result.docType)
+    .filter((result) => result.status === "completed")
+    .map((result) => result.docType)
     .filter(Boolean);
   const pendingDocs = results
-    .filter((result: any) => result?.status !== "completed")
-    .map((result: any) => ({
+    .filter((result) => result.status !== "completed")
+    .map((result) => ({
       docType: result.docType,
       status: result.status,
       reason: result.reason ?? null,
@@ -2109,7 +2338,7 @@ function buildFinalFailureReport(results: any[], workflowSummary: any, status: s
     status,
     completedDocs,
     pendingDocs,
-    failedStage: failed?.deadlineStage ?? workflowSummary?.failedUnits?.[0]?.stage ?? (failed?.markdown ? "review" : "section_draft"),
+    failedStage: asObject(failed).deadlineStage ?? workflowSummary.failedUnits[0]?.stage ?? (failed?.markdown ? "review" : "section_draft"),
     retryCount: Number(workflowSummary?.retryUnitsUsed ?? 0),
     retryExhausted: Boolean(workflowSummary?.retryExhausted),
     lastProviderAttempt: lastAttempt,
@@ -2125,7 +2354,7 @@ export default function (pi: ExtensionAPI) {
     label: "Document Workers Plan",
     description: "Plan bounded context-pack document work units from prompt registry outputs.",
     parameters: Type.Object({
-      documentWorkItems: Type.Array(Type.Unknown()),
+      documentWorkItems: Type.Array(DocumentWorkItemSchema),
       maxWorkers: Type.Optional(Type.Number()),
       sectionBatching: Type.Optional(Type.Boolean()),
       sectionsPerBatch: Type.Optional(Type.Number()),
@@ -2185,7 +2414,7 @@ export default function (pi: ExtensionAPI) {
     description: "Run bounded document work units through model providers in parallel and return per-document Markdown plus QA input.",
     parameters: Type.Object({
       runId: Type.String(),
-      documentWorkItems: Type.Array(Type.Unknown()),
+      documentWorkItems: Type.Array(DocumentWorkItemSchema),
       maxWorkers: Type.Optional(Type.Number()),
       unavailableProviders: Type.Optional(Type.Array(Type.String())),
       mockProvider: Type.Optional(Type.Boolean()),
@@ -2211,6 +2440,7 @@ export default function (pi: ExtensionAPI) {
       retryPolicy: Type.Optional(Type.Unknown()),
     }),
     async execute(_toolCallId, params): Promise<AgentToolResult<DocumentWorkersRunDetails>> {
+      let workflowRunLock: WorkflowRunLock | null = null;
       try {
         const documentWorkItems = normalizeDocumentWorkItems(params.documentWorkItems);
         if (documentWorkItems.length === 0) {
@@ -2230,6 +2460,15 @@ export default function (pi: ExtensionAPI) {
         const sectionBatching = params.sectionBatching !== false;
         const sectionsPerBatch = effectiveSectionsPerBatch(params.sectionsPerBatch);
         const maxRepairAttempts = effectiveRepairAttempts(params.maxRepairAttempts);
+        const checkpointInputHash = sha256({
+          runId: params.runId,
+          documentWorkItems,
+          sectionBatching,
+          sectionsPerBatch,
+          maxRepairAttempts,
+          reasoningDepth: params.reasoningDepth ?? null,
+          qualityMode: params.qualityMode ?? "stable",
+        });
         const deadline = deadlineContext({
           deadlineAt: params.deadlineAt,
           runtimeBudgetMs: params.runtimeBudgetMs,
@@ -2243,30 +2482,56 @@ export default function (pi: ExtensionAPI) {
           resumeFromCheckpoint: params.resumeFromCheckpoint,
           publishPartial: params.publishPartial,
           retryPolicy: params.retryPolicy,
+          inputHash: checkpointInputHash,
         });
+        workflowRunLock = acquireWorkflowRunLock(workflow);
+        const projectionEvents: LedgerEvent[] = [];
+        const recordProjectionFailure = (event: LedgerEvent | null) => {
+          if (event) projectionEvents.push(event);
+        };
         const dependencyPlan = dependencyWaves(documentWorkItems);
         if (dependencyPlan.dependencyCycleDetected) {
-          updateDocumentTaskState(documentWorkItems, [], "blocked");
+          recordProjectionFailure(updateDocumentTaskState(documentWorkItems, [], "blocked"));
           const blocked = {
             status: "blocked",
             reason: "document_dependency_cycle_blocked",
             dependencyCycleDetected: true,
+            projectionEvents,
+            projection: {
+              status: projectionEvents.length > 0 ? "needs_recovery" : "synced",
+              recovery: projectionEvents.length > 0 ? "从 Adaptive Execution Ledger 重建 task-state、Todo、飞书和 Workbench 投影。" : null,
+            },
             rawSecretsReturned: false,
           };
           return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
         }
-        const completedByDocType = new Map<string, any>();
-        const results: any[] = new Array(documentWorkItems.length);
-        updateDocumentTaskState(documentWorkItems, [], "running");
+        const completedByDocType = new Map<string, DocumentWorkerResult>();
+        const results: Array<DocumentWorkerResult & { executionWave?: number }> = new Array(documentWorkItems.length);
+        recordProjectionFailure(updateDocumentTaskState(documentWorkItems, [], "running"));
         for (const wave of dependencyPlan.waves) {
           const waveTasks = wave.taskIndexes.map((taskIndex) => {
             const item = documentWorkItems[taskIndex];
             if (!item) throw new Error("document_work_item_index_out_of_range");
             return { taskIndex, item };
           });
-          const waveResults = await runLimited(waveTasks, maxWorkers, (task) =>
-            generateOne({
-              item: injectUpstreamDocuments(task.item, completedByDocType, dependencyPlan.presentDocTypes),
+          const waveResults = await runLimited(waveTasks, maxWorkers, async (task) => {
+            const preparedItem = injectUpstreamDocuments(task.item, completedByDocType, dependencyPlan.presentDocTypes);
+            if ((preparedItem.missingUpstreamDocuments ?? []).length > 0) {
+              return parseDocumentWorkerResult({
+                taskIndex: task.taskIndex,
+                docType: preparedItem.docType,
+                status: "blocked",
+                reason: "document_upstream_not_completed",
+                markdown: "",
+                completedSections: [],
+                missingSections: preparedItem.requiredSections,
+                sectionAttempts: [],
+                repairAttempts: [],
+                rawSecretsReturned: false,
+              });
+            }
+            return generateOne({
+              item: preparedItem,
               taskIndex: task.taskIndex,
               unavailableProviders: params.unavailableProviders ?? [],
               mockProvider: params.mockProvider === true,
@@ -2285,23 +2550,24 @@ export default function (pi: ExtensionAPI) {
               captureModelStream: params.captureModelStream !== false,
               deadline,
               workflow,
-            }),
-          );
+            });
+          });
           for (const result of waveResults) {
-            results[result.taskIndex] = { ...result, executionWave: wave.waveIndex };
-            if (result?.markdown && ["completed", "needs_fix"].includes(String(result.status))) {
-              completedByDocType.set(result.docType, result);
+            const validatedResult = parseDocumentWorkerResult(result);
+            results[validatedResult.taskIndex] = { ...validatedResult, executionWave: wave.waveIndex };
+            if (validatedResult.markdown && validatedResult.status === "completed") {
+              completedByDocType.set(validatedResult.docType, validatedResult);
             }
           }
-          updateDocumentTaskState(documentWorkItems, results.filter(Boolean), "running");
+          recordProjectionFailure(updateDocumentTaskState(documentWorkItems, results.filter(Boolean), "running"));
         }
         const orderedResults = results.sort((a, b) => a.taskIndex - b.taskIndex);
         const aggregateResultStatus = aggregateStatus(orderedResults);
-        updateDocumentTaskState(
+        recordProjectionFailure(updateDocumentTaskState(
           documentWorkItems,
           orderedResults,
           aggregateResultStatus === "completed" ? "completed" : aggregateResultStatus === "needs_fix" ? "needs_fix" : "blocked",
-        );
+        ));
         const workflowSummary = summarizeWorkflow(workflow, orderedResults);
         if (workflowSummary.manifestPath) {
           writeJson(workflowSummary.manifestPath, {
@@ -2390,18 +2656,28 @@ export default function (pi: ExtensionAPI) {
           workflow: workflowSummary,
           finalFailureReport,
           results: orderedResults,
+          projectionEvents,
+          projection: {
+            status: projectionEvents.length > 0 ? "needs_recovery" : "synced",
+            failedWrites: projectionEvents.length,
+            recovery: projectionEvents.length > 0 ? "从 Adaptive Execution Ledger 重建 task-state、Todo、飞书和 Workbench 投影。" : null,
+          },
           rawSecretsReturned: false,
           hardcodedDocumentScaffoldUsed: false,
         };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {
+        const contractError = error instanceof ContractValidationError ? error : null;
         const blocked = {
           status: "blocked",
-          reason: error instanceof Error ? error.message : String(error),
+          reason: contractError?.reason ?? (error instanceof Error ? error.message : String(error)),
+          ...(contractError ? { fieldPath: contractError.fieldPath, recovery: contractError.recovery } : {}),
           runId: params.runId,
           rawSecretsReturned: false,
         };
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
+      } finally {
+        releaseWorkflowRunLock(workflowRunLock);
       }
     },
   });

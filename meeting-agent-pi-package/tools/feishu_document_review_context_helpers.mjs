@@ -12,16 +12,37 @@ const REVIEW_CONTEXT_GUARDRAIL = "bounded comment anchors only";
 const REVIEW_CONTEXT_METHODS = ["cli", "sdk", "export_body_detected", "unavailable"];
 const COMMENT_MATCH_STATUSES = ["exact_unique", "exact_multiple", "fuzzy", "unmatched", "exported_body_detected"];
 
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {{ exitCode: number, stdout: string, stderr: string, [key: string]: unknown }} CommandResult
+ * @typedef {(command: string, args: string[], options: { timeoutMs: number }) => Promise<CommandResult>} RunCommand
+ * @typedef {{ dryRun?: boolean, timeoutMs?: number }} ReviewOptions
+ * @typedef {{ sourceId: string, fileName: unknown, fileToken: unknown, fileType: string | null, explicitFileReference: boolean, downloadMethod: unknown, apiEligible: boolean }} ReviewSource
+ * @typedef {UnknownRecord & { replyCount: number, isSolved: unknown }} SanitizedComment
+ * @typedef {UnknownRecord & { status: string, method: string, apiStatus: string, identityTried: string[], comments: SanitizedComment[], plannedCommands: string[][], errors: UnknownRecord[], reason: string | null }} ReviewSourceResult
+ * @typedef {{ attachments?: unknown[], [key: string]: unknown }} ReviewTask
+ * @typedef {{ fileName?: unknown, [key: string]: unknown }} FileContext
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string} name @param {boolean} [fallback] */
 function envFlag(name, fallback = false) {
   const value = process.env[name]?.trim();
   if (!value) return fallback;
   return /^(1|true|yes|on)$/i.test(value);
 }
 
+/** @param {unknown} value */
 function redactString(value) {
   return String(value ?? "")
     .replace(/(file_token|fileToken|comment_id|commentId)\s*[:=]\s*["']?[^"',\s}]+/gi, "$1:[redacted]")
@@ -29,15 +50,18 @@ function redactString(value) {
     .replace(/bearer\s+[A-Za-z0-9._-]+/gi, "[redacted]");
 }
 
+/** @param {unknown} value */
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
+/** @param {unknown} value */
 function hashId(value) {
   const text = String(value ?? "");
   return text ? hashText(text).slice(0, 16) : null;
 }
 
+/** @param {unknown} stdout @returns {unknown} */
 function parseJsonOutput(stdout) {
   const text = String(stdout ?? "").trim();
   if (!text) return null;
@@ -54,40 +78,49 @@ function parseJsonOutput(stdout) {
   }
 }
 
-function extractItems(payload) {
+/** @param {unknown} payloadValue @returns {UnknownRecord[]} */
+function extractItems(payloadValue) {
+  const payload = asRecord(payloadValue);
+  const data = asRecord(payload.data);
   if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.data?.items)) return payload.data.items;
-  if (Array.isArray(payload?.data?.comments)) return payload.data.comments;
-  if (Array.isArray(payload?.comments)) return payload.comments;
+  if (Array.isArray(payload.items)) return payload.items.map(asRecord);
+  if (Array.isArray(data.items)) return data.items.map(asRecord);
+  if (Array.isArray(data.comments)) return data.comments.map(asRecord);
+  if (Array.isArray(payload.comments)) return payload.comments.map(asRecord);
   return [];
 }
 
-function extractPageToken(payload) {
-  return payload?.page_token ?? payload?.data?.page_token ?? null;
+/** @param {unknown} payloadValue */
+function extractPageToken(payloadValue) {
+  const payload = asRecord(payloadValue);
+  return payload.page_token ?? asRecord(payload.data).page_token ?? null;
 }
 
-function extractHasMore(payload) {
-  return payload?.has_more === true || payload?.data?.has_more === true;
+/** @param {unknown} payloadValue */
+function extractHasMore(payloadValue) {
+  const payload = asRecord(payloadValue);
+  return payload.has_more === true || asRecord(payload.data).has_more === true;
 }
 
+/** @param {unknown} value @returns {string} */
 function richTextToText(value) {
   if (value == null) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) return value.map(richTextToText).filter(Boolean).join("");
   if (typeof value === "object") {
+    const record = asRecord(value);
     const direct = [
-      value.text,
-      value.content,
-      value.plain_text,
-      value.plainText,
-      value.name,
+      record.text,
+      record.content,
+      record.plain_text,
+      record.plainText,
+      record.name,
     ].filter((item) => typeof item === "string" && item.trim());
     if (direct.length > 0) return direct.join("");
-    if (Array.isArray(value.elements)) return richTextToText(value.elements);
-    if (Array.isArray(value.children)) return richTextToText(value.children);
-    return Object.entries(value)
+    if (Array.isArray(record.elements)) return richTextToText(record.elements);
+    if (Array.isArray(record.children)) return richTextToText(record.children);
+    return Object.entries(record)
       .filter(([key]) => !/id|token|url|time|user|image|reaction/i.test(key))
       .map(([, entry]) => richTextToText(entry))
       .filter(Boolean)
@@ -96,12 +129,15 @@ function richTextToText(value) {
   return "";
 }
 
+/** @param {unknown} value @param {number} maxChars */
 function boundedText(value, maxChars) {
   return redactString(richTextToText(value)).replace(/\s+/g, " ").trim().slice(0, maxChars);
 }
 
-function fileTypeFromAttachment(attachment) {
-  const type = String(attachment?.explicitFileUrlType ?? attachment?.fileType ?? "").toLowerCase();
+/** @param {unknown} attachmentValue */
+function fileTypeFromAttachment(attachmentValue) {
+  const attachment = asRecord(attachmentValue);
+  const type = String(attachment.explicitFileUrlType ?? attachment.fileType ?? "").toLowerCase();
   if (type === "doc") return "doc";
   if (type === "docx" || type === "wiki") return "docx";
   if (type === "sheet" || type === "sheets") return "sheet";
@@ -111,13 +147,14 @@ function fileTypeFromAttachment(attachment) {
   return null;
 }
 
+/** @param {unknown[]} command @returns {string[]} */
 function redactCommand(command) {
   return command.map((part) => {
     const text = String(part ?? "");
     if (!text.trim().startsWith("{")) return redactString(text);
     const payload = parseJsonOutput(text);
     if (!payload || typeof payload !== "object") return redactString(text);
-    const redacted = { ...payload };
+    const redacted = { ...asRecord(payload) };
     if (redacted.file_token) redacted.file_token = "[redacted]";
     if (redacted.comment_id) redacted.comment_id = "[redacted]";
     if (Array.isArray(redacted.comment_ids)) redacted.comment_ids = redacted.comment_ids.map(() => "[redacted]");
@@ -125,6 +162,7 @@ function redactCommand(command) {
   });
 }
 
+/** @param {ReviewSource} source */
 function sanitizeSource(source) {
   return {
     sourceId: source.sourceId,
@@ -138,6 +176,7 @@ function sanitizeSource(source) {
   };
 }
 
+/** @param {ReviewSource} source @returns {ReviewSourceResult} */
 function createSourceResult(source) {
   return {
     ...sanitizeSource(source),
@@ -160,6 +199,7 @@ function createSourceResult(source) {
   };
 }
 
+/** @param {SanitizedComment[]} comments */
 function summarizeComments(comments) {
   const replyCount = comments.reduce((sum, comment) => sum + (comment.replyCount ?? 0), 0);
   const unresolvedCount = comments.filter((comment) => comment.isSolved === false || comment.isSolved == null).length;
@@ -177,7 +217,9 @@ function identitySequence() {
   return ["user", "bot"];
 }
 
-function classifyCommentFailure(result) {
+/** @param {unknown} resultValue */
+function classifyCommentFailure(resultValue) {
+  const result = asRecord(resultValue);
   const text = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`;
   if (/1069303|forbidden|permission|scope|docs:document\.comment:read|drive:drive:readonly|HTTP 403|status.?403/i.test(text)) {
     return {
@@ -200,8 +242,10 @@ function classifyCommentFailure(result) {
   };
 }
 
-function sanitizeReply(reply) {
-  const contentText = boundedText(reply?.content ?? reply?.text ?? "", REPLY_TEXT_MAX_CHARS);
+/** @param {unknown} replyValue */
+function sanitizeReply(replyValue) {
+  const reply = asRecord(replyValue);
+  const contentText = boundedText(reply.content ?? reply.text ?? "", REPLY_TEXT_MAX_CHARS);
   return {
     replyId: reply?.reply_id ?? reply?.id ?? null,
     text: contentText,
@@ -213,14 +257,18 @@ function sanitizeReply(reply) {
   };
 }
 
-function repliesFromComment(comment) {
-  const replies = comment?.reply_list?.replies ?? comment?.replies ?? [];
+/** @param {unknown} commentValue */
+function repliesFromComment(commentValue) {
+  const comment = asRecord(commentValue);
+  const replies = asRecord(comment.reply_list).replies ?? comment.replies ?? [];
   return Array.isArray(replies) ? replies.map(sanitizeReply) : [];
 }
 
-function sanitizeComment(comment, source) {
-  const text = boundedText(comment?.content ?? comment?.text ?? comment?.comment ?? "", COMMENT_TEXT_MAX_CHARS);
-  const quote = boundedText(comment?.quote ?? comment?.anchor ?? "", 500);
+/** @param {unknown} commentValue @param {ReviewSource} source @returns {SanitizedComment} */
+function sanitizeComment(commentValue, source) {
+  const comment = asRecord(commentValue);
+  const text = boundedText(comment.content ?? comment.text ?? comment.comment ?? "", COMMENT_TEXT_MAX_CHARS);
+  const quote = boundedText(comment.quote ?? comment.anchor ?? "", 500);
   const replies = repliesFromComment(comment);
   return {
     commentId: comment?.comment_id ?? comment?.id ?? null,
@@ -241,6 +289,7 @@ function sanitizeComment(comment, source) {
   };
 }
 
+/** @param {RunCommand} runCommand @param {string[]} args @param {ReviewOptions} options @returns {Promise<CommandResult>} */
 async function runCli(runCommand, args, options) {
   if (options?.dryRun) {
     return { exitCode: 0, stdout: JSON.stringify({ data: { items: [] } }), stderr: "", dryRun: true };
@@ -248,6 +297,7 @@ async function runCli(runCommand, args, options) {
   return await runCommand("lark-cli", args, { timeoutMs: options?.timeoutMs ?? 120000 });
 }
 
+/** @param {ReviewSource} source @param {string} identity @param {RunCommand} runCommand @param {ReviewOptions} options */
 async function listCommentsWithCli(source, identity, runCommand, options) {
   const params = {
     file_token: source.fileToken,
@@ -282,8 +332,10 @@ async function listCommentsWithCli(source, identity, runCommand, options) {
   };
 }
 
-async function listRepliesWithCli(source, comment, identity, runCommand, options) {
-  const commentId = comment?.comment_id ?? comment?.id;
+/** @param {ReviewSource} source @param {unknown} commentValue @param {string} identity @param {RunCommand} runCommand @param {ReviewOptions} options */
+async function listRepliesWithCli(source, commentValue, identity, runCommand, options) {
+  const comment = asRecord(commentValue);
+  const commentId = comment.comment_id ?? comment.id;
   if (!commentId) return [];
   const params = {
     file_token: source.fileToken,
@@ -310,8 +362,9 @@ async function listRepliesWithCli(source, comment, identity, runCommand, options
   return extractItems(parseJsonOutput(cli.stdout));
 }
 
+/** @param {ReviewSource} source @param {UnknownRecord[]} comments @param {string} identity @param {RunCommand} runCommand @param {ReviewOptions} options */
 async function batchQueryCommentsWithCli(source, comments, identity, runCommand, options) {
-  const ids = comments.map((comment) => comment?.comment_id ?? comment?.id).filter(Boolean).slice(0, 100);
+  const ids = comments.map((comment) => comment.comment_id ?? comment.id).filter(Boolean).slice(0, 100);
   if (ids.length === 0 || !envFlag("FEISHU_REVIEW_CONTEXT_BATCH_QUERY")) return null;
   const params = {
     file_token: source.fileToken,
@@ -340,6 +393,7 @@ async function batchQueryCommentsWithCli(source, comments, identity, runCommand,
   return extractItems(parseJsonOutput(cli.stdout));
 }
 
+/** @param {ReviewSource} source */
 async function listCommentsWithSdk(source) {
   if (!envFlag("FEISHU_REVIEW_CONTEXT_SDK_FALLBACK", true)) {
     return { ok: false, reason: "sdk_fallback_disabled" };
@@ -350,10 +404,10 @@ async function listCommentsWithSdk(source) {
   try {
     const lark = await import("@larksuiteoapi/node-sdk");
     const client = new lark.Client({
-      appId: process.env.FEISHU_APP_ID,
-      appSecret: process.env.FEISHU_APP_SECRET,
-      appType: lark.AppType?.SelfBuild,
-      domain: lark.Domain?.Feishu,
+      appId: String(process.env.FEISHU_APP_ID),
+      appSecret: String(process.env.FEISHU_APP_SECRET),
+      ...(lark.AppType?.SelfBuild ? { appType: lark.AppType.SelfBuild } : {}),
+      ...(lark.Domain?.Feishu ? { domain: lark.Domain.Feishu } : {}),
     });
     const response = await client.request({
       method: "GET",
@@ -371,9 +425,10 @@ async function listCommentsWithSdk(source) {
   }
 }
 
+/** @param {ReviewTask} task @param {FileContext[]} contexts @returns {ReviewSource[]} */
 export function buildReviewSources(task, contexts) {
   return contexts.map((context, index) => {
-    const attachment = task.attachments?.[index] ?? {};
+    const attachment = asRecord(task.attachments?.[index]);
     const fileType = fileTypeFromAttachment(attachment);
     return {
       sourceId: `file-${String(index + 1).padStart(2, "0")}`,
@@ -387,14 +442,19 @@ export function buildReviewSources(task, contexts) {
   });
 }
 
+/** @param {{ task: ReviewTask, contexts: FileContext[], runCommand: RunCommand, options?: ReviewOptions }} input */
 export async function fetchFeishuDocumentReviewContext({ task, contexts, runCommand, options = {} }) {
-  const reviewOptions = /** @type {{ dryRun?: boolean, timeoutMs?: number }} */ (options);
+  const reviewOptions = options;
   const sources = buildReviewSources(task, contexts);
   const eligibleSources = sources.filter((source) => source.apiEligible);
   const sourceResults = new Map(sources.map((source) => [source.sourceId, createSourceResult(source)]));
+  /** @type {string[][]} */
   const plannedCommands = [];
+  /** @type {string[]} */
   const identityTried = [];
+  /** @type {UnknownRecord[]} */
   const errors = [];
+  /** @type {SanitizedComment[]} */
   const comments = [];
   let method = "unavailable";
   let apiStatus = "not_attempted";
@@ -425,12 +485,13 @@ export async function fetchFeishuDocumentReviewContext({ task, contexts, runComm
   for (const source of eligibleSources) {
     let sourceHandled = false;
     const sourceResult = sourceResults.get(source.sourceId);
+    if (!sourceResult) throw new Error("review_source_result_missing");
     for (const identity of identitySequence()) {
       identityTried.push(identity);
       sourceResult.identityTried.push(identity);
       const listed = await listCommentsWithCli(source, identity, runCommand, {
-        dryRun: reviewOptions.dryRun,
-        timeoutMs: reviewOptions.timeoutMs,
+        ...(reviewOptions.dryRun === undefined ? {} : { dryRun: reviewOptions.dryRun }),
+        ...(reviewOptions.timeoutMs === undefined ? {} : { timeoutMs: reviewOptions.timeoutMs }),
       });
       plannedCommands.push(listed.command);
       sourceResult.plannedCommands.push(listed.command);
@@ -476,22 +537,25 @@ export async function fetchFeishuDocumentReviewContext({ task, contexts, runComm
 
       method = "cli";
       apiStatus = "success";
-      const batchItems = await batchQueryCommentsWithCli(source, listed.items, identity, runCommand, {
-        dryRun: reviewOptions.dryRun,
-        timeoutMs: reviewOptions.timeoutMs,
+      const listedItems = Array.isArray(listed.items) ? listed.items : [];
+      const batchItems = await batchQueryCommentsWithCli(source, listedItems, identity, runCommand, {
+        ...(reviewOptions.dryRun === undefined ? {} : { dryRun: reviewOptions.dryRun }),
+        ...(reviewOptions.timeoutMs === undefined ? {} : { timeoutMs: reviewOptions.timeoutMs }),
       });
-      const items = batchItems?.length ? batchItems : listed.items;
+      const items = batchItems?.length ? batchItems : listedItems;
+      /** @type {SanitizedComment[]} */
       const sourceComments = [];
       for (const item of items) {
-        const needsReplyFetch = item?.has_more === true || item?.reply_list?.has_more === true;
+        const replyList = asRecord(item.reply_list);
+        const needsReplyFetch = item.has_more === true || replyList.has_more === true;
         const extraReplies = needsReplyFetch ? await listRepliesWithCli(source, item, identity, runCommand, {
-          dryRun: reviewOptions.dryRun,
-          timeoutMs: reviewOptions.timeoutMs,
+          ...(reviewOptions.dryRun === undefined ? {} : { dryRun: reviewOptions.dryRun }),
+          ...(reviewOptions.timeoutMs === undefined ? {} : { timeoutMs: reviewOptions.timeoutMs }),
         }) : [];
         if (extraReplies.length > 0) {
           item.reply_list = {
-            ...(item.reply_list ?? {}),
-            replies: [...(item.reply_list?.replies ?? []), ...extraReplies],
+            ...replyList,
+            replies: [...(Array.isArray(replyList.replies) ? replyList.replies : []), ...extraReplies],
           };
         }
         sourceComments.push(sanitizeComment(item, source));

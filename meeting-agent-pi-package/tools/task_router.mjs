@@ -21,8 +21,49 @@ const DOCUMENT_REVISION_REQUEST_PATTERN = /批注|评论|修改内容|修订|修
 const DOCUMENT_PIPELINE_STAGES = ["evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish", "reply"];
 const NON_DOCUMENT_STAGES = ["audio_normalize", "asr_provider_resolved", "asr_transcribe", "local_asr", "cloud_asr", "evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"];
 export const KNOWN_EXECUTION_PROFILES = [...TASK_EXECUTION_PROFILES];
+/** @type {Set<string>} */
 const DEEP_REASONING_EXECUTION_PROFILE_SET = new Set(DEEP_REASONING_EXECUTION_PROFILES);
 
+/**
+ * @typedef {import("../dist/index.js").TaskExecutionProfile} TaskExecutionProfile
+ * @typedef {{
+ *   name?: unknown,
+ *   fileName?: unknown,
+ *   fileToken?: unknown,
+ *   fileKey?: unknown,
+ *   file_key?: unknown,
+ *   sha256?: unknown,
+ *   sourceKind?: unknown,
+ *   resolvedFromCache?: unknown,
+ *   resolvedFromParentMessage?: unknown,
+ *   explicitFileReference?: unknown,
+ *   sourceMessageId?: unknown,
+ *   messageId?: unknown,
+ *   downloadStatus?: unknown,
+ *   userMessage?: unknown,
+ *   reason?: unknown
+ * }} Attachment
+ * @typedef {{ fileName?: unknown, contextPreview?: unknown, extractedTextPath?: unknown, status?: unknown, unsupportedReason?: unknown }} FileContext
+ * @typedef {{ message?: { text?: unknown } }} RouterEvent
+ * @typedef {{ status?: unknown, reason?: unknown }} AttachmentResolution
+ * @typedef {{ sourceReferences?: unknown[], [key: string]: unknown }} SourcePreparation
+ * @typedef {{
+ *   taskType: string,
+ *   requestedDocuments: string[],
+ *   responseMode?: string,
+ *   operation?: string,
+ *   hasAttachments?: boolean,
+ *   hasFileContexts?: boolean,
+ *   requiresAsr?: boolean,
+ *   requiresLocalAsr?: boolean,
+ *   sourcePreparation?: SourcePreparation,
+ *   immediateResponse?: string,
+ *   unsupportedReason?: string,
+ *   [key: string]: unknown
+ * }} RouterIntent
+ */
+
+/** @param {unknown} text */
 export function cleanUserPrompt(text) {
   return String(text ?? "")
     .replace(/@\S+/g, " ")
@@ -30,28 +71,33 @@ export function cleanUserPrompt(text) {
     .trim();
 }
 
+/** @param {unknown} value */
 function isFeishuWorkspaceUrl(value) {
   try {
-    const host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+    const host = new URL(String(value)).hostname.toLowerCase().replace(/\.$/, "");
     return ["feishu.cn", "feishu.com", "larksuite.cn", "larksuite.com"].some((domain) => host === domain || host.endsWith(`.${domain}`));
   } catch {
     return false;
   }
 }
 
+/** @param {Attachment[]} attachments */
 function requiresAsr(attachments) {
   return attachments.some((item) => ["audio", "video"].includes(attachmentKind(item)));
 }
 
+/** @param {Attachment[]} attachments */
 function hasAudioAttachments(attachments) {
   return attachments.some((item) => ["audio", "video"].includes(attachmentKind(item)));
 }
 
+/** @param {unknown} text */
 function hasActionablePrompt(text) {
   const clean = cleanUserPrompt(text);
   return clean.length >= 2 && !/^\d+$/.test(clean);
 }
 
+/** @param {Attachment[]} attachments */
 function sourceReferencesFromAttachments(attachments) {
   return attachments.map((attachment, index) => ({
     sourceId: `source-${String(index + 1).padStart(2, "0")}`,
@@ -67,8 +113,10 @@ function sourceReferencesFromAttachments(attachments) {
   }));
 }
 
+/** @param {unknown} text @param {Attachment[]} [attachments] @returns {string[]} */
 export function requestedDocumentsFromText(text, attachments = []) {
-  const normalized = text.toLowerCase();
+  const normalized = String(text ?? "").toLowerCase();
+  /** @type {Set<string>} */
   const docs = new Set();
   if (/prd|产品|需求|mvp/.test(normalized)) docs.add("prd");
   if (/ops|运营|sop|指标|触点/.test(normalized)) docs.add("ops-plan");
@@ -83,12 +131,13 @@ export function requestedDocumentsFromText(text, attachments = []) {
   return [...docs];
 }
 
+/** @param {FileContext} context */
 function readContextTextForInference(context) {
   const preview = String(context?.contextPreview ?? "");
   if (preview.trim()) return preview.slice(0, 6000);
   const extractedPath = context?.extractedTextPath;
   try {
-    if (extractedPath && existsSync(extractedPath)) {
+    if (typeof extractedPath === "string" && extractedPath && existsSync(extractedPath)) {
       return readFileSync(extractedPath, "utf8").slice(0, 6000);
     }
   } catch {
@@ -97,7 +146,9 @@ function readContextTextForInference(context) {
   return "";
 }
 
+/** @param {FileContext[] | null | undefined} contexts @returns {string[]} */
 export function inferRequestedDocumentsFromContexts(contexts) {
+  /** @type {Set<string>} */
   const docs = new Set();
   for (const context of contexts ?? []) {
     const text = [context?.fileName, readContextTextForInference(context)].join("\n").toLowerCase();
@@ -110,6 +161,7 @@ export function inferRequestedDocumentsFromContexts(contexts) {
   return [...docs];
 }
 
+/** @param {RouterIntent} intent @returns {TaskExecutionProfile} */
 function executionProfileForIntent(intent) {
   if (intent.responseMode === "unsupported" || intent.taskType === "unsupported") return "unsupported";
   if (intent.taskType === "publish_only") return "publish_only";
@@ -127,14 +179,22 @@ function executionProfileForIntent(intent) {
   return "fast_answer";
 }
 
+/** @param {TaskExecutionProfile} profile */
 function reasoningDepthForProfile(profile) {
   return DEEP_REASONING_EXECUTION_PROFILE_SET.has(profile) ? "deep" : FAST_REASONING_DEPTH;
 }
 
+/** @param {Array<string | null | undefined>} stages */
 function dedupeStages(stages) {
-  return [...new Set(stages.filter(Boolean))];
+  return [...new Set(stages.filter(isNonEmptyString))];
 }
 
+/** @param {string | null | undefined} value @returns {value is string} */
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+/** @param {RouterIntent} intent @param {TaskExecutionProfile} profile */
 function stagePlanForIntent(intent, profile) {
   if (profile === "unsupported") {
     return {
@@ -202,6 +262,7 @@ function stagePlanForIntent(intent, profile) {
   };
 }
 
+/** @param {RouterIntent} intent @returns {import("../dist/index.js").TaskIntent & RouterIntent} */
 function finalizeTaskIntent(intent) {
   const executionProfile = executionProfileForIntent(intent);
   const stagePlan = stagePlanForIntent(intent, executionProfile);
@@ -215,8 +276,15 @@ function finalizeTaskIntent(intent) {
   };
 }
 
+/**
+ * @param {RouterEvent} event
+ * @param {Attachment[]} [attachments]
+ * @param {{ contexts?: FileContext[] }} [fileContextBatch]
+ * @param {AttachmentResolution} [attachmentResolution]
+ * @returns {import("../dist/index.js").TaskIntent & RouterIntent}
+ */
 export function classifyTaskIntent(event, attachments = [], fileContextBatch = {}, attachmentResolution = {}) {
-  const rawText = event.message?.text ?? "";
+  const rawText = String(event.message?.text ?? "");
   const prompt = cleanUserPrompt(rawText);
   const publicUrls = extractPublicUrls(rawText).filter((value) => !isFeishuWorkspaceUrl(value));
   const explicitDocs = requestedDocumentsFromText(prompt, attachments);
@@ -241,8 +309,10 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
     explicitFileReferenceCount: sourceReferences.filter((item) => item.explicitFileReference).length,
   };
   const unsupportedContext = contexts.find((context) => context.status === "unsupported");
-  const failedExplicitFile = attachments.find((attachment) => attachment.explicitFileReference && !["downloaded", "local"].includes(attachment.downloadStatus ?? ""));
-  const failedExplicitFileMessage = failedExplicitFile?.userMessage ?? "当前文件无法读取，请重新上传或确认权限。";
+  const failedExplicitFile = attachments.find((attachment) => attachment.explicitFileReference && !["downloaded", "local"].includes(String(attachment.downloadStatus ?? "")));
+  const failedExplicitFileMessage = typeof failedExplicitFile?.userMessage === "string"
+    ? failedExplicitFile.userMessage
+    : "当前文件无法读取，请重新上传或确认权限。";
 
   if (DESTRUCTIVE_REQUEST_PATTERN.test(prompt)) {
     return finalizeTaskIntent({
@@ -313,7 +383,7 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       requiresLocalAsr: requiresAudioAsr,
       sourcePreparation,
       responseMode: "unsupported",
-      unsupportedReason: unsupportedContext.unsupportedReason ?? "unsupported_file_context",
+      unsupportedReason: typeof unsupportedContext.unsupportedReason === "string" ? unsupportedContext.unsupportedReason : "unsupported_file_context",
       immediateResponse: UNSUPPORTED_FEATURE_REPLY,
     });
   }

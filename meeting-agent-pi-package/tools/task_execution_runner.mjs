@@ -45,6 +45,7 @@ import {
   writeOfficialTranscriptArtifacts,
 } from "./public_url_source_pack_helpers.mjs";
 import {
+  assertFeishuTask,
   FULL_DOCUMENT_EXECUTION_PROFILES as FULL_DOCUMENT_EXECUTION_PROFILE_VALUES,
   RUNNER_EXECUTION_PROFILES as RUNNER_EXECUTION_PROFILE_VALUES,
 } from "../dist/index.js";
@@ -89,39 +90,96 @@ const DEFAULT_FILE_SUMMARY_CONTEXT_POLICY = {
   maxExtractedSlicesPerSource: 2,
   maxPromptChars: 30000,
 };
+
+/**
+ * @typedef {Record<string, unknown>} UnknownRecord
+ * @typedef {import("../dist/index.js").FeishuTask} FeishuTask
+ * @typedef {UnknownRecord & { resourceType?: string, localPath?: string, fileName?: string, name?: string, sha256?: string, sizeBytes?: number, [key: string]: unknown }} RunnerAttachment
+ * @typedef {UnknownRecord & { status?: string, fileName?: string, fileType?: string, extension?: string, contextPreview?: string, extractedTextPath?: string, localPath?: string, contextMode?: string, [key: string]: unknown }} RunnerFileContext
+ * @typedef {FeishuTask & { attachments?: RunnerAttachment[], fileContexts?: UnknownRecord & { contexts?: RunnerFileContext[] } }} RunnerTask
+ * @typedef {{ runDir: string, inputsDir: string, artifactsDir: string, agentOutputPath: string, [key: string]: string }} RunnerPaths
+ * @typedef {{ exitCode: number, stdout: string, stderr: string, timedOut: boolean, error?: string }} CommandResult
+ * @typedef {{ cwd?: string, env?: NodeJS.ProcessEnv, timeoutMs?: number, stdin?: string, maxOutputChars?: number }} CommandOptions
+ * @typedef {{ ok: boolean, statusCode: number, body: unknown, text: string, error?: string }} HttpJsonResult
+ * @typedef {HttpJsonResult & { timeoutMs: number, modelLoaded: boolean, lastStatus: unknown, serviceBusy: boolean, healthStatus: unknown, tcpReachable: boolean }} LocalAsrHealth
+ * @typedef {{ onStep?: (name: string, status: string, details?: UnknownRecord) => Promise<unknown> | unknown, onMetric?: (kind: string, payload: UnknownRecord) => Promise<unknown> | unknown, progressReply?: (text: string, stage: string) => Promise<unknown> | unknown }} RunnerHooks
+ * @typedef {RunnerHooks & { runtimeToolTimeoutMs?: number, modelTimeoutMs?: number, cliTimeoutMs?: number, documentWorkerTimeoutMs?: number, longDocumentJobTimeoutMs?: number, documentWorkerDeadlineReserveMs?: number, cloudAsrTimeoutMs?: number, localAsrTimeoutMs?: number, localAsrHealthTimeoutMs?: number, localAsrServiceUrl?: string, localAsrChunkSeconds?: number, localAsrMaxNewTokens?: number, localAsrModelDir?: string, audioNormalizeTimeoutMs?: number, audioTranscoder?: string, asrProvider?: string, asrFallbackProvider?: string, aliyunAsrModel?: string, aliyunAsrFileModel?: string, aliyunAsrSingleMixReviewModel?: string, aliyunAsrEndpoint?: string, aliyunAsrFileEndpoint?: string, aliyunAsrInputMode?: string, aliyunAsrSampleRate?: number, aliyunAsrLanguageHints?: string | string[], aliyunAsrVocabularyId?: string, aliyunDashscopeWorkspaceId?: string, aliyunAsrDiarizationEnabled?: unknown, aliyunAsrSpeakerCount?: unknown, aliyunAsrTimestampAlignmentEnabled?: unknown, aliyunAsrSingleMixMode?: unknown, cloudAsrMockFileProvider?: boolean, cloudAsrMockFileSentences?: UnknownRecord[], pipelineMockModel?: boolean, captureModelStream?: boolean, fastAnswerMaxTokens?: number, fileSummaryMaxTokens?: number, meetingMaxTokens?: number, meetingAnalysisMaxPromptChars?: number, meetingAnalysisMaxTokens?: number, meetingAnalysis?: unknown, meetingAgenticDelegation?: unknown, meetingAgenticDelegationTimeoutMs?: number, meetingAgenticEventMaxChars?: number, meetingMemoryCuration?: unknown, meetingMemoryTimeoutMs?: number, sectionsPerBatch?: number, sectionsPerUnit?: number, documentQualityMode?: string, documentWorkerMaxAttemptsPerUnit?: number, documentWorkerMaxRetryUnits?: number, publicUrlChapterChars?: number, publicUrlChapterDurationMs?: number, publicUrlChapterMaxTokens?: number, publicUrlMaxDurationSec?: number, publicUrlMaxMediaBytes?: number, publicUrlMaxPageBytes?: number, publicUrlMaxTranscriptBytes?: number, publicUrlMediaTimeoutMs?: number, publicUrlTimeoutMs?: number, publicUrlResolveOnly?: boolean, publicUrlResolver?: typeof resolvePublicMediaSource, ytDlpBin?: string, [key: string]: unknown }} RunnerOptions
+ * @typedef {UnknownRecord & { status: string, summary?: string, documents?: UnknownRecord[], artifacts?: unknown[], details?: UnknownRecord, qaGate?: UnknownRecord, policyGate?: UnknownRecord }} PipelineOutput
+ * @typedef {{ status: string, output: PipelineOutput, mode: string, rawSecretsReturned: false }} PipelineRun
+ * @typedef {{ id: string, config: UnknownRecord }} ExecutionProfileSelection
+ * @typedef {{ originType: unknown, sourceUrl: unknown, sourceFile: unknown, sourceHashSha256: unknown }} SourceSegmentProvenance
+ * @typedef {{ segmentId: string, startMs: number, endMs: number, text: string, speaker: unknown, language: unknown, quality: unknown, provenance: SourceSegmentProvenance }} SourceSegment
+ * @typedef {{ chapterId: string, order: number, officialTitle?: string, startMs: number, endMs: number, segmentIds: string[], segments: SourceSegment[], charCount: number, bounded: boolean }} SourceChapter
+ * @typedef {ReturnType<typeof normalizeSourceChapterAnalysis>} ChapterAnalysis
+ * @typedef {{ path: string, sha256?: string, name?: unknown, sizeBytes?: unknown, resourceType: string, ext: string }} AudioSource
+ * @typedef {UnknownRecord & { provider: string, model: string, fileModel: string, inputMode: string, singleMixMode: string, singleMixReviewModel: string, diarizationEnabled: unknown, speakerCount: unknown, languageHints: string[], vocabularyId: string, timestampAlignmentEnabled: unknown, endpoint: string, fileEndpoint: string, workspaceId: string }} AsrProviderConfig
+ */
+
+/** @param {unknown} value @returns {UnknownRecord} */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {UnknownRecord} */ (value)
+    : {};
+}
+
+/** @param {unknown} value @returns {unknown[]} */
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/** @param {RunnerOptions} options @returns {RunnerHooks} */
+function runnerHooks(options) {
+  return {
+    ...(typeof options.onStep === "function" ? { onStep: options.onStep } : {}),
+    ...(typeof options.onMetric === "function" ? { onMetric: options.onMetric } : {}),
+    ...(typeof options.progressReply === "function" ? { progressReply: options.progressReply } : {}),
+  };
+}
+
+/** @param {string} status @param {PipelineOutput} output @param {string} [mode] @returns {PipelineRun} */
+function createPipelineRun(status, output, mode = "task-execution-runner") {
+  return { status, output, mode, rawSecretsReturned: false };
+}
 function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {string} parent @param {string} child */
 function isInside(parent, child) {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** @param {string} path @param {unknown} value */
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(sanitize(value), null, 2)}\n`, "utf8");
   return path;
 }
 
+/** @param {string} path @param {unknown} value */
 function writeRawJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   return path;
 }
 
+/** @param {string} path @param {string} value */
 function writeText(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, value, "utf8");
   return path;
 }
 
+/** @param {string} path @returns {UnknownRecord} */
 function loadJson(path) {
-  return JSON.parse(readFileSync(path, "utf8"));
+  return asRecord(JSON.parse(readFileSync(path, "utf8")));
 }
 
+/** @type {UnknownRecord | null} */
 let executionProfilesCache = null;
 
+/** @returns {UnknownRecord} */
 function defaultExecutionProfiles() {
   return {
     version: "execution-profiles-v1",
@@ -145,6 +203,7 @@ function defaultExecutionProfiles() {
   };
 }
 
+/** @returns {UnknownRecord} */
 function loadExecutionProfiles() {
   if (executionProfilesCache) return executionProfilesCache;
   try {
@@ -155,43 +214,51 @@ function loadExecutionProfiles() {
   return executionProfilesCache;
 }
 
+/** @param {unknown} value */
 function normalizeExecutionProfile(value) {
   const profile = String(value ?? "").trim();
   return profile || null;
 }
 
+/** @param {RunnerTask} task @returns {ExecutionProfileSelection | null} */
 function executionProfileForTask(task) {
-  const id = normalizeExecutionProfile(task?.taskIntent?.executionProfile);
+  const id = normalizeExecutionProfile(task.taskIntent?.executionProfile);
   if (!id) return null;
-  const config = loadExecutionProfiles().profiles?.[id] ?? {};
+  const config = asRecord(asRecord(loadExecutionProfiles().profiles)[id]);
   return { id, config };
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeSegment(value, fallback = "item") {
   const cleaned = String(value || fallback).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
   if (!cleaned || cleaned === "." || cleaned === "..") return fallback;
   return cleaned;
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function safeFileName(value, fallback = "meeting-minutes.md") {
   const name = String(value || fallback).replace(/[\/\\:*?"<>|]/g, "_").trim().slice(0, 120) || fallback;
   return name.endsWith(".md") ? name : `${name}.md`;
 }
 
+/** @param {string} artifactsDir */
 function titlePlanPath(artifactsDir) {
   return join(artifactsDir, "document-title-plan.json");
 }
 
+/** @param {unknown} value */
 function redactString(value) {
   return redactSensitiveUrlsInText(String(value ?? ""))
     .replace(/(app_secret|client_secret|refresh_token|access_token|authorization|cookie|session)\s*[:=]\s*["']?[^"',\s]+/gi, "[redacted]")
     .replace(/bearer\s+[A-Za-z0-9._-]+/gi, "[redacted]");
 }
 
+/** @param {unknown} value @returns {unknown} */
 function sanitize(value) {
   if (typeof value === "string") return redactString(value).slice(0, 20000);
   if (Array.isArray(value)) return value.map((item) => sanitize(item));
   if (value && typeof value === "object") {
+    /** @type {UnknownRecord} */
     const output = {};
     for (const [key, entryValue] of Object.entries(value)) {
       if (/secret|cookie|session|authorization/i.test(key) && !["rawSecretsReturned", "cookiesUsed"].includes(key) && !/folderToken|fileToken|wikiToken/i.test(key)) {
@@ -205,20 +272,25 @@ function sanitize(value) {
   return value;
 }
 
+/** @param {unknown} value */
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
+/** @param {unknown} values @param {number} [limit] @returns {string[]} */
 function uniqueStrings(values, limit = 100) {
-  return [...new Set((values ?? []).map((value) => String(value ?? "").trim()).filter(Boolean))].slice(0, limit);
+  return [...new Set(asArray(values).map((value) => String(value ?? "").trim()).filter(Boolean))].slice(0, limit);
 }
 
+/** @param {unknown} path */
 function workspaceRelative(path) {
   if (!path) return null;
+  if (typeof path !== "string") return "[outside-workspace]";
   const resolved = resolve(path);
   return isInside(workspaceDir, resolved) ? relative(workspaceDir, resolved) : "[outside-workspace]";
 }
 
+/** @param {unknown} text */
 function cleanUserPrompt(text) {
   return String(text ?? "")
     .replace(/@\S+/g, " ")
@@ -226,6 +298,7 @@ function cleanUserPrompt(text) {
     .trim();
 }
 
+/** @param {unknown} text */
 function cleanPromptForTitle(text) {
   return cleanUserPrompt(text)
     .replace(/https?:\/\/\S+/g, " ")
@@ -236,6 +309,7 @@ function cleanPromptForTitle(text) {
     .trim();
 }
 
+/** @param {string} command @param {string[]} args @param {CommandOptions} [options] @returns {Promise<CommandResult>} */
 function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand) => {
     let stdout = "";
@@ -273,12 +347,14 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+/** @param {unknown} raw */
 function optionalPositiveNumber(raw) {
   if (raw === undefined || raw === null || raw === "") return undefined;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** @param {RunnerOptions} [options] */
 function documentWorkerTimeoutMs(options = {}) {
   return optionalPositiveNumber(
     options.longDocumentJobTimeoutMs ??
@@ -288,10 +364,12 @@ function documentWorkerTimeoutMs(options = {}) {
   ) ?? DEFAULT_LONG_DOCUMENT_JOB_TIMEOUT_MS ?? DEFAULT_DOCUMENT_WORKER_TIMEOUT_MS;
 }
 
+/** @param {RunnerOptions} [options] */
 function documentWorkerDeadlineReserveMs(options = {}) {
   return optionalPositiveNumber(options.documentWorkerDeadlineReserveMs ?? process.env.FEISHU_AGENT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS) ?? DEFAULT_DOCUMENT_WORKER_DEADLINE_RESERVE_MS;
 }
 
+/** @param {RunnerOptions} [options] */
 function documentWorkerDeadlineParams(options = {}) {
   const runtimeBudgetMs = documentWorkerTimeoutMs(options);
   const deadlineReserveMs = documentWorkerDeadlineReserveMs(options);
@@ -302,9 +380,12 @@ function documentWorkerDeadlineParams(options = {}) {
   };
 }
 
+/** @param {string} root @param {(path: string) => boolean} [predicate] @param {number} [limit] @returns {string[]} */
 function listFilesRecursive(root, predicate = (_path) => true, limit = 200) {
   if (!existsSync(root) || limit <= 0) return [];
+  /** @type {string[]} */
   const files = [];
+  /** @param {string} dir */
   function visit(dir) {
     if (files.length >= limit) return;
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -321,6 +402,7 @@ function listFilesRecursive(root, predicate = (_path) => true, limit = 200) {
   return files;
 }
 
+/** @param {string} path @param {number} [limit] @returns {UnknownRecord[]} */
 function readNdjson(path, limit = 200) {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8")
@@ -330,13 +412,14 @@ function readNdjson(path, limit = 200) {
     .slice(-limit)
     .map((line) => {
       try {
-        return JSON.parse(line);
+        return asRecord(JSON.parse(line));
       } catch {
         return { event: "parse_error", rawPreview: line.slice(0, 200) };
       }
     });
 }
 
+/** @param {RunnerPaths} paths @param {CommandResult} result @param {UnknownRecord} [details] */
 function documentWorkerTimeoutDiagnostic(paths, result, details = {}) {
   const traceRoot = join(paths.runDir, "artifacts", "model-streams", "document_workers_run");
   const attemptsPath = join(traceRoot, "attempts.ndjson");
@@ -365,19 +448,23 @@ function documentWorkerTimeoutDiagnostic(paths, result, details = {}) {
   };
 }
 
-function lastAttemptFromWorkerRun(workerRun) {
-  if (workerRun?.lastAttempt) return workerRun.lastAttempt;
-  if (workerRun?.finalFailureReport?.lastProviderAttempt) return workerRun.finalFailureReport.lastProviderAttempt;
-  const results = Array.isArray(workerRun?.results) ? workerRun.results : [];
+/** @param {unknown} workerRunValue */
+function lastAttemptFromWorkerRun(workerRunValue) {
+  const workerRun = asRecord(workerRunValue);
+  if (workerRun.lastAttempt) return workerRun.lastAttempt;
+  const finalFailureReport = asRecord(workerRun.finalFailureReport);
+  if (finalFailureReport.lastProviderAttempt) return finalFailureReport.lastProviderAttempt;
+  const results = asArray(workerRun.results).map(asRecord);
   for (const result of [...results].reverse()) {
     const attempts = [
       ...(Array.isArray(result?.repairAttempts) ? result.repairAttempts : []),
       ...(Array.isArray(result?.sectionAttempts) ? result.sectionAttempts : []),
     ];
-    for (const attempt of attempts.reverse()) {
+    for (const attemptValue of attempts.reverse()) {
+      const attempt = asRecord(attemptValue);
       const failures = Array.isArray(attempt?.attemptFailures) ? attempt.attemptFailures : [];
-      const last = failures.at(-1);
-      if (last) {
+      const last = asRecord(failures.at(-1));
+      if (Object.keys(last).length > 0) {
         return {
           docType: result.docType ?? null,
           batchIndex: attempt.batchIndex ?? attempt.repairIndex ?? null,
@@ -394,8 +481,10 @@ function lastAttemptFromWorkerRun(workerRun) {
   return null;
 }
 
-function chineseFailureReason(reason, lastAttempt = null) {
-  const finalReason = String(lastAttempt?.reason ?? reason ?? "document_workflow_not_completed");
+/** @param {unknown} reason @param {unknown} [lastAttemptValue] */
+function chineseFailureReason(reason, lastAttemptValue = null) {
+  const lastAttempt = asRecord(lastAttemptValue);
+  const finalReason = String(lastAttempt.reason ?? reason ?? "document_workflow_not_completed");
   if (finalReason === "model_provider_unavailable") return "模型 provider 未配置或当前不可用";
   if (finalReason === "model_provider_request_timeout" || finalReason === "document_worker_deadline_exhausted") return "模型生成多次超时";
   if (finalReason === "model_provider_empty_response") return "模型返回为空";
@@ -407,10 +496,13 @@ function chineseFailureReason(reason, lastAttempt = null) {
   return finalReason;
 }
 
-function finalFailureReportFromWorkerRun(workerRun, fallbackReason = "document_workflow_not_completed") {
-  const existing = workerRun?.finalFailureReport;
+/** @param {unknown} workerRunValue @param {string} [fallbackReason] */
+function finalFailureReportFromWorkerRun(workerRunValue, fallbackReason = "document_workflow_not_completed") {
+  const workerRun = asRecord(workerRunValue);
+  const workflow = asRecord(workerRun.workflow);
+  const existing = workerRun.finalFailureReport;
   if (existing && typeof existing === "object") return existing;
-  const results = Array.isArray(workerRun?.results) ? workerRun.results : [];
+  const results = asArray(workerRun.results).map(asRecord);
   const lastAttempt = lastAttemptFromWorkerRun(workerRun);
   const pendingDocs = results
     .filter((result) => result?.status !== "completed")
@@ -418,7 +510,7 @@ function finalFailureReportFromWorkerRun(workerRun, fallbackReason = "document_w
       docType: result.docType,
       status: result.status,
       reason: result.reason ?? null,
-      missingSections: result.missingSections ?? [],
+      missingSections: asArray(result.missingSections),
     }));
   return {
     schemaVersion: "document-workflow-final-failure-v1",
@@ -427,16 +519,18 @@ function finalFailureReportFromWorkerRun(workerRun, fallbackReason = "document_w
     completedDocs: results.filter((result) => result?.status === "completed").map((result) => result.docType).filter(Boolean),
     pendingDocs,
     failedStage: pendingDocs[0]?.missingSections?.length ? "review" : "section_draft",
-    retryCount: Number(workerRun?.workflow?.retryUnitsUsed ?? 0),
-    retryExhausted: Boolean(workerRun?.workflow?.retryExhausted),
+    retryCount: Number(workflow.retryUnitsUsed ?? 0),
+    retryExhausted: Boolean(workflow.retryExhausted),
     lastProviderAttempt: lastAttempt,
-    nextAction: workerRun?.workflow?.checkpointPath ? "已保留本地 checkpoint，可修复阻塞原因后继续未完成章节。" : "修复阻塞原因后重新运行任务。",
+    nextAction: workflow.checkpointPath ? "已保留本地 checkpoint，可修复阻塞原因后继续未完成章节。" : "修复阻塞原因后重新运行任务。",
     publishPartial: false,
     rawSecretsReturned: false,
   };
 }
 
-function finalFailureSummary(report) {
+/** @param {unknown} reportValue */
+function finalFailureSummary(reportValue) {
+  const report = asRecord(reportValue);
   const reasonText = chineseFailureReason(report?.terminalReason, report?.lastProviderAttempt);
   const pending = Array.isArray(report?.pendingDocs) && report.pendingDocs.length > 0
     ? report.pendingDocs.map((doc) => `${doc.docType}${doc.missingSections?.length ? ` 缺失 ${doc.missingSections.length} 个章节` : ""}`).slice(0, 3).join("；")
@@ -445,6 +539,7 @@ function finalFailureSummary(report) {
   return `文档生成未能最终交付：${reasonText}。${retryText}未发布阶段稿。未完成：${pending}。下一步：${report?.nextAction ?? "修复阻塞原因后继续运行。"}`;
 }
 
+/** @param {string} tool @param {UnknownRecord} params @param {RunnerPaths} paths @param {RunnerOptions} options @param {string} [profile] @param {{timeoutMs?: number}} [callOptions] @returns {Promise<UnknownRecord>} */
 async function callRuntimeTool(tool, params, paths, options, profile = "", callOptions = {}) {
   const paramsDir = join(paths.runDir, "runtime-tool-params");
   const outDir = join(paths.runDir, "runtime-tool-results");
@@ -477,8 +572,15 @@ async function callRuntimeTool(tool, params, paths, options, profile = "", callO
   return loadJson(outPath);
 }
 
-export function shouldUseTaskExecutionRunner(task) {
-  if (["unsupported", "needs_file", "ack_file_cached"].includes(task?.taskIntent?.responseMode)) return false;
+/** @param {unknown} taskValue */
+export function shouldUseTaskExecutionRunner(taskValue) {
+  let task;
+  try {
+    task = /** @type {RunnerTask} */ (assertFeishuTask(taskValue));
+  } catch {
+    return false;
+  }
+  if (typeof task.taskIntent.responseMode === "string" && ["unsupported", "needs_file", "ack_file_cached"].includes(task.taskIntent.responseMode)) return false;
   if (typeof task?.taskIntent?.immediateResponse === "string" && task.taskIntent.immediateResponse.trim()) return false;
   const profile = executionProfileForTask(task);
   if (!profile) return false;
@@ -486,14 +588,16 @@ export function shouldUseTaskExecutionRunner(task) {
   return profile.config?.runnerEligible !== false;
 }
 
+/** @param {UnknownRecord} params @param {RunnerPaths} paths @param {RunnerOptions} options @param {string} [profile] @returns {Promise<UnknownRecord>} */
 async function callModelGenerateText(params, paths, options, profile = "") {
   return await callRuntimeTool("model_generate_text", params, paths, options, profile);
 }
 
+/** @param {unknown} value */
 function normalizeAsrServiceUrl(value) {
   let url;
   try {
-    url = new URL(value || process.env.LOCAL_ASR_SERVICE_URL || "http://127.0.0.1:8765");
+    url = new URL(typeof value === "string" && value ? value : process.env.LOCAL_ASR_SERVICE_URL || "http://127.0.0.1:8765");
   } catch {
     throw new Error("local_asr_service_url_invalid");
   }
@@ -505,8 +609,9 @@ function normalizeAsrServiceUrl(value) {
   return url.origin;
 }
 
+/** @param {string} url @param {unknown} payload @param {number} timeoutMs @param {string | null | undefined} bearerToken @returns {Promise<HttpJsonResult>} */
 function postJson(url, payload, timeoutMs, bearerToken) {
-  return new Promise((resolveRequest) => {
+  return new Promise((/** @type {(value: HttpJsonResult) => void} */ resolveRequest) => {
     const parsed = new URL("/v1/transcriptions", url.endsWith("/") ? url : `${url}/`);
     const body = JSON.stringify(payload);
     const requestImpl = parsed.protocol === "https:" ? httpsRequest : httpRequest;
@@ -546,8 +651,9 @@ function postJson(url, payload, timeoutMs, bearerToken) {
   });
 }
 
+/** @param {string} url @param {string} path @param {number} timeoutMs @param {string | null} bearerToken @returns {Promise<HttpJsonResult>} */
 function getJson(url, path, timeoutMs, bearerToken) {
-  return new Promise((resolveRequest) => {
+  return new Promise((/** @type {(value: HttpJsonResult) => void} */ resolveRequest) => {
     const parsed = new URL(path, url.endsWith("/") ? url : `${url}/`);
     const requestImpl = parsed.protocol === "https:" ? httpsRequest : httpRequest;
     const req = requestImpl(
@@ -583,8 +689,9 @@ function getJson(url, path, timeoutMs, bearerToken) {
   });
 }
 
+/** @param {string} url @param {number} [timeoutMs] */
 function tcpReachable(url, timeoutMs = 1000) {
-  return new Promise((resolveReachable) => {
+  return new Promise((/** @type {(value: boolean) => void} */ resolveReachable) => {
     let parsed;
     try {
       parsed = new URL(url);
@@ -596,6 +703,7 @@ function tcpReachable(url, timeoutMs = 1000) {
       host: parsed.hostname,
       port: Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)),
     });
+    /** @param {boolean} reachable */
     const finish = (reachable) => {
       socket.removeAllListeners();
       socket.destroy();
@@ -607,6 +715,7 @@ function tcpReachable(url, timeoutMs = 1000) {
   });
 }
 
+/** @param {string | null} serviceUrl @param {RunnerOptions} [options] */
 function localAsrServiceCommand(serviceUrl, options = {}) {
   const url = serviceUrl ? new URL(serviceUrl) : new URL("http://127.0.0.1:8765");
   const port = url.port || (url.protocol === "https:" ? "443" : "80");
@@ -614,6 +723,7 @@ function localAsrServiceCommand(serviceUrl, options = {}) {
   return `.venv-qwen3-asr/bin/python meeting-agent-pi-package/tools/local_asr_http_service.py --host ${url.hostname} --port ${port} --model-dir ${modelDir} --preload`;
 }
 
+/** @param {string | null} serviceUrl @param {UnknownRecord} [details] @param {RunnerOptions} [options] */
 function localAsrServiceNotRunning(serviceUrl, details = {}, options = {}) {
   const statusCommand = "python3 meeting-agent-pi-package/tools/local_asr_service_ctl.py status";
   const startCommand = localAsrServiceCommand(serviceUrl, options);
@@ -630,10 +740,12 @@ function localAsrServiceNotRunning(serviceUrl, details = {}, options = {}) {
   };
 }
 
+/** @param {string} serviceUrl @param {RunnerOptions} [options] @returns {Promise<LocalAsrHealth>} */
 async function preflightLocalAsrService(serviceUrl, options = {}) {
   const timeoutMs = Number(options.localAsrHealthTimeoutMs ?? process.env.FEISHU_AGENT_LOCAL_ASR_HEALTH_TIMEOUT_MS ?? 5000);
   const bearerToken = process.env.LOCAL_ASR_BEARER_TOKEN?.trim() || null;
   const health = await getJson(serviceUrl, "/health", timeoutMs, bearerToken);
+  const healthBody = asRecord(health.body);
   const timedOut = /timed out|timeout/i.test(String(health.error ?? ""));
   const tcpReachableAfterTimeout = !health.ok && timedOut
     ? await tcpReachable(serviceUrl, Math.min(timeoutMs, 1000))
@@ -641,88 +753,107 @@ async function preflightLocalAsrService(serviceUrl, options = {}) {
   return {
     ...health,
     timeoutMs,
-    modelLoaded: Boolean(health.body?.modelLoaded),
-    lastStatus: health.body?.lastStatus ?? null,
-    serviceBusy: Boolean(health.body?.busy) || tcpReachableAfterTimeout,
-    healthStatus: tcpReachableAfterTimeout ? "health_timeout_while_tcp_reachable" : health.body?.status ?? null,
+    modelLoaded: Boolean(healthBody.modelLoaded),
+    lastStatus: healthBody.lastStatus ?? null,
+    serviceBusy: Boolean(healthBody.busy) || tcpReachableAfterTimeout,
+    healthStatus: tcpReachableAfterTimeout ? "health_timeout_while_tcp_reachable" : healthBody.status ?? null,
     tcpReachable: tcpReachableAfterTimeout,
   };
 }
 
+/** @param {string} outputDir */
 function asrSummaryPath(outputDir) {
   return join(outputDir, "summary.json");
 }
 
+/** @param {string} outputDir */
 function transcriptPath(outputDir) {
   return join(outputDir, "transcripts", "transcript.full.json");
 }
 
+/** @param {string} outputDir */
 function evidenceIndexPath(outputDir) {
   return join(outputDir, "evidence", "evidence-index.json");
 }
 
+/** @param {string} outputDir */
 function audioNormalizePath(outputDir) {
   return join(outputDir, "audio-normalize.json");
 }
 
+/** @param {string} outputDir */
 function cloudAsrParamsPath(outputDir) {
   return join(outputDir, "asr", "cloud-asr-params.json");
 }
 
+/** @param {string} outputDir */
 function cloudAsrResultPath(outputDir) {
   return join(outputDir, "asr", "cloud-asr-result.json");
 }
 
+/** @param {string} outputDir */
 function cloudAsrRunPath(outputDir) {
   return join(outputDir, "asr", "cloud-asr-run.json");
 }
 
+/** @param {string} outputDir */
 function cloudAsrEventsPath(outputDir) {
   return join(outputDir, "asr", "cloud-asr-events.ndjson");
 }
 
+/** @param {string} outputDir */
 function evidencePackPath(outputDir) {
   return join(outputDir, "evidence-pack.json");
 }
 
+/** @param {string} outputDir */
 function fileSummaryContextPath(outputDir) {
   return join(outputDir, "file-summary-context.json");
 }
 
+/** @param {string} outputDir */
 function publicSourceDir(outputDir) {
   return join(outputDir, "public-source");
 }
 
+/** @param {string} outputDir */
 function publicSourceResolutionPath(outputDir) {
   return join(publicSourceDir(outputDir), "source-resolution.json");
 }
 
+/** @param {string} outputDir */
 function publicSourceMetadataPath(outputDir) {
   return join(publicSourceDir(outputDir), "source-metadata.json");
 }
 
+/** @param {string} outputDir */
 function publicSourcePackDir(outputDir) {
   return join(publicSourceDir(outputDir), "source-pack");
 }
 
+/** @param {string} outputDir */
 function publicSourcePackPath(outputDir) {
   return join(publicSourcePackDir(outputDir), "source-pack.json");
 }
 
+/** @param {string} outputDir */
 function publicSourcePackReadablePath(outputDir) {
   return join(publicSourcePackDir(outputDir), "source-pack.readable.md");
 }
 
+/** @param {string} outputDir */
 function publicSourceProvenancePath(outputDir) {
   return join(publicSourceDir(outputDir), "provenance", "evidence-index.json");
 }
 
+/** @param {SourceChapter} chapter */
 function sourceChapterEvidenceHash(chapter) {
   return createHash("sha256")
     .update(JSON.stringify(chapter.segments.map((segment) => [segment.segmentId, segment.startMs, segment.endMs, segment.text])))
     .digest("hex");
 }
 
+/** @param {string} path @param {SourceChapter} chapter */
 function reusableSourceChapterAnalysis(path, chapter) {
   if (!existsSync(path)) return null;
   try {
@@ -733,7 +864,7 @@ function reusableSourceChapterAnalysis(path, chapter) {
     const claimsValid = Array.isArray(existing?.claims) && existing.claims.length > 0 && existing.claims.every((claim) =>
       Array.isArray(claim?.evidenceSegmentIds) &&
       claim.evidenceSegmentIds.length > 0 &&
-      claim.evidenceSegmentIds.every((id) => validIds.has(String(id))),
+      claim.evidenceSegmentIds.every((/** @type {unknown} */ id) => validIds.has(String(id))),
     );
     const evidenceIdsMatch = actualIds.length === expectedIds.length && actualIds.every((id, index) => id === expectedIds[index]);
     const evidenceHash = sourceChapterEvidenceHash(chapter);
@@ -765,74 +896,92 @@ function reusableSourceChapterAnalysis(path, chapter) {
   }
 }
 
+/** @param {string} outputDir */
 function reviewContextPath(outputDir) {
   return join(outputDir, "review-context.json");
 }
 
+/** @param {string} outputDir */
 function meetingIntelligenceDir(outputDir) {
   return join(outputDir, "meeting-intelligence");
 }
 
+/** @param {string} outputDir */
 function meetingAnalysisPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "meeting-analysis.json");
 }
 
+/** @param {string} outputDir */
 function meetingProfilePath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "meeting-profile.json");
 }
 
+/** @param {string} outputDir */
 function participantMapPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "participant-map.json");
 }
 
+/** @param {string} outputDir */
 function topicMapPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "topic-map.json");
 }
 
+/** @param {string} outputDir */
 function internalEvidenceMapPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "evidence-map.json");
 }
 
+/** @param {string} outputDir */
 function agentPlanPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "agent-plan.json");
 }
 
+/** @param {string} outputDir */
 function productDiscoveryPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "product-discovery.json");
 }
 
+/** @param {string} outputDir */
 function nextStepOptionsPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "next-step-options.json");
 }
 
+/** @param {string} outputDir */
 function agenticOrchestrationPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "agentic-orchestration.json");
 }
 
+/** @param {string} outputDir */
 function agenticOrchestrationResultPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "agentic-orchestration-result.json");
 }
 
+/** @param {string} outputDir */
 function agenticOrchestrationEventsPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "agentic-orchestration-events.ndjson");
 }
 
+/** @param {string} outputDir */
 function meetingMemoryDir(outputDir) {
   return join(outputDir, "meeting-memory");
 }
 
+/** @param {string} outputDir */
 function meetingMemoryPlanPath(outputDir) {
   return join(meetingMemoryDir(outputDir), "curation-plan.json");
 }
 
+/** @param {string} outputDir */
 function meetingMemoryResultPath(outputDir) {
   return join(meetingMemoryDir(outputDir), "curation-result.json");
 }
 
+/** @param {string} outputDir */
 function meetingMemoryEventsPath(outputDir) {
   return join(meetingMemoryDir(outputDir), "curation-events.ndjson");
 }
 
+/** @param {string} outputDir @returns {UnknownRecord | null} */
 function completeAsrSummary(outputDir) {
   if (!existsSync(asrSummaryPath(outputDir)) || !existsSync(transcriptPath(outputDir)) || !existsSync(evidenceIndexPath(outputDir))) return null;
   try {
@@ -844,6 +993,7 @@ function completeAsrSummary(outputDir) {
   return null;
 }
 
+/** @param {string} sourceDir @param {string} targetDir */
 function copyAsrArtifacts(sourceDir, targetDir) {
   for (const name of ["transcripts", "evidence"]) {
     const from = join(sourceDir, name);
@@ -852,23 +1002,27 @@ function copyAsrArtifacts(sourceDir, targetDir) {
   if (existsSync(join(sourceDir, "summary.json"))) cpSync(join(sourceDir, "summary.json"), join(targetDir, "summary.json"), { force: true });
 }
 
+/** @param {RunnerPaths} paths @param {string} key */
 function asrCacheDir(paths, key) {
   return join(dirname(dirname(paths.runDir)), "asr-cache", safeSegment(key));
 }
 
+/** @param {RunnerTask} task @returns {AudioSource[]} */
 function sourceAudioPaths(task) {
   return (task.attachments ?? [])
     .map((attachment) => ({
-      path: attachment.localPath ? resolve(attachment.localPath) : null,
-      sha256: attachment.sha256 ?? null,
-      name: attachment.name ?? null,
-      sizeBytes: attachment.sizeBytes ?? null,
+      path: typeof attachment.localPath === "string" && attachment.localPath ? resolve(attachment.localPath) : null,
+      ...(typeof attachment.sha256 === "string" ? { sha256: attachment.sha256 } : {}),
+      ...(attachment.name !== undefined ? { name: attachment.name } : {}),
+      ...(attachment.sizeBytes !== undefined ? { sizeBytes: attachment.sizeBytes } : {}),
       resourceType: String(attachment.resourceType ?? "").toLowerCase(),
-      ext: mediaExtension(attachment.name) || mediaExtension(attachment.localPath),
+      ext: mediaExtension(attachment.name) || mediaExtension(attachment.localPath) || "",
     }))
-    .filter((item) => item.path && existsSync(item.path) && (isCloudAsrMedia(item.ext) || ["audio", "video"].includes(item.resourceType)));
+    .filter((item) => typeof item.path === "string" && existsSync(item.path) && (isCloudAsrMedia(item.ext) || ["audio", "video"].includes(item.resourceType)))
+    .map((item) => /** @type {AudioSource} */ ({ ...item, path: String(item.path) }));
 }
 
+/** @param {AudioSource[]} audios @param {UnknownRecord} [providerConfig] */
 function audioCacheKey(audios, providerConfig = {}) {
   return hashText(JSON.stringify({
     normalizerVersion: AUDIO_NORMALIZE_VERSION,
@@ -892,10 +1046,12 @@ function audioCacheKey(audios, providerConfig = {}) {
   }));
 }
 
+/** @param {RunnerPaths} paths @param {unknown} artifact */
 function writeAudioNormalizeArtifact(paths, artifact) {
   return writeJson(audioNormalizePath(paths.artifactsDir), artifact);
 }
 
+/** @param {unknown} value */
 function normalizeAsrProvider(value) {
   const provider = String(value ?? "").trim().toLowerCase();
   if (!provider || provider === "auto") return "auto";
@@ -908,6 +1064,7 @@ function cloudAsrApiKeyConfigured() {
   return Boolean(process.env.ALIYUN_DASHSCOPE_API_KEY?.trim() || process.env.DASHSCOPE_API_KEY?.trim());
 }
 
+/** @param {unknown} value @returns {string[]} */
 function parseLanguageHints(value) {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   return String(value ?? process.env.ALIYUN_ASR_LANGUAGE_HINTS ?? DEFAULT_CLOUD_ASR_LANGUAGE_HINTS.join(","))
@@ -916,38 +1073,42 @@ function parseLanguageHints(value) {
     .filter(Boolean);
 }
 
+/** @param {RunnerOptions} [options] @returns {AsrProviderConfig} */
 function resolveAsrProvider(options = {}) {
   const requested = normalizeAsrProvider(options.asrProvider ?? process.env.MEETING_ASR_PROVIDER ?? "auto");
   const provider = requested === "auto"
     ? cloudAsrApiKeyConfigured() ? "aliyun_dashscope_paraformer" : "local_qwen3"
     : requested;
   const fallback = normalizeAsrProvider(options.asrFallbackProvider ?? process.env.MEETING_ASR_FALLBACK_PROVIDER ?? "local_qwen3");
-  const model = options.aliyunAsrModel ?? process.env.ALIYUN_ASR_MODEL ?? DEFAULT_CLOUD_ASR_MODEL;
-  const fileModel = options.aliyunAsrFileModel ?? process.env.ALIYUN_ASR_FILE_MODEL ?? DEFAULT_CLOUD_ASR_FILE_MODEL;
+  const model = String(options.aliyunAsrModel ?? process.env.ALIYUN_ASR_MODEL ?? DEFAULT_CLOUD_ASR_MODEL);
+  const fileModel = String(options.aliyunAsrFileModel ?? process.env.ALIYUN_ASR_FILE_MODEL ?? DEFAULT_CLOUD_ASR_FILE_MODEL);
   const languageHints = parseLanguageHints(options.aliyunAsrLanguageHints);
-  const vocabularyId = options.aliyunAsrVocabularyId ?? process.env.ALIYUN_ASR_VOCABULARY_ID ?? "";
+  const vocabularyId = String(options.aliyunAsrVocabularyId ?? process.env.ALIYUN_ASR_VOCABULARY_ID ?? "");
   return {
     requested,
     provider,
     fallbackProvider: fallback === "auto" ? "local_qwen3" : fallback,
     model,
     fileModel,
-    singleMixMode: options.aliyunAsrSingleMixMode ?? process.env.ALIYUN_ASR_SINGLE_MIX_MODE ?? "robust",
-    singleMixReviewModel: options.aliyunAsrSingleMixReviewModel ?? process.env.ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL ?? DEFAULT_CLOUD_ASR_SINGLE_MIX_REVIEW_MODEL,
-    inputMode: options.aliyunAsrInputMode ?? process.env.ALIYUN_ASR_INPUT_MODE ?? "auto",
+    singleMixMode: String(options.aliyunAsrSingleMixMode ?? process.env.ALIYUN_ASR_SINGLE_MIX_MODE ?? "robust"),
+    singleMixReviewModel: String(options.aliyunAsrSingleMixReviewModel ?? process.env.ALIYUN_ASR_SINGLE_MIX_REVIEW_MODEL ?? DEFAULT_CLOUD_ASR_SINGLE_MIX_REVIEW_MODEL),
+    inputMode: String(options.aliyunAsrInputMode ?? process.env.ALIYUN_ASR_INPUT_MODE ?? "auto"),
     diarizationEnabled: options.aliyunAsrDiarizationEnabled ?? process.env.ALIYUN_ASR_DIARIZATION_ENABLED ?? "auto",
     speakerCount: options.aliyunAsrSpeakerCount ?? process.env.ALIYUN_ASR_SPEAKER_COUNT ?? "",
     timestampAlignmentEnabled: options.aliyunAsrTimestampAlignmentEnabled ?? process.env.ALIYUN_ASR_TIMESTAMP_ALIGNMENT_ENABLED ?? "true",
     languageHints,
     vocabularyId,
-    endpoint: options.aliyunAsrEndpoint ?? process.env.ALIYUN_ASR_ENDPOINT ?? "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-    fileEndpoint: options.aliyunAsrFileEndpoint ?? process.env.ALIYUN_ASR_FILE_ENDPOINT ?? "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-    workspaceId: options.aliyunDashscopeWorkspaceId ?? process.env.ALIYUN_DASHSCOPE_WORKSPACE_ID ?? "",
+    endpoint: String(options.aliyunAsrEndpoint ?? process.env.ALIYUN_ASR_ENDPOINT ?? "wss://dashscope.aliyuncs.com/api-ws/v1/inference"),
+    fileEndpoint: String(options.aliyunAsrFileEndpoint ?? process.env.ALIYUN_ASR_FILE_ENDPOINT ?? "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"),
+    workspaceId: String(options.aliyunDashscopeWorkspaceId ?? process.env.ALIYUN_DASHSCOPE_WORKSPACE_ID ?? ""),
   };
 }
 
-function userMessageForAsrFailure(asr) {
-  const reason = asr?.reason ?? asr?.failureClass ?? "asr_all_providers_failed";
+/** @param {unknown} asrValue */
+function userMessageForAsrFailure(asrValue) {
+  const asr = asRecord(asrValue);
+  const reason = String(asr.reason ?? asr.failureClass ?? "asr_all_providers_failed");
+  /** @type {Record<string, string>} */
   const messages = {
     cloud_asr_api_key_missing: "云端 ASR 未配置百炼 API Key，暂时无法转写音频。",
     cloud_asr_auth_failed: "云端 ASR 鉴权失败，请检查百炼 API Key 或模型权限。",
@@ -964,7 +1125,7 @@ function userMessageForAsrFailure(asr) {
     cloud_asr_speaker_count_invalid: "说话人数提示必须是 2 到 100 之间的整数。",
     cloud_asr_audio_stream_missing: "当前文件中没有可供云端 ASR 转写的音轨。",
     cloud_asr_partial_result: "云端 ASR 只返回了部分转写结果，暂时无法生成可靠会议纪要。",
-    local_asr_service_not_running: asr?.userMessage ?? "本机 ASR 服务未运行，暂时无法转写音频。",
+    local_asr_service_not_running: typeof asr.userMessage === "string" ? asr.userMessage : "本机 ASR 服务未运行，暂时无法转写音频。",
     local_asr_service_unavailable: "本机 ASR 服务不可用，暂时无法转写音频。",
     local_asr_output_incomplete: "本机 ASR 输出不完整，暂时无法生成会议纪要。",
     asr_all_providers_failed: "本地和云端 ASR 均未完成转写，暂时无法生成会议纪要。",
@@ -972,6 +1133,7 @@ function userMessageForAsrFailure(asr) {
   return messages[reason] ?? `ASR 转写失败：${reason}`;
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks */
 async function ensureLocalAsr(task, paths, options, hooks) {
   const audios = sourceAudioPaths(task);
   if (audios.length === 0) return { status: "skipped", reason: "no_audio_sources", rawMediaExternalUpload: false };
@@ -1045,7 +1207,8 @@ async function ensureLocalAsr(task, paths, options, hooks) {
     return blocked;
   }
   const health = await preflightLocalAsrService(serviceUrl, options);
-  if ((!health.ok || health.body?.status !== "ok") && !health.tcpReachable) {
+  const healthBody = asRecord(health.body);
+  if ((!health.ok || healthBody.status !== "ok") && !health.tcpReachable) {
     const blocked = localAsrServiceNotRunning(serviceUrl, {
       healthStatus: "down",
       httpStatus: health.statusCode,
@@ -1064,7 +1227,7 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   await hooks.onStep?.("local_asr_preflight", "completed", {
     serviceUrl,
     modelLoaded: health.modelLoaded,
-    healthStatus: health.healthStatus ?? health.body?.status ?? null,
+    healthStatus: health.healthStatus ?? healthBody.status ?? null,
     serviceBusy: health.serviceBusy,
     healthError: health.error ?? null,
     tcpReachable: health.tcpReachable,
@@ -1075,7 +1238,9 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   const normalized = await normalizeAudioBatch(audios, join(paths.artifactsDir, "audio-normalized"), {
     workspaceDir,
     timeoutMs: Number(options.audioNormalizeTimeoutMs ?? process.env.FEISHU_AGENT_AUDIO_NORMALIZE_TIMEOUT_MS ?? 1_200_000),
-    transcoder: options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER,
+    ...(typeof (options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER) === "string"
+      ? { transcoder: String(options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER) }
+      : {}),
   });
   writeAudioNormalizeArtifact(paths, normalized);
   if (normalized.status !== "completed") {
@@ -1132,6 +1297,7 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   return { status: "completed", summary, cacheStatus: "asr_cache_miss_completed", cacheKey: key };
 }
 
+/** @param {UnknownRecord} params @param {RunnerPaths} paths @param {RunnerOptions} options */
 async function runDashScopeAsrClient(params, paths, options) {
   writeJson(cloudAsrParamsPath(paths.artifactsDir), params);
   const result = await runCommand(
@@ -1164,6 +1330,7 @@ async function runDashScopeAsrClient(params, paths, options) {
   }
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks @param {AudioSource[]} audios @param {AsrProviderConfig} providerConfig @param {string[]} inputPaths @param {string} uploadMode */
 async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, providerConfig, inputPaths, uploadMode) {
   const policy = await callRuntimeTool("policy_gate_check", {
     actionIntent: "audio_transcription",
@@ -1266,6 +1433,7 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
   return { status: "completed", summary, cacheStatus: "asr_cache_miss_completed", rawMediaExternalUpload: true };
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks @param {AudioSource[]} audios @param {AsrProviderConfig} providerConfig */
 async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfig) {
   const key = audioCacheKey(audios, {
     provider: providerConfig.provider,
@@ -1349,7 +1517,9 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
   const normalized = await normalizeAudioBatch(audios, join(paths.artifactsDir, "audio-normalized"), {
     workspaceDir,
     timeoutMs: Number(options.audioNormalizeTimeoutMs ?? process.env.FEISHU_AGENT_AUDIO_NORMALIZE_TIMEOUT_MS ?? 1_200_000),
-    transcoder: options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER,
+    ...(typeof (options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER) === "string"
+      ? { transcoder: String(options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER) }
+      : {}),
   });
   writeAudioNormalizeArtifact(paths, {
     ...normalized,
@@ -1370,7 +1540,7 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
     });
     return { ...normalized, rawMediaExternalUpload: true };
   }
-  const normalizedPaths = normalized.normalizedAudios.map((item) => item.normalizedPath);
+  const normalizedPaths = normalized.normalizedAudios.map((item) => String(item.normalizedPath ?? "")).filter(Boolean);
   await hooks.onStep?.("audio_normalized", "completed", {
     artifact: audioNormalizePath(paths.artifactsDir),
     audioCount: normalizedPaths.length,
@@ -1387,6 +1557,7 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
   return retry;
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks */
 async function ensureAsrTranscription(task, paths, options, hooks) {
   const audios = sourceAudioPaths(task);
   if (audios.length === 0) return { status: "skipped", reason: "no_audio_sources", rawMediaExternalUpload: false };
@@ -1444,17 +1615,20 @@ async function ensureAsrTranscription(task, paths, options, hooks) {
   };
 }
 
+/** @param {string} path @param {number} [maxChars] */
 function readTextIfAvailable(path, maxChars = 30000) {
   if (!path || !existsSync(path)) return "";
   return readFileSync(path, "utf8").slice(0, maxChars);
 }
 
+/** @param {unknown} path @param {number} [maxChars] */
 function readWorkspaceTextIfAvailable(path, maxChars = 30000) {
-  if (!path) return "";
+  const pathText = typeof path === "string" ? path : "";
+  if (!pathText) return "";
   const candidates = [
-    path,
-    isAbsolute(path) ? path : resolve(workspaceDir, path),
-    isAbsolute(path) ? path : resolve(process.cwd(), path),
+    pathText,
+    isAbsolute(pathText) ? pathText : resolve(workspaceDir, pathText),
+    isAbsolute(pathText) ? pathText : resolve(process.cwd(), pathText),
   ];
   for (const candidate of candidates) {
     if (candidate && existsSync(candidate)) return readTextIfAvailable(candidate, maxChars);
@@ -1478,14 +1652,21 @@ const DOC_TITLE_FOCUS = {
   "customer-requirement-checklist": "需求澄清",
 };
 
+/** @param {unknown} docType */
 function documentTitleForFallback(docType) {
-  const prefix = DOC_TITLE_PREFIX[docType] ?? cleanTitlePart(docType, "文档");
-  const focus = DOC_TITLE_FOCUS[docType] ?? "文档输出";
-  return docType === "meeting-minutes"
+  const normalizedDocType = String(docType ?? "");
+  /** @type {Record<string, string>} */
+  const prefixes = DOC_TITLE_PREFIX;
+  /** @type {Record<string, string>} */
+  const focuses = DOC_TITLE_FOCUS;
+  const prefix = prefixes[normalizedDocType] ?? cleanTitlePart(normalizedDocType, "文档");
+  const focus = focuses[normalizedDocType] ?? "文档输出";
+  return normalizedDocType === "meeting-minutes"
     ? `${prefix}｜待确认项目｜${focus}｜待确认`
     : `${prefix}｜待确认项目｜${focus}`;
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function cleanTitlePart(value, fallback = "待确认") {
   const cleaned = String(value ?? "")
     .replace(/https?:\/\/\S+/g, " ")
@@ -1503,10 +1684,12 @@ function cleanTitlePart(value, fallback = "待确认") {
   return cleaned.slice(0, 36);
 }
 
+/** @param {unknown} fileName */
 function stripExtensionForTitle(fileName) {
   return cleanTitlePart(String(fileName ?? "").split(/[\\/]/).pop() ?? "", "");
 }
 
+/** @param {unknown} value */
 function looksLikeGenericUploadName(value) {
   const text = String(value ?? "").toLowerCase();
   const hasLongAlphaNumericToken = /[a-z0-9]{14,}/i.test(text) && /[a-z]/i.test(text) && /\d/.test(text);
@@ -1520,16 +1703,20 @@ function looksLikeGenericUploadName(value) {
     hasLongAlphaNumericToken;
 }
 
+/** @param {unknown} text */
 function extractFirstMarkdownH1(text) {
   return String(text ?? "").match(/^#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
 }
 
+/** @param {unknown} title */
 function projectTitleFromDocumentTitle(title) {
   const raw = String(title ?? "").trim();
   if (!raw || looksLikeGenericUploadName(raw)) return "";
   const parts = raw.split(/[｜|]/).map((part) => cleanTitlePart(part, "")).filter(Boolean);
-  if (parts.length >= 2 && /^(PRD|技术架构|运营方案|客户需求确认表|会议纪要)$/i.test(parts[0])) {
-    return looksLikeGenericUploadName(parts[1]) ? "" : parts[1];
+  const firstPart = parts[0] ?? "";
+  const secondPart = parts[1] ?? "";
+  if (parts.length >= 2 && /^(PRD|技术架构|运营方案|客户需求确认表|会议纪要)$/i.test(firstPart)) {
+    return looksLikeGenericUploadName(secondPart) ? "" : secondPart;
   }
   const withoutDocType = raw
     .replace(/^(PRD|技术架构|运营方案|客户需求确认表|会议纪要)[：:\s｜|-]*/i, "")
@@ -1538,12 +1725,15 @@ function projectTitleFromDocumentTitle(title) {
   return cleaned && !looksLikeGenericUploadName(cleaned) ? cleaned : "";
 }
 
-function inferProjectTitleFromSourceBody(source) {
+/** @param {unknown} sourceValue */
+function inferProjectTitleFromSourceBody(sourceValue) {
+  const source = asRecord(sourceValue);
   const text = readWorkspaceTextIfAvailable(source.extractedTextPath ?? source.sourcePath, 20000);
   const h1 = extractFirstMarkdownH1(text);
   return projectTitleFromDocumentTitle(h1);
 }
 
+/** @param {unknown} text */
 function inferProjectTitleFromPrompt(text) {
   const prompt = cleanPromptForTitle(text);
   const candidates = [];
@@ -1571,13 +1761,15 @@ function inferProjectTitleFromPrompt(text) {
     .sort((a, b) => b.score - a.score)[0]?.candidate ?? "";
 }
 
+/** @param {unknown[]} sources */
 function inferProjectTitleFromSources(sources) {
   for (const source of sources) {
     const candidate = inferProjectTitleFromSourceBody(source);
     if (candidate) return { title: candidate, source: "source_heading" };
   }
   for (const source of sources) {
-    const candidate = stripExtensionForTitle(source.fileName ?? source.basename ?? source.source ?? source.type);
+    const sourceRecord = asRecord(source);
+    const candidate = stripExtensionForTitle(sourceRecord.fileName ?? sourceRecord.basename ?? sourceRecord.source ?? sourceRecord.type);
     if (candidate && !looksLikeGenericUploadName(candidate) && !/^(audio|file|source|text|markdown|pdf)$/i.test(candidate)) {
       return { title: candidate, source: "source_filename" };
     }
@@ -1585,16 +1777,18 @@ function inferProjectTitleFromSources(sources) {
   return { title: "", source: "" };
 }
 
-function meetingTitleFromAnalysis(meetingAnalysis) {
-  if (!meetingAnalysis) return null;
-  const participants = meetingAnalysis.participantResolution?.participants ?? [];
+/** @param {unknown} meetingAnalysisValue */
+function meetingTitleFromAnalysis(meetingAnalysisValue) {
+  const meetingAnalysis = asRecord(meetingAnalysisValue);
+  const participantResolution = asRecord(meetingAnalysis.participantResolution);
+  const participants = asArray(participantResolution.participants).map(asRecord);
   const participantPart = participants.length <= 3
     ? participants.map((participant) => participant.displayName ?? participant.alias).filter(Boolean).join("与")
     : `${participants.slice(0, 2).map((participant) => participant.displayName ?? participant.alias).filter(Boolean).join("、")}等${participants.length}人`;
-  const firstTopic = meetingAnalysis.topicMap?.[0] ?? null;
-  const topicPart = cleanTitlePart(firstTopic?.title, "会议主题待确认").slice(0, 28);
-  const supportedDecision = meetingAnalysis.evidenceMap?.find((claim) => claim.claimType === "decision" && claim.status === "supported");
-  const conclusionPart = cleanTitlePart(supportedDecision?.text ?? firstTopic?.coreJudgment, "结论待确认").slice(0, 32);
+  const firstTopic = asRecord(asArray(meetingAnalysis.topicMap)[0]);
+  const topicPart = cleanTitlePart(firstTopic.title, "会议主题待确认").slice(0, 28);
+  const supportedDecision = asArray(meetingAnalysis.evidenceMap).map(asRecord).find((claim) => claim.claimType === "decision" && claim.status === "supported");
+  const conclusionPart = cleanTitlePart(supportedDecision?.text ?? firstTopic.coreJudgment, "结论待确认").slice(0, 32);
   return {
     title: `会议纪要｜${participantPart || "参会人待确认"}｜${topicPart}｜${conclusionPart}`,
     participantPart: participantPart || "参会人待确认",
@@ -1603,16 +1797,23 @@ function meetingTitleFromAnalysis(meetingAnalysis) {
   };
 }
 
+/** @param {RunnerTask} task @param {string[]} requestedDocuments @param {UnknownRecord[]} sources @param {unknown} [documentIdentity] @param {unknown} [meetingAnalysis] */
 function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdentity = null, meetingAnalysis = null) {
   const userPrompt = task.sourceEvent?.message?.text ?? "";
   const userPromptPreview = cleanPromptForTitle(userPrompt).slice(0, 160);
   const analyzedMeetingTitle = meetingTitleFromAnalysis(meetingAnalysis);
-  if (documentIdentity?.titleByDocType && typeof documentIdentity.titleByDocType === "object") {
-    const projectTitle = cleanTitlePart(documentIdentity.normalizedTitleBase ?? documentIdentity.projectName ?? documentIdentity.subject, "待确认项目");
+  const identity = asRecord(documentIdentity);
+  const titleByDocType = asRecord(identity.titleByDocType);
+  /** @type {Record<string, string>} */
+  const prefixes = DOC_TITLE_PREFIX;
+  /** @type {Record<string, string>} */
+  const focuses = DOC_TITLE_FOCUS;
+  if (Object.keys(titleByDocType).length > 0) {
+    const projectTitle = cleanTitlePart(identity.normalizedTitleBase ?? identity.projectName ?? identity.subject, "待确认项目");
     const documents = requestedDocuments.map((docType) => {
-      const identityTitle = documentIdentity.titleByDocType?.[docType] ?? {};
-      const prefix = DOC_TITLE_PREFIX[docType] ?? cleanTitlePart(docType, "文档");
-      const focus = DOC_TITLE_FOCUS[docType] ?? "文档输出";
+      const identityTitle = asRecord(titleByDocType[docType]);
+      const prefix = prefixes[docType] ?? cleanTitlePart(docType, "文档");
+      const focus = focuses[docType] ?? "文档输出";
       const title = docType === "meeting-minutes" && analyzedMeetingTitle
         ? analyzedMeetingTitle.title
         : looksLikeGenericUploadName(identityTitle.title)
@@ -1629,9 +1830,9 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
           participants: analyzedMeetingTitle?.participantPart ?? null,
           topic: analyzedMeetingTitle?.topicPart ?? null,
           conclusion: analyzedMeetingTitle?.conclusionPart ?? null,
-          identityBasis: identityTitle.identityBasis ?? documentIdentity.basis ?? [],
-          identityConfidence: identityTitle.identityConfidence ?? documentIdentity.confidence ?? "low",
-          sourceTitle: documentIdentity.sourceTitle ?? null,
+          identityBasis: identityTitle.identityBasis ?? identity.basis ?? [],
+          identityConfidence: identityTitle.identityConfidence ?? identity.confidence ?? "low",
+          sourceTitle: identity.sourceTitle ?? null,
           userPromptPreview,
         },
       };
@@ -1642,7 +1843,7 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
       projectTitle,
       sourceCount: sources.length,
       identityOwner: "source-context-runtime",
-      documentIdentity,
+      documentIdentity: identity,
       documents,
       rawSecretsReturned: false,
     };
@@ -1651,8 +1852,8 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
   const sourceProject = inferProjectTitleFromSources(sources);
   const projectTitle = cleanTitlePart(promptProject || sourceProject.title, "待确认项目");
   const documents = requestedDocuments.map((docType) => {
-    const prefix = DOC_TITLE_PREFIX[docType] ?? cleanTitlePart(docType, "文档");
-    const focus = DOC_TITLE_FOCUS[docType] ?? "文档输出";
+    const prefix = prefixes[docType] ?? cleanTitlePart(docType, "文档");
+    const focus = focuses[docType] ?? "文档输出";
     const title = docType === "meeting-minutes" && analyzedMeetingTitle
       ? analyzedMeetingTitle.title
       : docType === "meeting-minutes"
@@ -1683,13 +1884,16 @@ function buildDocumentTitlePlan(task, requestedDocuments, sources, documentIdent
   };
 }
 
+/** @param {RunnerTask} task */
 function isDocumentRevisionTask(task) {
+  const sourcePreparation = asRecord(task.taskIntent.sourcePreparation);
   return task?.taskIntent?.executionProfile === "document_revision" ||
     task?.taskIntent?.operation === "document_revision" ||
     task?.taskIntent?.taskType === "document_revision" ||
-    task?.taskIntent?.sourcePreparation?.operation === "document_revision";
+    sourcePreparation.operation === "document_revision";
 }
 
+/** @param {unknown} text */
 function extractReviewSignals(text) {
   return String(text ?? "")
     .split(/\r?\n/)
@@ -1707,6 +1911,7 @@ function extractReviewSignals(text) {
     }));
 }
 
+/** @param {unknown} value */
 function normalizeMatchText(value) {
   return String(value ?? "")
     .normalize("NFKC")
@@ -1715,6 +1920,7 @@ function normalizeMatchText(value) {
     .replace(/[，。、“”‘’；：！？,.()[\]{}<>《》:;!?'"`~_-]+/g, "");
 }
 
+/** @param {string} text @param {string} needle */
 function countOccurrences(text, needle) {
   const source = String(text ?? "");
   const query = String(needle ?? "");
@@ -1728,6 +1934,7 @@ function countOccurrences(text, needle) {
   return count;
 }
 
+/** @param {string} text @param {unknown} quote */
 function bodyAnchorPreview(text, quote) {
   const source = String(text ?? "");
   const query = String(quote ?? "");
@@ -1738,7 +1945,9 @@ function bodyAnchorPreview(text, quote) {
   return source.slice(start, end).replace(/\s+/g, " ").trim().slice(0, 360);
 }
 
-function matchApiCommentToBody(comment, bodyText) {
+/** @param {unknown} commentValue @param {string} bodyText */
+function matchApiCommentToBody(commentValue, bodyText) {
+  const comment = asRecord(commentValue);
   const quote = String(comment?.quote ?? "").trim();
   const base = {
     ...comment,
@@ -1797,7 +2006,10 @@ function matchApiCommentToBody(comment, bodyText) {
   };
 }
 
-function exportedSignalToComment(signal, source) {
+/** @param {unknown} signalValue @param {unknown} sourceValue */
+function exportedSignalToComment(signalValue, sourceValue) {
+  const signal = asRecord(signalValue);
+  const source = asRecord(sourceValue);
   const text = String(signal.commentText ?? signal.anchorPreview ?? "").trim();
   return {
     commentId: signal.commentId,
@@ -1819,14 +2031,15 @@ function exportedSignalToComment(signal, source) {
   };
 }
 
+/** @param {UnknownRecord[]} comments @param {UnknownRecord[]} [sourceDocuments] */
 function summarizeMatchedComments(comments, sourceDocuments = []) {
   const totalComments = comments.length;
   const matchedExact = comments.filter((comment) => comment.matchStatus === "exact_unique").length;
-  const weakMatched = comments.filter((comment) => ["exact_multiple", "fuzzy"].includes(comment.matchStatus)).length;
+  const weakMatched = comments.filter((comment) => ["exact_multiple", "fuzzy"].includes(String(comment.matchStatus ?? ""))).length;
   const unmatched = comments.filter((comment) => comment.matchStatus === "unmatched").length;
   const exportedBodyDetected = comments.filter((comment) => comment.matchStatus === "exported_body_detected").length;
   const sourcesWithUnavailableComments = sourceDocuments
-    .filter((source) => !["cli", "sdk"].includes(String(source.commentAccess?.method ?? "")))
+    .filter((source) => !["cli", "sdk"].includes(String(asRecord(source.commentAccess).method ?? "")))
     .map((source) => source.sourceId);
   return {
     totalComments,
@@ -1838,6 +2051,7 @@ function summarizeMatchedComments(comments, sourceDocuments = []) {
   };
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {UnknownRecord[]} sources @param {RunnerFileContext[]} contexts @param {RunnerOptions} [options] */
 async function buildReviewContext(task, paths, sources, contexts, options = {}) {
   const userInstruction = cleanUserPrompt(task.sourceEvent?.message?.text ?? "");
   const apiContext = await fetchFeishuDocumentReviewContext({
@@ -1846,17 +2060,17 @@ async function buildReviewContext(task, paths, sources, contexts, options = {}) 
     runCommand,
     options: {
       dryRun: options.dryRun === true,
-      timeoutMs: options.cliTimeoutMs,
+      ...(typeof options.cliTimeoutMs === "number" ? { timeoutMs: options.cliTimeoutMs } : {}),
     },
   });
-  const apiSourceResults = new Map((apiContext.sourceResults ?? []).map((item) => [item.sourceId, item]));
+  const apiSourceResults = new Map(asArray(apiContext.sourceResults).map(asRecord).map((item) => [String(item.sourceId ?? ""), item]));
   const sourceDocuments = contexts.map((context, index) => {
     const sourceId = `file-${String(index + 1).padStart(2, "0")}`;
     const attachment = task.attachments?.[index] ?? {};
-    const text = readTextIfAvailable(context.extractedTextPath, 30000) || String(context.contextPreview ?? "").slice(0, 30000);
-    const apiSource = apiSourceResults.get(sourceId) ?? {};
+    const text = readTextIfAvailable(typeof context.extractedTextPath === "string" ? context.extractedTextPath : "", 30000) || String(context.contextPreview ?? "").slice(0, 30000);
+    const apiSource = asRecord(apiSourceResults.get(sourceId));
     const detectedReviewSignals = extractReviewSignals(text);
-    const apiComments = Array.isArray(apiSource.comments) ? apiSource.comments : [];
+    const apiComments = asArray(apiSource.comments).map(asRecord);
     const comments = apiComments.length > 0
       ? apiComments.map((comment) => matchApiCommentToBody(comment, text))
       : !["cli", "sdk"].includes(String(apiSource.method ?? ""))
@@ -1874,11 +2088,11 @@ async function buildReviewContext(task, paths, sources, contexts, options = {}) 
       identityTried: apiSource.identityTried ?? [],
       requiredScopes: apiSource.requiredScopes ?? apiContext.requiredScopes ?? [],
       commentThreadCount: apiSource.commentThreadCount ?? apiComments.length,
-      replyCount: apiSource.replyCount ?? comments.reduce((sum, comment) => sum + (comment.replyCount ?? 0), 0),
-      unresolvedCount: apiSource.unresolvedCount ?? comments.filter((comment) => comment.isSolved === false || comment.isSolved == null).length,
+      replyCount: apiSource.replyCount ?? comments.reduce((sum, comment) => sum + Number(asRecord(comment).replyCount ?? 0), 0),
+      unresolvedCount: apiSource.unresolvedCount ?? comments.filter((comment) => asRecord(comment).isSolved === false || asRecord(comment).isSolved == null).length,
       plannedCommands: apiSource.plannedCommands ?? [],
       errors: apiSource.errors ?? [],
-      exportedBodyDetectedCount: comments.filter((comment) => comment.matchStatus === "exported_body_detected").length,
+      exportedBodyDetectedCount: comments.filter((comment) => asRecord(comment).matchStatus === "exported_body_detected").length,
     };
     return {
       sourceId,
@@ -1948,14 +2162,18 @@ async function buildReviewContext(task, paths, sources, contexts, options = {}) 
   return reviewContext;
 }
 
-function titlePlanForDoc(titlePlan, docType) {
-  return titlePlan?.documents?.find((item) => item.docType === docType) ?? null;
+/** @param {unknown} titlePlanValue @param {string} docType */
+function titlePlanForDoc(titlePlanValue, docType) {
+  const titlePlan = asRecord(titlePlanValue);
+  return asArray(titlePlan.documents).map(asRecord).find((item) => item.docType === docType) ?? null;
 }
 
+/** @param {unknown} markdown */
 function extractMarkdownH1(markdown) {
-  return markdown.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
+  return String(markdown ?? "").match(/^#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
 }
 
+/** @param {unknown} title @param {string} docType */
 function isGenericTitle(title, docType) {
   const text = String(title ?? "").trim();
   if (!text) return true;
@@ -1966,6 +2184,7 @@ function isGenericTitle(title, docType) {
   return false;
 }
 
+/** @param {unknown} value */
 function decodeHtmlEntities(value) {
   return String(value ?? "")
     .replace(/&nbsp;/gi, " ")
@@ -1976,6 +2195,7 @@ function decodeHtmlEntities(value) {
     .replace(/&#39;/gi, "'");
 }
 
+/** @param {unknown} value */
 function cleanHtmlTableCell(value) {
   return decodeHtmlEntities(value)
     .replace(/<br\s*\/?>/gi, "； ")
@@ -1986,24 +2206,27 @@ function cleanHtmlTableCell(value) {
     .trim();
 }
 
+/** @param {string} tableHtml */
 function htmlTableToMarkdown(tableHtml) {
   const rows = [...String(tableHtml ?? "").matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
-    .map((rowMatch) => [...rowMatch[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)]
+    .map((rowMatch) => [...String(rowMatch[1] ?? "").matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)]
       .map((cellMatch) => cleanHtmlTableCell(cellMatch[1])))
     .filter((cells) => cells.length > 0);
   if (rows.length === 0) return tableHtml;
   const columnCount = Math.max(...rows.map((row) => row.length));
   const normalizedRows = rows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] ?? ""));
-  const header = normalizedRows[0];
+  const header = normalizedRows[0] ?? [];
   const separator = Array.from({ length: columnCount }, () => "---");
   const body = normalizedRows.slice(1);
   return [header, separator, ...body].map((row) => `| ${row.join(" | ")} |`).join("\n");
 }
 
+/** @param {unknown} markdown */
 function normalizeMarkdownTables(markdown) {
   return String(markdown ?? "").replace(/<table\b[\s\S]*?<\/table>/gi, (tableHtml) => htmlTableToMarkdown(tableHtml));
 }
 
+/** @param {unknown} markdown @param {string} title */
 function syncMarkdownTitle(markdown, title) {
   const body = normalizeMarkdownTables(markdown).trim();
   if (!body) return `# ${title}\n`;
@@ -2013,14 +2236,18 @@ function syncMarkdownTitle(markdown, title) {
   return `# ${title}\n\n${body}`;
 }
 
-async function executeMeetingAgenticOrchestration(plan, task, paths, options, hooks) {
+/** @param {unknown} planValue @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks @returns {Promise<UnknownRecord>} */
+async function executeMeetingAgenticOrchestration(planValue, task, paths, options, hooks) {
+  const plan = asRecord(planValue);
+  const executor = asRecord(plan.executor);
+  const executorTool = String(executor.tool ?? "subagent");
   const decision = shouldRunPiMeetingOrchestration(plan, options);
   if (pipelineMockModelEnabled(options)) {
     const skipped = {
       status: "skipped",
       reason: "pipeline_mock_model",
       mode: plan?.mode ?? "direct",
-      expectedTool: plan?.executor?.tool ?? null,
+      expectedTool: executor.tool ?? null,
       rawSecretsReturned: false,
     };
     writeJson(agenticOrchestrationResultPath(paths.artifactsDir), skipped);
@@ -2031,7 +2258,7 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
       status: "skipped",
       reason: decision.reason,
       mode: plan?.mode ?? "direct",
-      expectedTool: plan?.executor?.tool ?? null,
+      expectedTool: executor.tool ?? null,
       rawSecretsReturned: false,
     };
     writeJson(agenticOrchestrationResultPath(paths.artifactsDir), skipped);
@@ -2042,7 +2269,7 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
   const piCodingAgentDir = join(paths.runDir, ".pi-agentic");
   await hooks.onStep?.("meeting_agentic_delegation_started", "running", {
     mode: plan.mode,
-    tool: plan.executor.tool,
+    tool: executorTool,
     modelCandidates: envConfig.candidates.map((candidate) => ({ provider: candidate.provider, model: candidate.model, role: candidate.role })),
     authorizationSource: decision.reason,
   });
@@ -2067,7 +2294,7 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
       maxOutputChars: Number(options.meetingAgenticEventMaxChars ?? process.env.MEETING_AGENTIC_EVENT_MAX_CHARS ?? DEFAULT_MEETING_AGENTIC_EVENT_MAX_CHARS),
     });
     eventStreams.push(commandResult.stdout);
-    const parsed = parsePiMeetingOrchestrationOutput(commandResult.stdout, plan.executor.tool);
+    const parsed = parsePiMeetingOrchestrationOutput(commandResult.stdout, executorTool);
     const completed = commandResult.exitCode === 0 && parsed.status === "completed";
     const attempt = {
       provider: candidate.provider,
@@ -2105,7 +2332,7 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
     status,
     reason: status === "completed" ? null : finalAttempt?.reason ?? "pi_meeting_agentic_delegation_failed",
     mode: plan.mode,
-    expectedTool: plan.executor.tool,
+    expectedTool: executorTool,
     provider: finalAttempt?.provider ?? null,
     model: finalAttempt?.model ?? null,
     authorizationSource: decision.reason,
@@ -2137,7 +2364,7 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
   writeJson(agenticOrchestrationResultPath(paths.artifactsDir), result);
   await hooks.onStep?.("meeting_agentic_delegation_completed", status, {
     mode: plan.mode,
-    tool: plan.executor.tool,
+    tool: executorTool,
     status,
     reason: result.reason,
     artifact: workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)),
@@ -2145,15 +2372,19 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
   return result;
 }
 
+/** @param {RunnerOptions} [options] */
 function meetingMemorySetting(options = {}) {
   return String(options.meetingMemoryCuration ?? process.env.MEETING_MEMORY_CURATION ?? "auto").trim().toLowerCase();
 }
 
+/** @param {RunnerOptions} [options] */
 function meetingMemoryEnabled(options = {}) {
   return !["0", "false", "off", "disabled"].includes(meetingMemorySetting(options));
 }
 
+/** @param {{task: RunnerTask, paths: RunnerPaths, options: RunnerOptions, hooks: RunnerHooks, meetingAnalysis: unknown, documents: UnknownRecord[], qaGate: unknown}} input */
 async function runMeetingMemoryCuration({ task, paths, options, hooks, meetingAnalysis, documents, qaGate }) {
+  /** @param {string} reason */
   const skip = async (reason) => {
     const result = {
       schemaVersion: "meeting-memory-curation-result-v1",
@@ -2173,11 +2404,13 @@ async function runMeetingMemoryCuration({ task, paths, options, hooks, meetingAn
   if (!meetingMemoryEnabled(options)) return skip("meeting_memory_curation_disabled");
   if (executionProfileForTask(task)?.id !== "audio_minutes") return skip("meeting_memory_only_runs_for_audio_minutes");
   if (pipelineMockModelEnabled(options)) return skip("pipeline_mock_model");
-  if (!meetingAnalysis || meetingAnalysis.status !== "complete" || meetingAnalysis.analysisMode !== "model_reasoned_validated") {
+  const meetingAnalysisRecord = asRecord(meetingAnalysis);
+  const qaGateRecord = asRecord(qaGate);
+  if (meetingAnalysisRecord.status !== "complete" || meetingAnalysisRecord.analysisMode !== "model_reasoned_validated") {
     return skip("meeting_intelligence_not_model_validated");
   }
-  if (qaGate?.status !== "pass") return skip("meeting_qa_not_passed");
-  const minutes = (Array.isArray(documents) ? documents : []).find((document) => document?.docType === "meeting-minutes" && document?.localPath);
+  if (qaGateRecord.status !== "pass") return skip("meeting_qa_not_passed");
+  const minutes = documents.find((document) => document.docType === "meeting-minutes" && typeof document.localPath === "string");
   if (!minutes) return skip("final_meeting_minutes_missing");
   if (!existsSync(transcriptPath(paths.artifactsDir)) || !existsSync(participantMapPath(paths.artifactsDir))) {
     return skip("meeting_memory_sources_incomplete");
@@ -2185,11 +2418,11 @@ async function runMeetingMemoryCuration({ task, paths, options, hooks, meetingAn
 
   const plan = buildMeetingMemoryCuratorPlan({
     runId: task.runId,
-    meetingAnalysisPath: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
-    meetingMinutesPath: workspaceRelative(minutes.localPath),
-    qaGatePath: workspaceRelative(join(paths.runDir, "qa-gate.json")),
-    transcriptPath: workspaceRelative(transcriptPath(paths.artifactsDir)),
-    participantMapPath: workspaceRelative(participantMapPath(paths.artifactsDir)),
+    meetingAnalysisPath: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)) ?? "",
+    meetingMinutesPath: workspaceRelative(minutes.localPath) ?? "",
+    qaGatePath: workspaceRelative(join(paths.runDir, "qa-gate.json")) ?? "",
+    transcriptPath: workspaceRelative(transcriptPath(paths.artifactsDir)) ?? "",
+    participantMapPath: workspaceRelative(participantMapPath(paths.artifactsDir)) ?? "",
   });
   writeJson(meetingMemoryPlanPath(paths.artifactsDir), plan);
   const envConfig = loadPiMeetingOrchestrationEnv(workspaceDir);
@@ -2322,6 +2555,7 @@ async function runMeetingMemoryCuration({ task, paths, options, hooks, meetingAn
   return result;
 }
 
+/** @param {{task: RunnerTask, paths: RunnerPaths, options: RunnerOptions, hooks: RunnerHooks, meetingAnalysis: unknown, documents: UnknownRecord[], qaGate: unknown}} input */
 async function runMeetingMemoryCurationSafely(input) {
   try {
     return await runMeetingMemoryCuration(input);
@@ -2343,6 +2577,7 @@ async function runMeetingMemoryCurationSafely(input) {
   }
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks */
 async function ensureMeetingIntelligence(task, paths, options, hooks) {
   if (!existsSync(transcriptPath(paths.artifactsDir))) {
     return { status: "skipped", reason: "transcript_not_available", analysis: null };
@@ -2361,8 +2596,11 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     maxChars: Number(options.meetingAnalysisMaxPromptChars ?? process.env.FEISHU_AGENT_MEETING_ANALYSIS_MAX_PROMPT_CHARS ?? 140_000),
   });
 
+  /** @type {UnknownRecord | null} */
   let analysis = null;
+  /** @type {UnknownRecord | null} */
   let routePlan = null;
+  /** @type {UnknownRecord | null} */
   let generation = null;
   if (!pipelineMockModelEnabled(options)) {
     routePlan = await callRuntimeTool("model_route_plan", {
@@ -2371,8 +2609,8 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
       reasoningDepth: "deep",
       estimatedComplexity: segments.length >= 120 ? "high" : "medium",
     }, paths, options);
-    const candidate = routePlan?.status === "selected" ? routePlan.selected : null;
-    if (candidate) {
+    const candidate = routePlan.status === "selected" ? asRecord(routePlan.selected) : null;
+    if (candidate && typeof candidate.provider === "string" && typeof candidate.model === "string") {
       generation = await callModelGenerateText({
         provider: candidate.provider,
         model: candidate.model,
@@ -2403,13 +2641,13 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
       segments,
       participantMap,
       asrSummary,
-      reason: pipelineMockModelEnabled(options)
+      reason: String(pipelineMockModelEnabled(options)
         ? "pipeline_mock_model"
-        : generation?.reason ?? routePlan?.reason ?? "meeting_analysis_response_invalid",
+        : generation?.reason ?? routePlan?.reason ?? "meeting_analysis_response_invalid"),
     });
   }
   analysis = {
-    ...analysis,
+    ...asRecord(analysis),
     generatedAt: nowIso(),
     source: {
       transcriptPath: workspaceRelative(transcriptPath(paths.artifactsDir)),
@@ -2419,7 +2657,11 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     },
     model: generation?.status === "completed"
       ? { provider: generation.provider, model: generation.model, status: generation.status }
-      : { provider: routePlan?.selected?.provider ?? null, model: routePlan?.selected?.model ?? null, status: generation?.status ?? routePlan?.status ?? "fallback" },
+      : {
+          provider: asRecord(routePlan?.selected).provider ?? null,
+          model: asRecord(routePlan?.selected).model ?? null,
+          status: generation?.status ?? routePlan?.status ?? "fallback",
+        },
   };
   const orchestration = buildMeetingOrchestrationPlan(analysis, {
     meetingAnalysisPath: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
@@ -2427,16 +2669,18 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     participantMapPath: workspaceRelative(participantMapPath(paths.artifactsDir)),
   });
   analysis.agentPlan = {
-    ...analysis.agentPlan,
+    ...asRecord(analysis.agentPlan),
     orchestrationMode: orchestration.mode,
     specialistCount: orchestration.specialists.length,
   };
+  let agentPlan = asRecord(analysis.agentPlan);
+  const productDiscovery = asRecord(analysis.productDiscovery);
   writeJson(meetingAnalysisPath(paths.artifactsDir), analysis);
   writeJson(meetingProfilePath(paths.artifactsDir), analysis.meetingProfile);
   writeJson(participantMapPath(paths.artifactsDir), analysis.participantResolution);
   writeJson(topicMapPath(paths.artifactsDir), { schemaVersion: "meeting-topic-map-v1", topics: analysis.topicMap });
   writeJson(internalEvidenceMapPath(paths.artifactsDir), { schemaVersion: "meeting-evidence-map-v1", claims: analysis.evidenceMap });
-  writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...analysis.agentPlan });
+  writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...agentPlan });
   writeJson(productDiscoveryPath(paths.artifactsDir), analysis.productDiscovery ?? {
     schemaVersion: "meeting-product-discovery-v1",
     status: "not_available",
@@ -2445,10 +2689,10 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
   });
   writeJson(nextStepOptionsPath(paths.artifactsDir), {
     schemaVersion: "meeting-next-step-options-v1",
-    prdReadiness: analysis.productDiscovery?.prdReadiness ?? null,
-    options: analysis.productDiscovery?.nextStepOptions ?? analysis.agentPlan?.nextStepOptions ?? [],
-    clarificationQuestions: analysis.productDiscovery?.clarificationQuestions ?? [],
-    suggestedFollowUpDocuments: analysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+    prdReadiness: productDiscovery.prdReadiness ?? null,
+    options: productDiscovery.nextStepOptions ?? agentPlan.nextStepOptions ?? [],
+    clarificationQuestions: productDiscovery.clarificationQuestions ?? [],
+    suggestedFollowUpDocuments: agentPlan.suggestedFollowUpDocuments ?? [],
     rawSecretsReturned: false,
   });
   writeJson(agenticOrchestrationPath(paths.artifactsDir), orchestration);
@@ -2477,19 +2721,22 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     artifact: workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)),
   } });
   analysis.agentPlan = {
-    ...analysis.agentPlan,
+    ...asRecord(analysis.agentPlan),
     delegationStatus: delegationReconciliation.status,
     delegationReason: delegatedReview.reason,
   };
+  agentPlan = asRecord(analysis.agentPlan);
+  const meetingProfile = asRecord(analysis.meetingProfile);
+  const participantResolution = asRecord(analysis.participantResolution);
   writeJson(meetingAnalysisPath(paths.artifactsDir), analysis);
-  writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...analysis.agentPlan });
+  writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...agentPlan });
   await hooks.onStep?.("meeting_intelligence_completed", "completed", {
     analysisMode: analysis.analysisMode,
-    meetingType: analysis.meetingProfile?.meetingType ?? null,
-    participantCount: analysis.participantResolution?.participantCount ?? 0,
-    unresolvedParticipantCount: analysis.participantResolution?.unresolvedCount ?? 0,
-    topicCount: analysis.topicMap?.length ?? 0,
-    reviewStrategy: analysis.agentPlan?.reviewStrategy ?? null,
+    meetingType: meetingProfile.meetingType ?? null,
+    participantCount: participantResolution.participantCount ?? 0,
+    unresolvedParticipantCount: participantResolution.unresolvedCount ?? 0,
+    topicCount: asArray(analysis.topicMap).length,
+    reviewStrategy: agentPlan.reviewStrategy ?? null,
     orchestrationMode: orchestration.mode,
     specialistCount: orchestration.specialists.length,
     delegationStatus: delegationReconciliation.status,
@@ -2497,14 +2744,15 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     delegationReason: delegatedReview.reason,
     artifact: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
   });
-  if (analysis.participantResolution?.question) {
-    await hooks.progressReply?.(analysis.participantResolution.question, "participant_names_requested");
+  if (typeof participantResolution.question === "string" && participantResolution.question) {
+    await hooks.progressReply?.(participantResolution.question, "participant_names_requested");
   }
   return { status: "completed", analysis, orchestration, delegatedReview, routePlan, generation };
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} [options] */
 async function buildEvidencePack(task, paths, options = {}) {
-  const sourcePreparation = task.taskIntent?.sourcePreparation ?? {};
+  const sourcePreparation = asRecord(task.taskIntent.sourcePreparation);
   const requestedDocuments = Array.isArray(task.taskIntent?.requestedDocuments) && task.taskIntent.requestedDocuments.length > 0
     ? task.taskIntent.requestedDocuments
     : ["meeting-minutes"];
@@ -2526,7 +2774,7 @@ async function buildEvidencePack(task, paths, options = {}) {
   }
   if (existsSync(evidenceIndexPath(paths.artifactsDir))) {
     const evidence = loadJson(evidenceIndexPath(paths.artifactsDir));
-    const sourceSummary = (evidence?.sources ?? []).map((source, index) => ({
+    const sourceSummary = asArray(evidence.sources).map(asRecord).map((source, index) => ({
       sourceId: `audio-${String(index + 1).padStart(2, "0")}`,
       type: source.type ?? "audio_transcript",
       fileName: source.basename ?? null,
@@ -2585,7 +2833,9 @@ async function buildEvidencePack(task, paths, options = {}) {
     operation: isDocumentRevisionTask(task) ? "document_revision" : requestedDocuments.includes("meeting-minutes") ? "meeting_minutes" : "create_document",
     sectionsPerUnit: options.sectionsPerUnit ?? options.sectionsPerBatch ?? 2,
   }, paths, options, executionProfileForTask(task)?.id ?? "");
-  const titlePlan = buildDocumentTitlePlan(task, requestedDocuments, sources, sourceContext.documentIdentity, meetingAnalysis);
+  const sourceEvidenceSummary = asRecord(sourceContext.evidenceSummary);
+  const meetingAnalysisRecord = asRecord(meetingAnalysis);
+  const titlePlan = buildDocumentTitlePlan(task, requestedDocuments, sources, sourceContext.documentIdentity, meetingAnalysisRecord);
   writeJson(titlePlanPath(paths.artifactsDir), titlePlan);
 
   const pack = {
@@ -2600,10 +2850,10 @@ async function buildEvidencePack(task, paths, options = {}) {
       feishuFileName: item.feishuFileName,
       titleBasis: item.titleBasis,
     })),
-    sourceCount: sourceContext.evidenceSummary?.sourceCount ?? sources.length,
-    segmentCount: sourceContext.evidenceSummary?.segmentCount ?? 0,
-    audioSegmentCount: sourceContext.evidenceSummary?.audioSegmentCount ?? 0,
-    sources: sourceContext.evidenceSummary?.sourceSummary ?? sources,
+    sourceCount: sourceEvidenceSummary.sourceCount ?? sources.length,
+    segmentCount: sourceEvidenceSummary.segmentCount ?? 0,
+    audioSegmentCount: sourceEvidenceSummary.audioSegmentCount ?? 0,
+    sources: sourceEvidenceSummary.sourceSummary ?? sources,
     contextPlane: {
       schemaVersion: sourceContext.schemaVersion ?? "source-context-v2",
       manifestPath: workspaceRelative(sourceContext.manifestPath),
@@ -2613,7 +2863,7 @@ async function buildEvidencePack(task, paths, options = {}) {
       taskStatePath: workspaceRelative(sourceContext.taskStatePath),
       retrievalPlanPath: workspaceRelative(sourceContext.retrievalPlanPath),
       gatePath: workspaceRelative(sourceContext.gatePath),
-      workUnitCount: sourceContext.workUnits?.length ?? 0,
+      workUnitCount: asArray(sourceContext.workUnits).length,
       contextGate: sourceContext.gate ?? null,
       documentIdentity: sourceContext.documentIdentity ?? null,
       sourceStructureSummary: sourceContext.sourceStructureSummary ?? null,
@@ -2630,17 +2880,17 @@ async function buildEvidencePack(task, paths, options = {}) {
           artifact: workspaceRelative(reviewContextPath(paths.artifactsDir)),
         }
       : null,
-    meetingIntelligence: meetingAnalysis
+    meetingIntelligence: Object.keys(meetingAnalysisRecord).length > 0
       ? {
-          status: meetingAnalysis.status,
-          analysisMode: meetingAnalysis.analysisMode,
-          meetingType: meetingAnalysis.meetingProfile?.meetingType ?? null,
-          participantCount: meetingAnalysis.participantResolution?.participantCount ?? 0,
-          unresolvedParticipantCount: meetingAnalysis.participantResolution?.unresolvedCount ?? 0,
-          topicCount: meetingAnalysis.topicMap?.length ?? 0,
-          delegationStatus: meetingAnalysis.delegatedReview?.status ?? "skipped",
-          delegationArtifact: meetingAnalysis.delegatedReview?.artifact ?? null,
-          suggestedFollowUpDocuments: meetingAnalysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+          status: meetingAnalysisRecord.status,
+          analysisMode: meetingAnalysisRecord.analysisMode,
+          meetingType: asRecord(meetingAnalysisRecord.meetingProfile).meetingType ?? null,
+          participantCount: asRecord(meetingAnalysisRecord.participantResolution).participantCount ?? 0,
+          unresolvedParticipantCount: asRecord(meetingAnalysisRecord.participantResolution).unresolvedCount ?? 0,
+          topicCount: asArray(meetingAnalysisRecord.topicMap).length,
+          delegationStatus: asRecord(meetingAnalysisRecord.delegatedReview).status ?? "skipped",
+          delegationArtifact: asRecord(meetingAnalysisRecord.delegatedReview).artifact ?? null,
+          suggestedFollowUpDocuments: asArray(asRecord(meetingAnalysisRecord.agentPlan).suggestedFollowUpDocuments),
           artifact: workspaceRelative(meetingAnalysisPath(paths.artifactsDir)),
         }
       : null,
@@ -2692,19 +2942,24 @@ async function buildEvidencePack(task, paths, options = {}) {
   };
 }
 
+/** @param {unknown} markdown */
 function extractTitle(markdown) {
   return extractMarkdownH1(markdown);
 }
 
+/** @param {RunnerPaths} paths */
 function modelRoutePath(paths) {
   return join(paths.runDir, "model-route.json");
 }
 
+/** @param {RunnerOptions} options */
 function pipelineMockModelEnabled(options) {
   return options.pipelineMockModel === true || /^(1|true|yes|on)$/i.test(process.env.FEISHU_AGENT_PIPELINE_MOCK_MODEL ?? "");
 }
 
+/** @param {string} status @param {string} summary @param {UnknownRecord} [details] @param {unknown[]} [artifacts] @param {string | null} [executionProfile] @returns {PipelineOutput} */
 function directOutput(status, summary, details = {}, artifacts = [], executionProfile = null) {
+  /** @type {PipelineOutput} */
   const output = {
     status,
     summary: redactString(summary).slice(0, 3500),
@@ -2714,15 +2969,17 @@ function directOutput(status, summary, details = {}, artifacts = [], executionPr
     rawMediaExternalUpload: false,
   };
   if (executionProfile) output.executionProfile = executionProfile;
-  if (Object.keys(details).length > 0) output.details = sanitize(details);
+  if (Object.keys(details).length > 0) output.details = asRecord(sanitize(details));
   return output;
 }
 
+/** @param {unknown} text @param {string} fallback */
 function cleanGeneratedText(text, fallback) {
   const cleaned = redactString(String(text ?? "").trim()).replace(/\n{3,}/g, "\n\n").trim();
   return (cleaned || fallback).slice(0, 3500).trim();
 }
 
+/** @param {string} kind */
 function directSystemPrompt(kind) {
   if (kind === "file_summary") {
     return [
@@ -2738,6 +2995,7 @@ function directSystemPrompt(kind) {
   ].join("");
 }
 
+/** @param {RunnerTask} task */
 function directUserPrompt(task) {
   const prompt = cleanUserPrompt(task.sourceEvent?.message?.text ?? "");
   return [
@@ -2751,6 +3009,7 @@ function directUserPrompt(task) {
   ].join("\n");
 }
 
+/** @param {UnknownRecord} [profileConfig] */
 function fileSummaryPolicy(profileConfig = {}) {
   return {
     ...DEFAULT_FILE_SUMMARY_CONTEXT_POLICY,
@@ -2758,6 +3017,7 @@ function fileSummaryPolicy(profileConfig = {}) {
   };
 }
 
+/** @param {string} text @param {number} sliceChars @param {number} maxSlices */
 function boundedTextSlices(text, sliceChars, maxSlices) {
   const clean = redactString(String(text ?? "").replace(/\u0000/g, "").trim());
   if (!clean || sliceChars <= 0 || maxSlices <= 0) return [];
@@ -2776,6 +3036,7 @@ function boundedTextSlices(text, sliceChars, maxSlices) {
   }));
 }
 
+/** @param {string[]} parts @param {unknown} text @param {number} budget */
 function appendWithinBudget(parts, text, budget) {
   const value = String(text ?? "");
   if (!value) return budget;
@@ -2784,6 +3045,7 @@ function appendWithinBudget(parts, text, budget) {
   return Math.max(0, budget - clipped.length);
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {UnknownRecord} [profileConfig] */
 function buildFileSummaryContext(task, paths, profileConfig = {}) {
   const policy = fileSummaryPolicy(profileConfig);
   const contexts = (Array.isArray(task.fileContexts?.contexts) ? task.fileContexts.contexts : [])
@@ -2792,7 +3054,7 @@ function buildFileSummaryContext(task, paths, profileConfig = {}) {
   const sources = contexts.map((context, index) => {
     const externalLlmAllowed = true;
     const preview = redactString(String(context.contextPreview ?? "").slice(0, policy.previewCharsPerSource));
-    const extractedText = readTextIfAvailable(context.extractedTextPath, policy.extractedSliceChars * Math.max(1, policy.maxExtractedSlicesPerSource) * 4);
+    const extractedText = readTextIfAvailable(typeof context.extractedTextPath === "string" ? context.extractedTextPath : "", policy.extractedSliceChars * Math.max(1, policy.maxExtractedSlicesPerSource) * 4);
     return {
       sourceId: `file-${String(index + 1).padStart(2, "0")}`,
       fileName: context.fileName ?? null,
@@ -2823,7 +3085,10 @@ function buildFileSummaryContext(task, paths, profileConfig = {}) {
   return fileContext;
 }
 
-function renderFileSummaryPrompt(task, fileContext) {
+/** @param {RunnerTask} task @param {unknown} fileContextValue */
+function renderFileSummaryPrompt(task, fileContextValue) {
+  const fileContext = asRecord(fileContextValue);
+  const contextPolicy = asRecord(fileContext.contextPolicy);
   const parts = [
     "## User Request",
     "",
@@ -2836,8 +3101,8 @@ function renderFileSummaryPrompt(task, fileContext) {
     "## Sources",
     "",
   ];
-  let budget = Number(fileContext.contextPolicy?.maxPromptChars ?? DEFAULT_FILE_SUMMARY_CONTEXT_POLICY.maxPromptChars);
-  for (const source of fileContext.sources ?? []) {
+  let budget = Number(contextPolicy.maxPromptChars ?? DEFAULT_FILE_SUMMARY_CONTEXT_POLICY.maxPromptChars);
+  for (const source of asArray(fileContext.sources).map(asRecord)) {
     const sourceParts = [
       `### ${source.sourceId}: ${source.fileName ?? "unnamed file"}`,
       "",
@@ -2850,9 +3115,9 @@ function renderFileSummaryPrompt(task, fileContext) {
       }, null, 2),
       "",
     ];
-    if (source.preview) sourceParts.push("#### Preview", "", source.preview, "");
-    for (const slice of source.extractedSlices ?? []) {
-      sourceParts.push(`#### Extracted Slice: ${slice.label}`, "", slice.text, "");
+    if (source.preview) sourceParts.push("#### Preview", "", String(source.preview), "");
+    for (const slice of asArray(source.extractedSlices).map(asRecord)) {
+      sourceParts.push(`#### Extracted Slice: ${String(slice.label ?? "slice")}`, "", String(slice.text ?? ""), "");
     }
     budget = appendWithinBudget(parts, sourceParts.join("\n"), budget);
     if (budget <= 0) break;
@@ -2863,22 +3128,26 @@ function renderFileSummaryPrompt(task, fileContext) {
     "",
     "用中文输出简洁总结，包含：核心内容、关键信息、用户应注意的限制或待确认项。不要输出 JSON。",
   );
-  return parts.join("\n").slice(0, Number(fileContext.contextPolicy?.maxPromptChars ?? DEFAULT_FILE_SUMMARY_CONTEXT_POLICY.maxPromptChars) + 2000);
+  return parts.join("\n").slice(0, Number(contextPolicy.maxPromptChars ?? DEFAULT_FILE_SUMMARY_CONTEXT_POLICY.maxPromptChars) + 2000);
 }
 
-function generationCandidate(routePlan, executionProfile, options) {
+/** @param {unknown} routePlanValue @param {string} executionProfile @param {RunnerOptions} options @returns {UnknownRecord | null} */
+function generationCandidate(routePlanValue, executionProfile, options) {
+  const routePlan = asRecord(routePlanValue);
   if (pipelineMockModelEnabled(options)) {
     return { provider: "mock", model: `mock-${safeSegment(executionProfile, "fast-answer")}`, strength: "test" };
   }
-  return routePlan?.selected ?? null;
+  return routePlan.status === "selected" ? asRecord(routePlan.selected) : null;
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} options @param {RunnerHooks} hooks @param {string} executionProfile @param {UnknownRecord} [profileConfig] */
 async function planFastDraftRoute(task, paths, options, hooks, executionProfile, profileConfig = {}) {
   const routePlan = await callRuntimeTool("model_route_plan", {
     taskType: profileConfig.routeTaskType ?? "fast_draft",
     reasoningDepth: profileConfig.reasoningDepth ?? "fast",
   }, paths, options);
   const candidate = generationCandidate(routePlan, executionProfile, options);
+  const selected = asRecord(routePlan.selected);
   await callRuntimeTool("model_route_record", {
     runId: task.runId,
     route: {
@@ -2890,16 +3159,17 @@ async function planFastDraftRoute(task, paths, options, hooks, executionProfile,
   }, paths, options);
   await hooks.onStep?.("model_route_planned", routePlan.status === "selected" ? "completed" : "blocked", {
     artifact: modelRoutePath(paths),
-    selectedProvider: candidate?.provider ?? routePlan.selected?.provider ?? null,
-    selectedModel: candidate?.model ?? routePlan.selected?.model ?? null,
+    selectedProvider: candidate?.provider ?? selected.provider ?? null,
+    selectedModel: candidate?.model ?? selected.model ?? null,
     executionProfile,
   });
   return { routePlan, candidate };
 }
 
+/** @param {{task: RunnerTask, paths: RunnerPaths, options: RunnerOptions, hooks: RunnerHooks, executionProfile: string, profileConfig: UnknownRecord, prompt: string, systemPrompt: string, maxTokens: number, mockResponse: string}} input */
 async function generateDirectReply({ task, paths, options, hooks, executionProfile, profileConfig, prompt, systemPrompt, maxTokens, mockResponse }) {
   const { routePlan, candidate } = await planFastDraftRoute(task, paths, options, hooks, executionProfile, profileConfig);
-  if (routePlan.status !== "selected" || !candidate) {
+  if (routePlan.status !== "selected" || !candidate || typeof candidate.provider !== "string" || typeof candidate.model !== "string") {
     return {
       status: "blocked",
       output: directOutput("blocked", "当前没有可用模型生成回复。", routePlan, [
@@ -2918,9 +3188,9 @@ async function generateDirectReply({ task, paths, options, hooks, executionProfi
     maxTokens,
     timeoutMs: options.modelTimeoutMs ?? options.runtimeToolTimeoutMs ?? 600000,
     mockResponse,
-    modelRoute: candidate.provider === "mock" ? undefined : routePlan,
+    ...(candidate.provider === "mock" ? {} : { modelRoute: routePlan }),
   }, paths, options, executionProfile);
-  await hooks.onStep?.("model_text_generated", generation.status === "completed" ? "completed" : generation.status ?? "blocked", {
+  await hooks.onStep?.("model_text_generated", generation.status === "completed" ? "completed" : String(generation.status ?? "blocked"), {
     provider: candidate.provider,
     model: candidate.model,
     executionProfile,
@@ -2945,6 +3215,7 @@ async function generateDirectReply({ task, paths, options, hooks, executionProfi
   };
 }
 
+/** @param {string} summary @param {UnknownRecord} [details] @returns {PipelineOutput} */
 function blockedOutput(summary, details = {}) {
   return {
     status: "blocked",
@@ -2956,10 +3227,11 @@ function blockedOutput(summary, details = {}) {
     artifacts: [],
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
-    details: sanitize(details),
+    details: asRecord(sanitize(details)),
   };
 }
 
+/** @param {RunnerPaths} paths */
 function publicSourceArtifacts(paths) {
   return [
     existsSync(publicSourceResolutionPath(paths.artifactsDir)) ? { kind: "public-source-resolution", name: "source-resolution.json", localPath: publicSourceResolutionPath(paths.artifactsDir) } : null,
@@ -2974,22 +3246,23 @@ function publicSourceArtifacts(paths) {
   ].filter(Boolean);
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} [options] @param {UnknownRecord} [profileConfig] @returns {Promise<PipelineRun>} */
 async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig = {}) {
-  const hooks = {
-    onStep: options.onStep,
-    onMetric: options.onMetric,
-    progressReply: options.progressReply,
-  };
+  const hooks = runnerHooks(options);
   const executionProfile = "url_source_pack";
   const outputRoot = dirname(paths.runDir);
+  const sourcePreparation = asRecord(task.taskIntent.sourcePreparation);
   const urls = uniqueStrings([
-    ...(task.taskIntent?.sourcePreparation?.publicUrls ?? []),
+    ...asArray(sourcePreparation.publicUrls),
     ...extractPublicUrls(task.sourceEvent?.message?.text ?? ""),
   ], 4);
   const sourceUrl = urls[0] ?? null;
+  /** @type {UnknownRecord | null} */
   let activeLedger = null;
+  /** @type {UnknownRecord | null} */
   let externalWebPolicy = null;
 
+  /** @type {(summary: string, reason: string, stepId: string | null, details?: UnknownRecord) => Promise<PipelineRun>} */
   const finishBlocked = async (summary, reason, stepId, details = {}) => {
     if (activeLedger && stepId) {
       const reconciled = await callRuntimeTool("execution_ledger_reconcile", {
@@ -3002,7 +3275,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
         interactionAdditions: [{
           kind: "question",
           label: summary,
-          description: details.recovery ?? "修复来源、网络或配置后可重试同一 URL。",
+          description: typeof details.recovery === "string" ? details.recovery : "修复来源、网络或配置后可重试同一 URL。",
           priority: "high",
           options: ["retry-public-url", "provide-alternate-public-url"],
           blocks: [stepId],
@@ -3019,18 +3292,19 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
     output.executionProfile = executionProfile;
     output.artifacts = publicSourceArtifacts(paths);
     if (externalWebPolicy) output.policyGate = externalWebPolicy;
-    if (details.qaGate) output.qaGate = details.qaGate;
-    if (details.policyGate) output.policyGate = details.policyGate;
+    if (details.qaGate) output.qaGate = asRecord(details.qaGate);
+    if (details.policyGate) output.policyGate = asRecord(details.policyGate);
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("task_execution_runner_completed", "blocked", { artifact: paths.agentOutputPath, executionProfile, reason });
-    return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("blocked", output);
   };
 
+  /** @param {string} operationId @param {UnknownRecord[]} stepUpdates @param {UnknownRecord[]} [interactionAdditions] */
   const transition = async (operationId, stepUpdates, interactionAdditions = []) => {
     const reconciled = await callRuntimeTool("execution_ledger_reconcile", {
       runId: task.runId,
       outputRoot,
-      expectedRevision: activeLedger.revision,
+      expectedRevision: activeLedger?.revision ?? 0,
       operationId,
       actor: "task-execution-runner",
       stepUpdates,
@@ -3054,7 +3328,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       successCriteria: ["来源解析完整", "完整带时间戳转写可用", "source pack 所有判断可追溯", "部分结果不冒充完整知识"],
       constraints: ["不绕过登录、付费墙、DRM、地区限制或平台访问控制", "不使用 Cookie 或 Authorization", "长媒体只分章分析转写证据"],
     }, paths, options);
-    if (planner.status === "blocked") return await finishBlocked("公开 URL 任务计划未通过。", planner.reason ?? "public_url_plan_blocked", null, planner);
+    if (planner.status === "blocked") return await finishBlocked("公开 URL 任务计划未通过。", String(planner.reason ?? "public_url_plan_blocked"), null, planner);
     await callRuntimeTool("planner_envelope_write", { runId: task.runId, envelope: planner, outputRoot }, paths, options);
     activeLedger = planner;
     await transition("public-source-resolution-started", [{ stepId: "resolve-public-url", status: "in_progress" }]);
@@ -3078,7 +3352,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       targetSpecified: true,
     }, paths, options);
     await callRuntimeTool("policy_gate_write", { runId: task.runId, decision: externalWebPolicy, outputRoot }, paths, options);
-    await hooks.onStep?.("policy_gate_completed", externalWebPolicy.status === "pass" ? "completed" : externalWebPolicy.status ?? "blocked", { artifact: join(paths.runDir, "policy-gate.json"), status: externalWebPolicy.status, actionIntent: "external_web" });
+    await hooks.onStep?.("policy_gate_completed", externalWebPolicy.status === "pass" ? "completed" : String(externalWebPolicy.status ?? "blocked"), { artifact: join(paths.runDir, "policy-gate.json"), status: externalWebPolicy.status, actionIntent: "external_web" });
     if (externalWebPolicy.status !== "pass") {
       return await finishBlocked("公开 URL 获取未通过外部访问边界检查。", "public_url_policy_gate_not_passed", "resolve-public-url", { policyGate: externalWebPolicy, recovery: externalWebPolicy.safeAlternative ?? "请确认来源 URL 与访问范围后重试。" });
     }
@@ -3086,71 +3360,92 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
     await hooks.onStep?.("public_url_resolving", "running", { url: sanitizeUrlForArtifact(sourceUrl) });
 
     const sourceResolver = options.publicUrlResolver ?? resolvePublicMediaSource;
-    const resolution = await sourceResolver(sourceUrl, {
+    const rawResolution = await sourceResolver(sourceUrl, {
       ...options,
       resolveOnly: options.publicUrlResolveOnly === true,
       inputDir: paths.inputsDir,
-      maxPageBytes: options.publicUrlMaxPageBytes,
-      maxTranscriptBytes: options.publicUrlMaxTranscriptBytes,
-      maxMediaBytes: options.publicUrlMaxMediaBytes,
-      maxDurationSec: options.publicUrlMaxDurationSec,
-      timeoutMs: options.publicUrlTimeoutMs,
-      mediaTimeoutMs: options.publicUrlMediaTimeoutMs,
-      ytDlpBin: options.ytDlpBin,
+      ...(typeof options.publicUrlMaxPageBytes === "number" ? { maxPageBytes: options.publicUrlMaxPageBytes } : {}),
+      ...(typeof options.publicUrlMaxTranscriptBytes === "number" ? { maxTranscriptBytes: options.publicUrlMaxTranscriptBytes } : {}),
+      ...(typeof options.publicUrlMaxMediaBytes === "number" ? { maxMediaBytes: options.publicUrlMaxMediaBytes } : {}),
+      ...(typeof options.publicUrlMaxDurationSec === "number" ? { maxDurationSec: options.publicUrlMaxDurationSec } : {}),
+      ...(typeof options.publicUrlTimeoutMs === "number" ? { timeoutMs: options.publicUrlTimeoutMs } : {}),
+      ...(typeof options.publicUrlMediaTimeoutMs === "number" ? { mediaTimeoutMs: options.publicUrlMediaTimeoutMs } : {}),
+      ...(typeof options.ytDlpBin === "string" ? { ytDlpBin: options.ytDlpBin } : {}),
     });
-    writeJson(publicSourceResolutionPath(paths.artifactsDir), resolutionArtifactView(resolution));
+    const resolution = asRecord(rawResolution);
+    const rawSource = asRecord(resolution.source);
+    const source = {
+      originalUrl: rawSource.originalUrl,
+      finalSourceUrl: rawSource.finalSourceUrl,
+      platform: rawSource.platform,
+      title: rawSource.title,
+      author: rawSource.author,
+      program: rawSource.program,
+      publishedAt: rawSource.publishedAt,
+      durationSec: rawSource.durationSec,
+      language: rawSource.language,
+      acquisitionMethod: rawSource.acquisitionMethod,
+      processedAt: rawSource.processedAt,
+      chapters: rawSource.chapters,
+    };
+    const media = asRecord(resolution.media);
+    const sourceTranscript = asRecord(resolution.transcript);
+    const fallback = asRecord(resolution.fallback);
+    writeJson(publicSourceResolutionPath(paths.artifactsDir), resolutionArtifactView(rawResolution));
     if (resolution.status !== "resolved") {
       await hooks.onStep?.("public_url_resolving", "blocked", { reason: resolution.reason, artifact: publicSourceResolutionPath(paths.artifactsDir) });
-      return await finishBlocked("公开来源解析失败，未生成不完整知识包。", resolution.reason ?? "public_url_resolution_failed", "resolve-public-url", resolution);
+      return await finishBlocked("公开来源解析失败，未生成不完整知识包。", String(resolution.reason ?? "public_url_resolution_failed"), "resolve-public-url", resolution);
     }
-    writeJson(publicSourceMetadataPath(paths.artifactsDir), { schemaVersion: "public-source-metadata-v1", ...resolution.source, rawSecretsReturned: false });
+    writeJson(publicSourceMetadataPath(paths.artifactsDir), { schemaVersion: "public-source-metadata-v1", ...source, rawSecretsReturned: false });
     await transition("public-source-resolution-completed", [{ stepId: "resolve-public-url", status: "completed", resultRefs: [workspaceRelative(publicSourceResolutionPath(paths.artifactsDir)), workspaceRelative(publicSourceMetadataPath(paths.artifactsDir))], acceptancePassed: true }]);
-    await hooks.onStep?.("public_url_resolving", "completed", { platform: resolution.source.platform, title: resolution.source.title, artifact: publicSourceResolutionPath(paths.artifactsDir) });
+    await hooks.onStep?.("public_url_resolving", "completed", { platform: source.platform, title: source.title, artifact: publicSourceResolutionPath(paths.artifactsDir) });
 
     await transition("public-source-acquisition-started", [{ stepId: "acquire-source-content", status: "in_progress" }]);
     const acquisitionRefs = [workspaceRelative(publicSourceMetadataPath(paths.artifactsDir))];
-    if (resolution.media?.localPath) acquisitionRefs.push(workspaceRelative(resolution.media.localPath));
+    if (typeof media.localPath === "string") acquisitionRefs.push(workspaceRelative(media.localPath));
     await transition("public-source-acquisition-completed", [{ stepId: "acquire-source-content", status: "completed", resultRefs: acquisitionRefs, acceptancePassed: true }]);
 
     if (options.publicUrlResolveOnly === true) {
       await transition("public-source-resolve-only-transcription-skipped", [{ stepId: "transcribe-source-media", status: "skipped" }]);
       await transition("public-source-resolve-only-analysis-skipped", [{ stepId: "analyze-source-content", status: "skipped" }]);
       await transition("public-source-resolve-only-verification-skipped", [{ stepId: "verify-source-pack", status: "skipped" }]);
-      const output = directOutput("completed", `已解析公开来源：${resolution.source.title ?? resolution.source.platform}。当前为 resolve-only，未下载媒体、未启动 ASR、未生成 source pack。`, {
-        source: resolution.source,
+      const output = directOutput("completed", `已解析公开来源：${source.title ?? source.platform}。当前为 resolve-only，未下载媒体、未启动 ASR、未生成 source pack。`, {
+        source,
         sourceResolutionPath: workspaceRelative(publicSourceResolutionPath(paths.artifactsDir)),
         sourcePackPath: null,
-        fallbackRequired: resolution.fallback?.required === true,
+        fallbackRequired: fallback.required === true,
         todo: activeLedger.userTodoProjection,
       }, publicSourceArtifacts(paths), executionProfile);
       writeJson(paths.agentOutputPath, output);
       await hooks.onStep?.("task_execution_runner_completed", "completed", { artifact: paths.agentOutputPath, executionProfile, resolveOnly: true });
-      return { status: "completed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("completed", output);
     }
 
+    /** @type {{ fullPath: string, readablePath: string, summaryPath: string, summary: unknown, segments?: SourceSegment[] }} */
     let transcriptInfo;
-    let transcriptMethod;
-    let normalizedSegments;
-    if (resolution.transcript?.status === "completed") {
-      transcriptInfo = writeOfficialTranscriptArtifacts({ outputDir: paths.artifactsDir, runId: task.runId, source: resolution.source, transcript: resolution.transcript });
-      transcriptMethod = resolution.transcript.origin ?? "official_transcript";
-      normalizedSegments = transcriptInfo.segments;
+    let transcriptMethod = "official_transcript";
+    /** @type {SourceSegment[]} */
+    let normalizedSegments = [];
+    if (sourceTranscript.status === "completed") {
+      transcriptInfo = writeOfficialTranscriptArtifacts({ outputDir: paths.artifactsDir, runId: task.runId, source, transcript: sourceTranscript });
+      transcriptMethod = String(sourceTranscript.origin ?? "official_transcript");
+      normalizedSegments = transcriptInfo.segments ?? [];
       await transition("public-source-transcription-official", [{ stepId: "transcribe-source-media", status: "skipped", resultRefs: [workspaceRelative(transcriptInfo.fullPath)] }]);
       await hooks.progressReply?.("已取得官方带时间戳文稿，正在分章整理。", "public_source_official_transcript");
     } else {
-      if (!resolution.media?.localPath || !existsSync(resolution.media.localPath)) {
+      if (typeof media.localPath !== "string" || !existsSync(media.localPath)) {
         return await finishBlocked("来源没有可靠官方文稿，也未能取得可转写媒体。", "public_source_media_missing_for_asr", "transcribe-source-media", resolution);
       }
       await transition("public-source-cloud-asr-started", [{ stepId: "transcribe-source-media", status: "in_progress" }]);
-      const mediaName = basename(resolution.media.localPath);
+      const mediaName = basename(media.localPath);
       const mediaTask = {
         ...task,
         attachments: [{
-          resourceType: /video\//i.test(resolution.media.contentType ?? "") || cloudAsrMediaKind(resolution.media.localPath) === "video" ? "video" : "audio",
+          resourceType: /video\//i.test(String(media.contentType ?? "")) || cloudAsrMediaKind(media.localPath) === "video" ? "video" : "audio",
           name: mediaName,
-          localPath: resolution.media.localPath,
-          sha256: resolution.media.sha256 ?? null,
-          sizeBytes: resolution.media.sizeBytes ?? statSync(resolution.media.localPath).size,
+          localPath: media.localPath,
+          ...(typeof media.sha256 === "string" ? { sha256: media.sha256 } : {}),
+          sizeBytes: Number(media.sizeBytes ?? statSync(media.localPath).size),
           sourceKind: "public_url_media",
         }],
       };
@@ -3167,8 +3462,8 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       transcriptMethod = "aliyun_dashscope_paraformer";
       normalizedSegments = normalizeSourceSegments(fullTranscript, {
         originType: transcriptMethod,
-        sourceUrl: resolution.source.finalSourceUrl,
-        language: resolution.source.language,
+        sourceUrl: source.finalSourceUrl,
+        language: source.language,
       });
       transcriptInfo = {
         fullPath: transcriptPath(paths.artifactsDir),
@@ -3180,7 +3475,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
     }
 
     if (!normalizedSegments?.length) return await finishBlocked("完整转写没有可用的时间戳片段。", "public_source_timestamped_transcript_missing", "transcribe-source-media");
-    const provenance = buildProvenanceIndex(resolution.source, normalizedSegments, transcriptMethod);
+    const provenance = buildProvenanceIndex(source, normalizedSegments, transcriptMethod);
     writeJson(publicSourceProvenancePath(paths.artifactsDir), provenance);
     await transition("public-source-analysis-started", [{ stepId: "analyze-source-content", status: "in_progress" }]);
     await hooks.progressReply?.("完整转写已就绪，正在按时间章节分析，不会把长转写整体重复发送给模型。", "public_source_chapter_analysis");
@@ -3188,7 +3483,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
     const chapters = partitionSourceSegments(normalizedSegments, {
       maxChapterDurationMs: options.publicUrlChapterDurationMs,
       maxChapterChars: options.publicUrlChapterChars,
-      chapterMarkers: resolution.source.chapters,
+      chapterMarkers: source.chapters,
     });
     if (chapters.length === 0) return await finishBlocked("完整转写无法形成可分析章节。", "public_source_chapters_missing", "analyze-source-content");
     const oversizedChapter = chapters.find((chapter) => chapter.bounded === false);
@@ -3196,85 +3491,91 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       return await finishBlocked("来源存在超出单章上下文上限的异常长片段，未直接发送给模型。", "public_source_chapter_size_limit_exceeded", "analyze-source-content", { chapterId: oversizedChapter.chapterId, charCount: oversizedChapter.charCount });
     }
     const { routePlan, candidate } = await planFastDraftRoute(task, paths, options, hooks, executionProfile, profileConfig);
-    if (routePlan.status !== "selected" || !candidate) return await finishBlocked("当前没有可用模型分析来源转写。", "public_source_model_unavailable", "analyze-source-content", routePlan);
+    if (routePlan.status !== "selected" || !candidate || typeof candidate.provider !== "string" || typeof candidate.model !== "string") return await finishBlocked("当前没有可用模型分析来源转写。", "public_source_model_unavailable", "analyze-source-content", routePlan);
+    /** @type {Array<ChapterAnalysis & UnknownRecord>} */
     const chapterAnalyses = [];
     for (const chapter of chapters) {
       const chapterPath = join(publicSourcePackDir(paths.artifactsDir), "chapters", `${chapter.chapterId}.json`);
       const reusable = reusableSourceChapterAnalysis(chapterPath, chapter);
       if (reusable) {
-        chapterAnalyses.push(reusable);
+        chapterAnalyses.push(/** @type {ChapterAnalysis & UnknownRecord} */ (reusable));
         writeJson(chapterPath, reusable);
         await hooks.onStep?.("public_source_chapter_reused", "completed", { chapterId: chapter.chapterId, artifact: chapterPath });
         continue;
       }
       const mockClaim = chapter.segments[0];
       const analysisAttempts = [];
+      /** @type {ChapterAnalysis | null} */
       let normalized = null;
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         const generation = await callModelGenerateText({
           provider: candidate.provider,
           model: candidate.model,
-          prompt: buildSourceChapterPrompt(chapter, resolution.source, { maxClaims: attempt === 1 ? 12 : 8 }),
+          prompt: buildSourceChapterPrompt(chapter, source, { maxClaims: attempt === 1 ? 12 : 8 }),
           systemPrompt: "你是知识来源分析器。只输出严格 JSON 对象；每个判断必须引用当前章节给出的 segmentId。",
           temperature: attempt === 1 ? 0.1 : 0,
           maxTokens: Number(options.publicUrlChapterMaxTokens ?? 2400),
           thinkingMode: "disabled",
           responseFormat: "json_object",
           timeoutMs: options.modelTimeoutMs ?? options.runtimeToolTimeoutMs ?? 600000,
-          mockResponse: JSON.stringify({ chapterTitle: `第 ${chapter.order} 章`, summary: mockClaim?.text ?? "测试章节", claims: [{ claimType: "author_view", text: mockClaim?.text ?? "测试观点", evidenceSegmentIds: [mockClaim?.segmentId], confidence: "medium" }], suggestedRelatedTopics: [resolution.source.program ?? resolution.source.title ?? "公开来源"] }),
-          modelRoute: candidate.provider === "mock" ? undefined : routePlan,
+          mockResponse: JSON.stringify({ chapterTitle: `第 ${chapter.order} 章`, summary: mockClaim?.text ?? "测试章节", claims: [{ claimType: "author_view", text: mockClaim?.text ?? "测试观点", evidenceSegmentIds: [mockClaim?.segmentId], confidence: "medium" }], suggestedRelatedTopics: [source.program ?? source.title ?? "公开来源"] }),
+          ...(candidate.provider === "mock" ? {} : { modelRoute: routePlan }),
         }, paths, options, executionProfile);
         normalized = generation.status === "completed"
           ? normalizeSourceChapterAnalysis(generation.content, chapter)
-          : { status: "blocked", reason: generation.reason ?? "source_chapter_generation_failed", chapterId: chapter.chapterId };
+          : { status: "blocked", reason: String(generation.reason ?? "source_chapter_generation_failed"), chapterId: chapter.chapterId };
+        const normalizedRecord = asRecord(normalized);
         analysisAttempts.push({
           attempt,
-          status: normalized.status,
-          reason: normalized.reason ?? null,
+          status: normalizedRecord.status,
+          reason: normalizedRecord.reason ?? null,
           provider: generation.provider ?? candidate.provider,
           model: generation.model ?? candidate.model,
           usage: generation.usage ?? null,
           finishReason: generation.finishReason ?? null,
         });
-        if (normalized.status === "completed") break;
-        if (attempt < 2) await hooks.onStep?.("public_source_chapter_retry", "running", { chapterId: chapter.chapterId, reason: normalized.reason });
+        if (normalizedRecord.status === "completed") break;
+        if (attempt < 2) await hooks.onStep?.("public_source_chapter_retry", "running", { chapterId: chapter.chapterId, reason: normalizedRecord.reason });
       }
-      normalized = {
+      if (!normalized) normalized = { status: "blocked", reason: "source_chapter_generation_missing", chapterId: chapter.chapterId };
+      /** @type {ChapterAnalysis & UnknownRecord} */
+      const persistedAnalysis = {
         ...normalized,
         evidenceHash: sourceChapterEvidenceHash(chapter),
         analysisAttempts,
       };
-      chapterAnalyses.push(normalized);
-      writeJson(chapterPath, normalized);
-      if (normalized.status !== "completed") break;
+      chapterAnalyses.push(persistedAnalysis);
+      writeJson(chapterPath, persistedAnalysis);
+      if (persistedAnalysis.status !== "completed") break;
     }
 
     const sourceForPack = {
-      ...resolution.source,
+      ...source,
       acquisitionMethod: transcriptMethod === "aliyun_dashscope_paraformer"
-        ? `${resolution.source.acquisitionMethod}+cloud_asr`
-        : resolution.source.acquisitionMethod,
+        ? `${source.acquisitionMethod}+cloud_asr`
+        : source.acquisitionMethod,
     };
     writeJson(publicSourceMetadataPath(paths.artifactsDir), { schemaVersion: "public-source-metadata-v1", ...sourceForPack, rawSecretsReturned: false });
-    const asrSummary = transcriptInfo.summary ?? null;
-    const singleMixSummary = asrSummary?.singleMix ?? asrSummary?.speakerDiarization?.singleMix ?? null;
-    const highSeverityReviewItemCount = Number(singleMixSummary?.highSeverityCount ?? 0);
-    const reviewItemCount = Number(singleMixSummary?.reviewItemCount ?? 0);
+    const asrSummary = asRecord(transcriptInfo.summary);
+    const speakerDiarization = asRecord(asrSummary.speakerDiarization);
+    const singleMixSummary = asRecord(asrSummary.singleMix ?? speakerDiarization.singleMix);
+    const highSeverityReviewItemCount = Number(singleMixSummary.highSeverityCount ?? 0);
+    const reviewItemCount = Number(singleMixSummary.reviewItemCount ?? 0);
     const transcriptQuality = transcriptMethod === "aliyun_dashscope_paraformer"
       ? {
           status: asrSummary?.status ?? "complete",
           partial: asrSummary?.partial === true,
           failedChunks: Number(asrSummary?.failedChunks ?? 0),
-          diarizationEnabled: asrSummary?.speakerDiarization?.enabled === true,
-          speakerLabelsAvailable: asrSummary?.speakerDiarization?.speakerLabelsAvailable === true,
-          singleMixStatus: Array.isArray(singleMixSummary?.statuses) ? singleMixSummary.statuses[0] ?? null : singleMixSummary?.status ?? null,
+          diarizationEnabled: speakerDiarization.enabled === true,
+          speakerLabelsAvailable: speakerDiarization.speakerLabelsAvailable === true,
+          singleMixStatus: Array.isArray(singleMixSummary.statuses) ? singleMixSummary.statuses[0] ?? null : singleMixSummary.status ?? null,
           reviewItemCount,
           highSeverityReviewItemCount,
           reviewRequired: reviewItemCount > 0 || highSeverityReviewItemCount > 0,
-          sourceSeparationPerformed: singleMixSummary?.sourceSeparationPerformed === true,
+          sourceSeparationPerformed: singleMixSummary.sourceSeparationPerformed === true,
         }
       : {
-          status: resolution.transcript?.quality ?? "official_timestamped",
+          status: sourceTranscript.quality ?? "official_timestamped",
           partial: false,
           failedChunks: 0,
           reviewRequired: false,
@@ -3290,17 +3591,18 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       segments: normalizedSegments,
       chapterAnalyses,
       transcriptMethod,
-      provenancePath: workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)),
+      provenancePath: workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)) ?? "",
     });
-    if (pack.status !== "complete") return await finishBlocked("分章分析未完整完成，未把部分结果标记为可交接知识包。", pack.reason ?? "source_pack_incomplete", "analyze-source-content", pack);
+    if (pack.status !== "complete") return await finishBlocked("分章分析未完整完成，未把部分结果标记为可交接知识包。", String(asRecord(pack).reason ?? "source_pack_incomplete"), "analyze-source-content", asRecord(pack));
     const qaGate = await callRuntimeTool("qa_gate_evaluate", {
+      profile: "source_pack",
       publishIntent: false,
       checks: {
         security: { rawSecretsReturned: false, secretsLeaked: false },
         webAccess: {
           used: true,
           allowed: true,
-          sources: [resolution.source.finalSourceUrl ?? resolution.source.originalUrl].filter(Boolean),
+          sources: [source.finalSourceUrl ?? source.originalUrl].filter(Boolean),
         },
         evidence: {
           missingEvidenceClaims: pack.provenance.allClaimsHaveEvidence ? [] : ["source_pack_claim_without_evidence"],
@@ -3318,7 +3620,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       },
     }, paths, options);
     await callRuntimeTool("qa_gate_write", { runId: task.runId, gate: qaGate, outputRoot }, paths, options);
-    await hooks.onStep?.("qa_gate_completed", qaGate.status === "pass" ? "completed" : qaGate.status ?? "blocked", { artifact: join(paths.runDir, "qa-gate.json"), status: qaGate.status });
+    await hooks.onStep?.("qa_gate_completed", qaGate.status === "pass" ? "completed" : String(qaGate.status ?? "blocked"), { artifact: join(paths.runDir, "qa-gate.json"), status: qaGate.status });
     if (qaGate.status !== "pass") {
       return await finishBlocked("source pack 未通过完整性与证据验收，未生成可交接结果。", "source_pack_qa_not_passed", "analyze-source-content", { qaGate, recovery: "修复缺失转写、章节或 provenance 后重试。" });
     }
@@ -3335,7 +3637,7 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
       claims: packClaims.map((claim) => ({
         claimId: claim.claimId,
         claimType: claim.claimType,
-        chapterId: claim.chapterId,
+        chapterId: pack.chapters.find((chapter) => chapter.claimIds.includes(claim.claimId))?.chapterId ?? null,
         evidenceSegmentIds: claim.evidenceSegmentIds,
         transcriptOrigin: transcriptMethod,
       })),
@@ -3369,8 +3671,8 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
         transcriptMethod,
         transcriptSegmentCount: normalizedSegments.length,
         chapterCount: pack.chapters.length,
-        todo: activeLedger.userTodoProjection,
-        interactionItems: activeLedger.interactionItems,
+        todo: activeLedger?.userTodoProjection ?? null,
+        interactionItems: activeLedger?.interactionItems ?? [],
         knowledgeBaseWritePerformed: false,
       },
       rawSecretsReturned: false,
@@ -3379,34 +3681,47 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("public_source_pack_generated", "completed", { artifact: publicSourcePackPath(paths.artifactsDir), chapterCount: pack.chapters.length, transcriptMethod });
     await hooks.onStep?.("task_execution_runner_completed", "completed", { artifact: paths.agentOutputPath, executionProfile });
-    return { status: "completed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("completed", /** @type {PipelineOutput} */ (output));
   } catch (error) {
-    return await finishBlocked("公开来源处理失败，可修复后重试。", "public_url_source_pipeline_failed", activeLedger ? activeLedger.currentStepIds?.[0] ?? null : null, { error: error instanceof Error ? error.message : String(error) });
+    return await finishBlocked("公开来源处理失败，可修复后重试。", "public_url_source_pipeline_failed", activeLedger ? String(asArray(activeLedger.currentStepIds)[0] ?? "") || null : null, { error: error instanceof Error ? error.message : String(error) });
   }
 }
 
-export async function runTaskExecutionPipeline(task, paths, options = {}) {
+/** @param {unknown} taskValue @param {RunnerPaths} paths @param {RunnerOptions} [options] @returns {Promise<PipelineRun>} */
+export async function runTaskExecutionPipeline(taskValue, paths, options = {}) {
+  /** @type {RunnerTask} */
+  let task;
+  try {
+    task = /** @type {RunnerTask} */ (assertFeishuTask(taskValue));
+  } catch (error) {
+    const output = directOutput("blocked", "任务输入不完整，无法安全启动执行。", {
+      reason: "task_contract_invalid",
+      fieldPath: "task",
+      recovery: "请通过飞书入口或本地 URL CLI 重新提交任务。",
+      error: error instanceof Error ? error.message : String(error),
+    }, [], "unknown");
+    writeJson(paths.agentOutputPath, output);
+    return createPipelineRun("blocked", output);
+  }
   const profile = executionProfileForTask(task);
   const executionProfile = profile?.id ?? "unknown";
-  if (executionProfile === "fast_answer") return runFastAnswerPipeline(task, paths, options, profile.config);
-  if (executionProfile === "file_summary") return runFileSummaryPipeline(task, paths, options, profile.config);
-  if (executionProfile === "url_source_pack") return runUrlSourcePackPipeline(task, paths, options, profile.config);
-  if (FULL_DOCUMENT_EXECUTION_PROFILES.has(executionProfile)) return runFullDocumentPipeline(task, paths, options, profile.config);
+  const profileConfig = profile?.config ?? {};
+  if (executionProfile === "fast_answer") return runFastAnswerPipeline(task, paths, options, profileConfig);
+  if (executionProfile === "file_summary") return runFileSummaryPipeline(task, paths, options, profileConfig);
+  if (executionProfile === "url_source_pack") return runUrlSourcePackPipeline(task, paths, options, profileConfig);
+  if (FULL_DOCUMENT_EXECUTION_PROFILES.has(executionProfile)) return runFullDocumentPipeline(task, paths, options, profileConfig);
 
   const output = directOutput("blocked", "当前执行 profile 不支持任务执行 Runner。", {
     reason: "execution_profile_not_runner_eligible",
     executionProfile,
   }, [], executionProfile);
   writeJson(paths.agentOutputPath, output);
-  return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+  return createPipelineRun("blocked", output);
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} [options] @param {UnknownRecord} [profileConfig] @returns {Promise<PipelineRun>} */
 async function runFastAnswerPipeline(task, paths, options = {}, profileConfig = {}) {
-  const hooks = {
-    onStep: options.onStep,
-    onMetric: options.onMetric,
-    progressReply: options.progressReply,
-  };
+  const hooks = runnerHooks(options);
   const executionProfile = "fast_answer";
   try {
     await hooks.onStep?.("task_execution_runner_started", "running", {
@@ -3429,7 +3744,7 @@ async function runFastAnswerPipeline(task, paths, options = {}, profileConfig = 
     if (generated.output) {
       writeJson(paths.agentOutputPath, generated.output);
       await hooks.onStep?.("task_execution_runner_completed", "blocked", { artifact: paths.agentOutputPath, executionProfile });
-      return generated;
+      return createPipelineRun(String(generated.status ?? "blocked"), generated.output);
     }
     const output = directOutput("completed", cleanGeneratedText(generated.content, "已生成回复。"), {
       provider: generated.candidate.provider,
@@ -3441,7 +3756,7 @@ async function runFastAnswerPipeline(task, paths, options = {}, profileConfig = 
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("fast_answer_generated", "completed", { artifact: paths.agentOutputPath });
     await hooks.onStep?.("task_execution_runner_completed", "completed", { artifact: paths.agentOutputPath, executionProfile });
-    return { status: "completed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("completed", output);
   } catch (error) {
     const output = directOutput("failed", "任务处理失败，可重试。", {
       reason: "fast_answer_runner_failed",
@@ -3449,16 +3764,13 @@ async function runFastAnswerPipeline(task, paths, options = {}, profileConfig = 
     }, [], executionProfile);
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("task_execution_runner_completed", "failed", { artifact: paths.agentOutputPath, reason: "fast_answer_runner_failed", executionProfile });
-    return { status: "failed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("failed", output);
   }
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} [options] @param {UnknownRecord} [profileConfig] @returns {Promise<PipelineRun>} */
 async function runFileSummaryPipeline(task, paths, options = {}, profileConfig = {}) {
-  const hooks = {
-    onStep: options.onStep,
-    onMetric: options.onMetric,
-    progressReply: options.progressReply,
-  };
+  const hooks = runnerHooks(options);
   const executionProfile = "file_summary";
   try {
     await hooks.onStep?.("task_execution_runner_started", "running", {
@@ -3480,7 +3792,7 @@ async function runFileSummaryPipeline(task, paths, options = {}, profileConfig =
       ], executionProfile);
       writeJson(paths.agentOutputPath, output);
       await hooks.onStep?.("task_execution_runner_completed", "blocked", { artifact: paths.agentOutputPath, executionProfile });
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     const generated = await generateDirectReply({
       task,
@@ -3501,7 +3813,7 @@ async function runFileSummaryPipeline(task, paths, options = {}, profileConfig =
       ];
       writeJson(paths.agentOutputPath, generated.output);
       await hooks.onStep?.("task_execution_runner_completed", "blocked", { artifact: paths.agentOutputPath, executionProfile });
-      return generated;
+      return createPipelineRun(String(generated.status ?? "blocked"), generated.output);
     }
     const output = directOutput("completed", cleanGeneratedText(generated.content, "已生成文件总结。"), {
       provider: generated.candidate.provider,
@@ -3515,7 +3827,7 @@ async function runFileSummaryPipeline(task, paths, options = {}, profileConfig =
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("file_summary_generated", "completed", { artifact: paths.agentOutputPath, sourceCount: fileContext.sourceCount });
     await hooks.onStep?.("task_execution_runner_completed", "completed", { artifact: paths.agentOutputPath, executionProfile });
-    return { status: "completed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("completed", output);
   } catch (error) {
     const output = directOutput("failed", "任务处理失败，可重试。", {
       reason: "file_summary_runner_failed",
@@ -3523,16 +3835,13 @@ async function runFileSummaryPipeline(task, paths, options = {}, profileConfig =
     }, [], executionProfile);
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("task_execution_runner_completed", "failed", { artifact: paths.agentOutputPath, reason: "file_summary_runner_failed", executionProfile });
-    return { status: "failed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("failed", output);
   }
 }
 
+/** @param {RunnerTask} task @param {RunnerPaths} paths @param {RunnerOptions} [options] @param {UnknownRecord} [profileConfig] @returns {Promise<PipelineRun>} */
 async function runFullDocumentPipeline(task, paths, options = {}, profileConfig = {}) {
-  const hooks = {
-    onStep: options.onStep,
-    onMetric: options.onMetric,
-    progressReply: options.progressReply,
-  };
+  const hooks = runnerHooks(options);
   const outputRoot = dirname(paths.runDir);
   const executionProfile = executionProfileForTask(task)?.id ?? null;
   try {
@@ -3547,37 +3856,39 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         const userMessage = "userMessage" in asr ? asr.userMessage : null;
         const output = blockedOutput(userMessage ?? userMessageForAsrFailure(asr), asr);
         writeJson(paths.agentOutputPath, output);
-        return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+        return createPipelineRun("blocked", output);
       }
     }
     const meetingIntelligence = requestedDocuments.includes("meeting-minutes")
       ? await ensureMeetingIntelligence(task, paths, options, hooks)
       : { status: "skipped", reason: "meeting_minutes_not_requested", analysis: null };
+    const meetingAnalysis = asRecord(meetingIntelligence.analysis);
     const revisionMode = isDocumentRevisionTask(task);
     const documentQualityMode = String(options.documentQualityMode ?? process.env.FEISHU_AGENT_DOCUMENT_QUALITY_MODE ?? "stable").toLowerCase();
     const workflowSectionsPerBatch = documentQualityMode === "stable" ? 2 : 3;
     const { evidenceSummary, titlePlan, reviewContext, sourceContext } = await buildEvidencePack(task, paths, {
       ...options,
-      meetingAnalysis: meetingIntelligence.analysis,
+      meetingAnalysis,
       sectionsPerUnit: workflowSectionsPerBatch,
     });
+    const contextGate = asRecord(sourceContext.gate);
     await hooks.onStep?.("evidence_pack_built", "completed", {
       artifact: evidencePackPath(paths.artifactsDir),
       sourceCount: evidenceSummary.sourceCount,
       segmentCount: evidenceSummary.segmentCount ?? 0,
       contextManifest: sourceContext?.manifestPath ?? null,
-      contextGateStatus: sourceContext?.gate?.status ?? null,
+      contextGateStatus: contextGate.status ?? null,
       requestedDocuments,
       operation: revisionMode ? "document_revision" : null,
     });
-    if (sourceContext?.status === "blocked" || sourceContext?.gate?.status === "blocked") {
+    if (sourceContext.status === "blocked" || contextGate.status === "blocked") {
       const output = blockedOutput("上下文准备未通过，暂时无法生成文档。", {
-        reason: sourceContext.reason ?? sourceContext.gate?.reason ?? "source_context_blocked",
-        contextGate: sourceContext.gate ?? null,
+        reason: sourceContext.reason ?? contextGate.reason ?? "source_context_blocked",
+        contextGate,
         contextManifest: sourceContext.manifestPath ?? null,
       });
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     if (revisionMode) {
       await hooks.onStep?.("review_context_built", "completed", {
@@ -3595,11 +3906,11 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       requestedOutputs: requestedDocuments,
       availableArtifacts: [
         workspaceRelative(evidencePackPath(paths.artifactsDir)),
-        meetingIntelligence.analysis ? workspaceRelative(meetingAnalysisPath(paths.artifactsDir)) : null,
-        meetingIntelligence.analysis ? workspaceRelative(topicMapPath(paths.artifactsDir)) : null,
-        meetingIntelligence.analysis ? workspaceRelative(internalEvidenceMapPath(paths.artifactsDir)) : null,
-        meetingIntelligence.analysis ? workspaceRelative(agenticOrchestrationPath(paths.artifactsDir)) : null,
-        meetingIntelligence.analysis ? workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)) : null,
+        Object.keys(meetingAnalysis).length > 0 ? workspaceRelative(meetingAnalysisPath(paths.artifactsDir)) : null,
+        Object.keys(meetingAnalysis).length > 0 ? workspaceRelative(topicMapPath(paths.artifactsDir)) : null,
+        Object.keys(meetingAnalysis).length > 0 ? workspaceRelative(internalEvidenceMapPath(paths.artifactsDir)) : null,
+        Object.keys(meetingAnalysis).length > 0 ? workspaceRelative(agenticOrchestrationPath(paths.artifactsDir)) : null,
+        Object.keys(meetingAnalysis).length > 0 ? workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)) : null,
         revisionMode ? workspaceRelative(reviewContextPath(paths.artifactsDir)) : null,
         existsSync(transcriptPath(paths.artifactsDir)) ? workspaceRelative(transcriptPath(paths.artifactsDir)) : null,
         existsSync(evidenceIndexPath(paths.artifactsDir)) ? workspaceRelative(evidenceIndexPath(paths.artifactsDir)) : null,
@@ -3608,19 +3919,19 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         ? ["批注/修改意图被覆盖", "修订后文档完整输出", "QA Gate 通过", "Policy Gate 通过", "最终发布/回复"]
         : ["请求文档生成", "QA Gate 通过", "Policy Gate 通过", "最终发布/回复"],
       constraints: ["凭证、Token、Cookie 和 Authorization 不得进入模型或日志", "模型选择必须走 Model Router", "会议结构由 Meeting Intelligence 与当前证据决定", "多源冲突按来源标注并列入待确认", "document_revision 只能作为 prompt overlay 和 review-context，不得新增第二编排层"],
-      meetingAnalysis: meetingIntelligence.analysis
+      meetingAnalysis: Object.keys(meetingAnalysis).length > 0
         ? {
-            meetingType: meetingIntelligence.analysis.meetingProfile?.meetingType ?? null,
-            topicCount: meetingIntelligence.analysis.topicMap?.length ?? 0,
-            participantCount: meetingIntelligence.analysis.participantResolution?.participantCount ?? 0,
-            unresolvedParticipantCount: meetingIntelligence.analysis.participantResolution?.unresolvedCount ?? 0,
-            complexity: meetingIntelligence.analysis.agentPlan?.meetingComplexity ?? null,
-            narrativeMode: meetingIntelligence.analysis.agentPlan?.narrativeMode ?? null,
-            reviewStrategy: meetingIntelligence.analysis.agentPlan?.reviewStrategy ?? null,
-            orchestrationMode: meetingIntelligence.analysis.agentPlan?.orchestrationMode ?? null,
-            specialistCount: meetingIntelligence.analysis.agentPlan?.specialistCount ?? 0,
-            suggestedFollowUpDocuments: meetingIntelligence.analysis.agentPlan?.suggestedFollowUpDocuments ?? [],
-            productDiscoverySummary: meetingIntelligence.analysis.productDiscovery ?? null,
+            meetingType: asRecord(meetingAnalysis.meetingProfile).meetingType ?? null,
+            topicCount: asArray(meetingAnalysis.topicMap).length,
+            participantCount: asRecord(meetingAnalysis.participantResolution).participantCount ?? 0,
+            unresolvedParticipantCount: asRecord(meetingAnalysis.participantResolution).unresolvedCount ?? 0,
+            complexity: asRecord(meetingAnalysis.agentPlan).meetingComplexity ?? null,
+            narrativeMode: asRecord(meetingAnalysis.agentPlan).narrativeMode ?? null,
+            reviewStrategy: asRecord(meetingAnalysis.agentPlan).reviewStrategy ?? null,
+            orchestrationMode: asRecord(meetingAnalysis.agentPlan).orchestrationMode ?? null,
+            specialistCount: asRecord(meetingAnalysis.agentPlan).specialistCount ?? 0,
+            suggestedFollowUpDocuments: asArray(asRecord(meetingAnalysis.agentPlan).suggestedFollowUpDocuments),
+            productDiscoverySummary: meetingAnalysis.productDiscovery ?? null,
           }
         : null,
     }, paths, options);
@@ -3629,11 +3940,11 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     if (planner.status === "blocked") {
       const output = blockedOutput("任务计划未通过，暂未开始文档生成。", planner);
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     const readyDocumentStepIds = requestedDocuments
       .map((docType) => `generate-${docType}`)
-      .filter((stepId) => planner.steps?.some((step) => step.stepId === stepId && step.status === "ready"));
+      .filter((stepId) => asArray(planner.steps).map(asRecord).some((step) => step.stepId === stepId && step.status === "ready"));
     const startedLedger = await callRuntimeTool("execution_ledger_reconcile", {
       runId: task.runId,
       outputRoot,
@@ -3645,7 +3956,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     if (startedLedger.status === "blocked") {
       const output = blockedOutput("任务账本无法进入文档生成步骤。", startedLedger);
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     let activeLedger = startedLedger;
 
@@ -3657,15 +3968,16 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       reasoningDepth: requestedDocuments.some((doc) => ["meeting-minutes", "prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(doc)) ? "deep" : "fast",
     }, paths, options);
     await callRuntimeTool("model_route_record", { runId: task.runId, route: routePlan, outputRoot }, paths, options);
+    const selectedRoute = asRecord(routePlan.selected);
     await hooks.onStep?.("model_route_planned", routePlan.status === "selected" ? "completed" : "blocked", {
       artifact: join(paths.runDir, "model-route.json"),
-      selectedProvider: routePlan.selected?.provider ?? null,
-      selectedModel: routePlan.selected?.model ?? null,
+      selectedProvider: selectedRoute.provider ?? null,
+      selectedModel: selectedRoute.model ?? null,
     });
     if (routePlan.status !== "selected") {
       const output = blockedOutput("上下文已准备完成，但当前没有可用模型生成文档。", routePlan);
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
 
     const workItemsResult = await callRuntimeTool("document_prompt_render_batch", {
@@ -3675,19 +3987,18 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         operation: revisionMode ? "document_revision" : "create_document",
         reasoningDepth: requestedDocuments.some((doc) => ["meeting-minutes", "prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(doc)) ? "deep" : "fast",
         modelRouteTaskType: routeTaskType,
-        selectedModel: routePlan.selected,
+        selectedModel: selectedRoute,
         reason: revisionMode ? "用户要求基于飞书文档和批注/修改内容修订既有文档；文档类型仍由 prompt registry 映射，revision overlay 只提供修订约束。" : "用户要求基于多源上下文生成指定办公文档；文档类型由 prompt registry 映射。",
       },
       evidenceSummary,
-      contextEnvelopeRef: sourceContext?.manifestPath,
-      workUnits: sourceContext?.workUnits ?? [],
-      operation: revisionMode ? "document_revision" : undefined,
-      reviewContext: revisionMode ? evidenceSummary.reviewContext : undefined,
+      contextEnvelopeRef: sourceContext.manifestPath,
+      workUnits: asArray(sourceContext.workUnits),
+      ...(revisionMode ? { operation: "document_revision", reviewContext: evidenceSummary.reviewContext } : {}),
     }, paths, options);
     if (!Array.isArray(workItemsResult.documentWorkItems) || workItemsResult.documentWorkItems.length === 0) {
       const output = blockedOutput("上下文已准备完成，但文档 work item 准备失败。", workItemsResult);
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     await hooks.onStep?.("prompt_registry_rendered", "completed", {
       documents: requestedDocuments,
@@ -3704,7 +4015,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       sectionBatching: true,
       sectionsPerBatch: workflowSectionsPerBatch,
     }, paths, options);
-    await hooks.onStep?.("document_workers_planned", workerPlan.status === "ready" ? "completed" : "blocked", { tasks: workerPlan.tasks?.length ?? 0 });
+    await hooks.onStep?.("document_workers_planned", workerPlan.status === "ready" ? "completed" : "blocked", { tasks: asArray(workerPlan.tasks).length });
 
     const configuredModelTimeoutMs = optionalPositiveNumber(options.modelTimeoutMs ?? process.env.FEISHU_AGENT_MODEL_TIMEOUT_MS);
     const workerDeadline = documentWorkerDeadlineParams(options);
@@ -3729,21 +4040,54 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       retryPolicy,
       ...workerDeadline,
     }, paths, options, "", { timeoutMs: workerToolTimeoutMs });
-    const results = Array.isArray(workerRun.results) ? workerRun.results : [];
-    const completedResults = results.filter((result) => result?.markdown && ["completed", "needs_fix"].includes(String(result.status)));
+    const projectionEvents = asArray(workerRun.projectionEvents).map(asRecord);
+    /** @type {UnknownRecord} */
+    let projectionReconciliation = projectionEvents.length > 0
+      ? { status: "pending", reason: "projection_write_failed", recovery: "从 Adaptive Execution Ledger 重建用户投影。" }
+      : { status: "not_required", reason: null, recovery: null };
+    if (projectionEvents.length > 0 && activeLedger?.schemaVersion === "adaptive-execution-ledger-v1") {
+      const reconciled = await callRuntimeTool("execution_ledger_reconcile", {
+        runId: task.runId,
+        outputRoot,
+        expectedRevision: activeLedger.revision,
+        operationId: `document-projection-failure-${activeLedger.revision}`,
+        actor: "task-execution-runner",
+        eventAdditions: projectionEvents.map((event) => ({
+          type: "projection_write_failed",
+          actor: event.actor ?? "document-worker-runtime",
+          reason: event.reason ?? "projection_write_failed",
+          artifactRef: event.artifactRef ?? null,
+          recovery: event.recovery ?? "从 Adaptive Execution Ledger 重建用户投影。",
+        })),
+      }, paths, options);
+      if (reconciled?.schemaVersion === "adaptive-execution-ledger-v1") {
+        activeLedger = reconciled;
+        projectionReconciliation = { status: "recorded_in_ledger", reason: null, recovery: "从 Adaptive Execution Ledger 重建用户投影。" };
+      } else {
+        projectionReconciliation = {
+          status: "needs_recovery",
+          reason: String(reconciled.reason ?? "projection_failure_event_reconcile_failed"),
+          recovery: "保留文档产物；修复 Ledger 写入后，从权威 Ledger 重建 task-state、Todo、飞书和 Workbench 投影。",
+        };
+      }
+    }
+    const results = asArray(workerRun.results).map(asRecord);
+    const completedResults = results.filter((result) => typeof result.markdown === "string" && ["completed", "needs_fix"].includes(String(result.status)));
     const generatedStepName = requestedDocuments.length === 1 && requestedDocuments[0] === "meeting-minutes" ? "meeting_minutes_generated" : "documents_generated";
-    await hooks.onStep?.(generatedStepName, workerRun.status === "completed" ? "completed" : workerRun.status ?? "blocked", {
+    await hooks.onStep?.(generatedStepName, workerRun.status === "completed" ? "completed" : String(workerRun.status ?? "blocked"), {
       artifact: completedResults.length > 0 ? "agent-output-pending" : null,
       modelRoutePath: workerRun.modelRoutePath ?? join(paths.runDir, "model-route.json"),
       documentCount: completedResults.length,
-      sectionBatches: completedResults.reduce((sum, result) => sum + (result?.sectionBatches?.length ?? 0), 0),
+      sectionBatches: completedResults.reduce((sum, result) => sum + asArray(result.sectionBatches).length, 0),
       traceRoot: workerRun.traceRoot ?? join(paths.runDir, "artifacts", "model-streams", "document_workers_run"),
-      attemptCount: workerRun.attemptCount ?? results.reduce((sum, result) => sum + (result?.sectionAttempts ?? []).reduce((inner, attempt) => inner + (attempt?.attemptFailures?.length ?? 0), 0), 0),
+      attemptCount: workerRun.attemptCount ?? results.reduce((sum, result) => sum + asArray(result.sectionAttempts).map(asRecord).reduce((inner, attempt) => inner + asArray(attempt.attemptFailures).length, 0), 0),
       partialCount: workerRun.partialCount ?? results.filter((result) => result?.markdown && result?.status === "blocked").length,
       lastAttempt: workerRun.lastAttempt ?? null,
       timeoutBudgetMs: workerRun.timeoutBudgetMs ?? workerDeadline.runtimeBudgetMs,
       workflow: workerRun.workflow ?? null,
       finalFailureReport: workerRun.finalFailureReport ?? null,
+      projection: workerRun.projection ?? projectionReconciliation,
+      projectionReconciliation,
     });
     if (completedResults.length === 0) {
       const finalFailureReport = finalFailureReportFromWorkerRun(workerRun);
@@ -3752,7 +4096,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         finalFailureReport,
       });
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     if (workerRun.status !== "completed" || completedResults.length < workItemsResult.documentWorkItems.length || completedResults.some((result) => result.status !== "completed")) {
       const finalFailureReport = finalFailureReportFromWorkerRun(workerRun);
@@ -3763,30 +4107,32 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
         publishPartial: false,
       });
       writeJson(paths.agentOutputPath, output);
-      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+      return createPipelineRun("blocked", output);
     }
     await hooks.progressReply?.("文档生成完成，正在检查并发布。", generatedStepName);
 
     const qaDocumentOutputs = completedResults.map((result, index) => {
-      const docType = result.docType ?? requestedDocuments[index] ?? "document";
+      const docType = String(result.docType ?? requestedDocuments[index] ?? "document");
       const planned = titlePlanForDoc(titlePlan, docType);
       const generatedTitle = extractTitle(result.markdown);
+      const qaInput = asRecord(result.qaInput);
+      const outputContract = asRecord(sourceContext.outputContract);
       return {
-        ...result.qaInput,
+        ...qaInput,
         docType,
         title: planned?.title ?? generatedTitle,
         markdownTitle: generatedTitle,
         targetTitle: planned?.title ?? null,
         titleBasis: planned?.titleBasis ?? null,
-        documentIdentity: sourceContext?.documentIdentity ?? null,
-        outputContract: sourceContext?.outputContract ?? null,
-        sourceStructureSummary: sourceContext?.sourceStructureSummary ?? null,
-        sourceStructurePath: workspaceRelative(sourceContext?.sourceStructurePath),
-        contextManifest: workspaceRelative(sourceContext?.manifestPath),
-        contextPackIds: result.contextPackIds ?? result.qaInput?.contextPackIds ?? [],
-        sourceBlockIds: result.sourceBlockIds ?? result.qaInput?.sourceBlockIds ?? [],
-        tableBlockCount: Number(result.tableBlockCount ?? result.qaInput?.tableBlockCount ?? 0),
-        outputContractVersion: result.outputContractVersion ?? result.qaInput?.outputContractVersion ?? sourceContext?.outputContract?.outputContractVersion ?? "document-output-contract-v1",
+        documentIdentity: sourceContext.documentIdentity ?? null,
+        outputContract: sourceContext.outputContract ?? null,
+        sourceStructureSummary: sourceContext.sourceStructureSummary ?? null,
+        sourceStructurePath: workspaceRelative(sourceContext.sourceStructurePath),
+        contextManifest: workspaceRelative(sourceContext.manifestPath),
+        contextPackIds: result.contextPackIds ?? qaInput.contextPackIds ?? [],
+        sourceBlockIds: result.sourceBlockIds ?? qaInput.sourceBlockIds ?? [],
+        tableBlockCount: Number(result.tableBlockCount ?? qaInput.tableBlockCount ?? 0),
+        outputContractVersion: result.outputContractVersion ?? qaInput.outputContractVersion ?? outputContract.outputContractVersion ?? "document-output-contract-v1",
         markdown: result.markdown,
       };
     });
@@ -3807,6 +4153,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       cleanUserPrompt(task.sourceEvent?.message?.text ?? ""),
     );
     const qaGate = await callRuntimeTool("qa_gate_evaluate", {
+      profile: revisionMode ? "document_revision" : requestedDocuments.includes("meeting-minutes") ? "meeting_minutes" : "office_document",
       publishIntent: explicitPublishRequested,
       checks: {
         security: { rawSecretsReturned: false, secretsLeaked: false },
@@ -3825,30 +4172,36 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
               artifact: workspaceRelative(reviewContextPath(paths.artifactsDir)),
               commentAccess: reviewContext?.commentAccess ?? null,
               matchSummary: reviewContext?.matchSummary ?? null,
-              sourceDocuments: reviewContext?.sourceDocuments?.map((source) => ({
+              sourceDocuments: asArray(reviewContext?.sourceDocuments).map(asRecord).map((source) => ({
                 sourceId: source.sourceId,
                 commentAccess: source.commentAccess,
-                commentCount: source.comments?.length ?? 0,
-                comments: (source.comments ?? []).map((comment) => ({
+                commentCount: asArray(source.comments).length,
+                comments: asArray(source.comments).map(asRecord).map((comment) => ({
                   sourceId: comment.sourceId,
                   commentId: comment.commentId,
                   matchStatus: comment.matchStatus,
                   matchReason: comment.matchReason,
                 })),
-              })) ?? [],
-              independentCommentThreadsRead: reviewContext?.commentAccess?.method === "cli" || reviewContext?.commentAccess?.method === "sdk",
-              unavailableMustBeDisclosed: reviewContext?.commentAccess?.method !== "cli" && reviewContext?.commentAccess?.method !== "sdk",
+              })),
+              independentCommentThreadsRead: ["cli", "sdk"].includes(String(asRecord(reviewContext?.commentAccess).method ?? "")),
+              unavailableMustBeDisclosed: !["cli", "sdk"].includes(String(asRecord(reviewContext?.commentAccess).method ?? "")),
             }
           : null,
-        contextManifest: workspaceRelative(sourceContext?.manifestPath),
-        documentIdentity: sourceContext?.documentIdentity ?? null,
-        outputContract: sourceContext?.outputContract ?? null,
-        sourceStructureSummary: sourceContext?.sourceStructureSummary ?? null,
+        contextManifest: workspaceRelative(sourceContext.manifestPath),
+        documentIdentity: sourceContext.documentIdentity ?? null,
+        outputContract: sourceContext.outputContract ?? null,
+        sourceStructureSummary: sourceContext.sourceStructureSummary ?? null,
         documentOutputs: qaDocumentOutputs,
       },
     }, paths, options);
-    await callRuntimeTool("qa_gate_write", { runId: task.runId, gate: qaGate, outputRoot }, paths, options);
-    await hooks.onStep?.("qa_gate_completed", qaGate.status === "pass" ? "completed" : qaGate.status ?? "blocked", { artifact: join(paths.runDir, "qa-gate.json"), status: qaGate.status });
+    const qaGateWrite = await callRuntimeTool("qa_gate_write", { runId: task.runId, gate: qaGate, outputRoot }, paths, options);
+    const qaGatePersisted = qaGateWrite?.ok === true;
+    await hooks.onStep?.("qa_gate_completed", qaGate.status === "pass" && qaGatePersisted ? "completed" : qaGate.status === "pass" ? "blocked" : String(qaGate.status ?? "blocked"), {
+      artifact: qaGatePersisted ? qaGateWrite.qaGatePath : null,
+      status: qaGate.status,
+      persistenceStatus: qaGatePersisted ? "persisted" : "blocked",
+      reason: qaGatePersisted ? null : qaGateWrite?.reason ?? "qa_gate_write_failed",
+    });
 
     const policyGate = await callRuntimeTool("policy_gate_check", {
       actionIntent: "publish_customer_visible",
@@ -3870,29 +4223,31 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       targetSpecified: true,
     }, paths, options);
     await callRuntimeTool("policy_gate_write", { runId: task.runId, decision: policyGate, outputRoot }, paths, options);
-    await hooks.onStep?.("policy_gate_completed", policyGate.status === "pass" ? "completed" : policyGate.status ?? "blocked", { artifact: join(paths.runDir, "policy-gate.json"), status: policyGate.status });
+    await hooks.onStep?.("policy_gate_completed", policyGate.status === "pass" ? "completed" : String(policyGate.status ?? "blocked"), { artifact: join(paths.runDir, "policy-gate.json"), status: policyGate.status });
 
-    const publishable = qaGate.status === "pass" && policyGate.status === "pass" && completedResults.every((result) => result.status === "completed");
+    const publishable = qaGate.status === "pass" && qaGatePersisted && policyGate.status === "pass" && completedResults.every((result) => result.status === "completed");
     const documents = completedResults.map((result, index) => {
-      const docType = result.docType ?? requestedDocuments[index] ?? "document";
+      const docType = String(result.docType ?? requestedDocuments[index] ?? "document");
       const planned = titlePlanForDoc(titlePlan, docType);
       const generatedTitle = extractTitle(result.markdown);
       const title = planned?.title ?? (isGenericTitle(generatedTitle, docType) ? documentTitleForFallback(docType) : generatedTitle);
       const fileName = safeFileName(title);
-      const markdown = syncMarkdownTitle(result.markdown, title);
+      const markdown = syncMarkdownTitle(result.markdown, String(title));
       const localDocPath = join(paths.artifactsDir, fileName);
       writeText(localDocPath, markdown);
       return { docType, title, fileName, markdown, titleBasis: planned?.titleBasis ?? null, localPath: localDocPath };
     });
     const remainingLedgerDocuments = [...documents];
     while (remainingLedgerDocuments.length > 0) {
-      const completedStepIds = new Set((activeLedger.steps ?? []).filter((step) => step.status === "completed").map((step) => step.stepId));
+      const ledgerSteps = asArray(activeLedger.steps).map(asRecord);
+      const completedStepIds = new Set(ledgerSteps.filter((step) => step.status === "completed").map((step) => String(step.stepId ?? "")));
       const readyIndex = remainingLedgerDocuments.findIndex((document) => {
-        const step = activeLedger.steps?.find((item) => item.stepId === `generate-${document.docType}`);
-        return step && (step.dependsOn ?? []).every((dependency) => completedStepIds.has(dependency));
+        const step = ledgerSteps.find((item) => item.stepId === `generate-${document.docType}`);
+        return Boolean(step) && asArray(step?.dependsOn).every((dependency) => completedStepIds.has(String(dependency)));
       });
       if (readyIndex < 0) break;
       const [document] = remainingLedgerDocuments.splice(readyIndex, 1);
+      if (!document) break;
       const completedLedger = await callRuntimeTool("execution_ledger_reconcile", {
         runId: task.runId,
         outputRoot,
@@ -3909,6 +4264,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       if (completedLedger.status === "blocked") break;
       activeLedger = completedLedger;
     }
+    /** @type {UnknownRecord | null} */
     let lifecycleResult = null;
     if (revisionMode) {
       lifecycleResult = await callRuntimeTool("document_lifecycle_write", {
@@ -3927,7 +4283,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       });
     }
     const meetingMemory = requestedDocuments.includes("meeting-minutes")
-      ? await runMeetingMemoryCurationSafely({
+      ? asRecord(await runMeetingMemoryCurationSafely({
           task,
           paths,
           options,
@@ -3935,7 +4291,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
           meetingAnalysis: meetingIntelligence.analysis,
           documents,
           qaGate,
-        })
+        }))
       : null;
     const artifacts = [
       { kind: "evidence-pack", name: "evidence-pack.json", localPath: evidencePackPath(paths.artifactsDir) },
@@ -3960,7 +4316,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       { kind: "qa-gate", name: "qa-gate.json", localPath: join(paths.runDir, "qa-gate.json") },
       { kind: "policy-gate", name: "policy-gate.json", localPath: join(paths.runDir, "policy-gate.json") },
     ].filter(Boolean);
-    if (publishable && activeLedger.steps?.some((step) => step.stepId === "verify-deliverables" && step.status === "ready")) {
+    if (publishable && asArray(activeLedger.steps).map(asRecord).some((step) => step.stepId === "verify-deliverables" && step.status === "ready")) {
       const verifiedLedger = await callRuntimeTool("execution_ledger_reconcile", {
         runId: task.runId,
         outputRoot,
@@ -3976,17 +4332,28 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       }, paths, options);
       if (verifiedLedger.status !== "blocked") activeLedger = verifiedLedger;
     }
+    const workerWorkflow = asRecord(workerRun.workflow);
+    const meetingProfile = asRecord(meetingAnalysis.meetingProfile);
+    const participantResolution = asRecord(meetingAnalysis.participantResolution);
+    const meetingAgentPlan = asRecord(meetingAnalysis.agentPlan);
+    const productDiscovery = asRecord(meetingAnalysis.productDiscovery);
+    const suggestedFollowUpDocuments = uniqueStrings(meetingAgentPlan.suggestedFollowUpDocuments);
+    const meetingMemoryPersistence = asRecord(meetingMemory?.persistence);
     const gateFailureReport = publishable ? null : {
       schemaVersion: "document-workflow-final-failure-v1",
-      terminalReason: qaGate.status !== "pass" ? "qa_gate_not_publishable" : "policy_gate_not_publishable",
+      terminalReason: qaGate.status !== "pass" ? "qa_gate_not_publishable" : !qaGatePersisted ? "qa_gate_artifact_write_failed" : "policy_gate_not_publishable",
       status: "needs_fix",
       completedDocs: completedResults.map((result) => result.docType).filter(Boolean),
       pendingDocs: [],
-      failedStage: qaGate.status !== "pass" ? "qa_gate" : "policy_gate",
-      retryCount: Number(workerRun?.workflow?.retryUnitsUsed ?? 0),
+      failedStage: qaGate.status !== "pass" || !qaGatePersisted ? "qa_gate" : "policy_gate",
+      retryCount: Number(workerWorkflow.retryUnitsUsed ?? 0),
       retryExhausted: false,
       lastProviderAttempt: lastAttemptFromWorkerRun(workerRun),
-      nextAction: qaGate.status !== "pass" ? "根据 QA issue 修订私有文档后再发布。" : "确认发布边界或用户授权后再发布。",
+      nextAction: qaGate.status !== "pass"
+        ? "根据 QA issue 修订私有文档后再发布。"
+        : !qaGatePersisted
+          ? "修复 QA artifact 写入后重新评估，禁止依据未落盘结果发布。"
+          : "确认发布边界或用户授权后再发布。",
       publishPartial: false,
       rawSecretsReturned: false,
     };
@@ -3995,9 +4362,9 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       summary: publishable
         ? [
             `已基于 ${evidenceSummary.sourceCount} 个来源生成 ${documents.length} 份文档。`,
-            meetingIntelligence.analysis?.participantResolution?.question ?? "",
-            meetingIntelligence.analysis?.agentPlan?.suggestedFollowUpDocuments?.length
-              ? `Agent 建议后续可生成：${meetingIntelligence.analysis.agentPlan.suggestedFollowUpDocuments.join("、")}。`
+            typeof participantResolution.question === "string" ? participantResolution.question : "",
+            suggestedFollowUpDocuments.length
+              ? `Agent 建议后续可生成：${suggestedFollowUpDocuments.join("、")}。`
               : "",
           ].filter(Boolean).join(" ")
         : finalFailureSummary(gateFailureReport),
@@ -4008,29 +4375,31 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       details: publishable
         ? {
             meetingIntelligence: {
-              meetingType: meetingIntelligence.analysis?.meetingProfile?.meetingType ?? null,
-              topicCount: meetingIntelligence.analysis?.topicMap?.length ?? 0,
-              participantCount: meetingIntelligence.analysis?.participantResolution?.participantCount ?? 0,
-              unresolvedParticipantCount: meetingIntelligence.analysis?.participantResolution?.unresolvedCount ?? 0,
-              narrativeMode: meetingIntelligence.analysis?.agentPlan?.narrativeMode ?? null,
-              orchestrationMode: meetingIntelligence.analysis?.agentPlan?.orchestrationMode ?? null,
-              specialistCount: meetingIntelligence.analysis?.agentPlan?.specialistCount ?? 0,
-              suggestedFollowUpDocuments: meetingIntelligence.analysis?.agentPlan?.suggestedFollowUpDocuments ?? [],
-              prdReadiness: meetingIntelligence.analysis?.productDiscovery?.prdReadiness ?? null,
-              nextStepOptions: meetingIntelligence.analysis?.productDiscovery?.nextStepOptions ?? [],
-              clarificationQuestionCount: meetingIntelligence.analysis?.productDiscovery?.clarificationQuestions?.length ?? 0,
+              meetingType: meetingProfile.meetingType ?? null,
+              topicCount: asArray(meetingAnalysis.topicMap).length,
+              participantCount: participantResolution.participantCount ?? 0,
+              unresolvedParticipantCount: participantResolution.unresolvedCount ?? 0,
+              narrativeMode: meetingAgentPlan.narrativeMode ?? null,
+              orchestrationMode: meetingAgentPlan.orchestrationMode ?? null,
+              specialistCount: meetingAgentPlan.specialistCount ?? 0,
+              suggestedFollowUpDocuments,
+              prdReadiness: productDiscovery.prdReadiness ?? null,
+              nextStepOptions: asArray(productDiscovery.nextStepOptions),
+              clarificationQuestionCount: asArray(productDiscovery.clarificationQuestions).length,
             },
             meetingMemory: meetingMemory
               ? {
                   status: meetingMemory.status,
                   reason: meetingMemory.reason ?? null,
-                  persistedCount: meetingMemory.persistence?.persistedCount ?? 0,
-                  conflictCount: meetingMemory.persistence?.conflictCount ?? 0,
+                  persistedCount: meetingMemoryPersistence.persistedCount ?? 0,
+                  conflictCount: meetingMemoryPersistence.conflictCount ?? 0,
                   artifact: workspaceRelative(meetingMemoryResultPath(paths.artifactsDir)),
                 }
               : null,
             todo: activeLedger.userTodoProjection ?? planner.userTodoProjection ?? null,
             interactionItems: activeLedger.interactionItems ?? planner.interactionItems ?? [],
+            projection: workerRun.projection ?? null,
+            projectionReconciliation,
           }
         : { finalFailureReport: gateFailureReport },
       rawSecretsReturned: false,
@@ -4038,11 +4407,11 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     };
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("task_execution_runner_completed", output.status === "completed" ? "completed" : "needs_fix", { artifact: paths.agentOutputPath });
-    return { status: output.status === "completed" ? "completed" : "needs_fix", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun(output.status === "completed" ? "completed" : "needs_fix", /** @type {PipelineOutput} */ (output));
   } catch (error) {
     const output = blockedOutput("任务处理失败，可重试。", { reason: "task_execution_runner_failed", error: error instanceof Error ? error.message : String(error) });
     writeJson(paths.agentOutputPath, output);
     await hooks.onStep?.("task_execution_runner_completed", "failed", { artifact: paths.agentOutputPath, reason: "task_execution_runner_failed" });
-    return { status: "failed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    return createPipelineRun("failed", output);
   }
 }
