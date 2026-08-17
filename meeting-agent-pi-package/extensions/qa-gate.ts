@@ -83,14 +83,14 @@ function addListIssue(issues: Issue[], options: {
   }
 }
 
-function normalizeArtifactPriority(docType: string, value: unknown): Issue["priority"] {
+function normalizeArtifactPriority(docType: string, value: unknown): NonNullable<Issue["priority"]> {
   if (value === "primary" || value === "follow_up" || value === "optional") {
     return value;
   }
   return docType === "meeting-minutes" ? "primary" : "follow_up";
 }
 
-function scopedDocumentIssue(docType: string, priority: Issue["priority"], issue: Issue): Issue {
+function scopedDocumentIssue(docType: string, priority: NonNullable<Issue["priority"]>, issue: Issue): Issue {
   return {
     ...issue,
     artifactType: docType,
@@ -266,6 +266,59 @@ function evaluateGate(checks: any, publishIntent: boolean) {
       message: "WebAccess 已使用但没有记录来源。",
       suggestedFix: "补齐来源链接，且不得把外部事实混入会议事实。",
     });
+  }
+
+  const sourcePack = checks?.sourcePack ?? {};
+  if (sourcePack.required === true) {
+    if (sourcePack.completeTranscriptAvailable !== true) {
+      issues.push({
+        code: "source_pack_complete_transcript_missing",
+        severity: "blocking",
+        message: "知识 source pack 缺少完整带时间戳转写。",
+        suggestedFix: "取得完整官方文稿或完整云端 ASR 后再生成 source pack。",
+      });
+    }
+    if (Number(sourcePack.failedChapterCount ?? 0) > 0) {
+      issues.push({
+        code: "source_pack_chapter_analysis_incomplete",
+        severity: "blocking",
+        message: "知识 source pack 存在未完成的章节分析。",
+        suggestedFix: "修复失败章节并重新执行完整性校验，不得发布部分结果。",
+        evidence: { failedChapterCount: Number(sourcePack.failedChapterCount) },
+      });
+    }
+    if (sourcePack.allClaimsHaveEvidence !== true) {
+      issues.push({
+        code: "source_pack_claim_provenance_missing",
+        severity: "blocking",
+        message: "知识 source pack 存在无法回溯到当前 transcript segment 的判断。",
+        suggestedFix: "删除无证据判断，或补齐有效 segment id 与 provenance。",
+      });
+    }
+    if (sourcePack.partialResultsPublished === true) {
+      issues.push({
+        code: "source_pack_partial_result_published",
+        severity: "blocking",
+        message: "部分来源结果被错误标记为可交接知识。",
+        suggestedFix: "将任务标记为 blocked，完整恢复后再生成 source pack。",
+      });
+    }
+    if (sourcePack.qualityDisclosureRequired === true && sourcePack.qualityDisclosed !== true) {
+      issues.push({
+        code: "source_pack_transcript_quality_undisclosed",
+        severity: "blocking",
+        message: "转写存在待复核质量项，但 source pack 没有披露。",
+        suggestedFix: "在机器包与可读交接包中保留 review item 数量、严重度和时间戳 quality 回溯说明。",
+      });
+    }
+    if (!sourcePack.provenancePath) {
+      issues.push({
+        code: "source_pack_provenance_artifact_missing",
+        severity: "needs_fix",
+        message: "知识 source pack 缺少机器可读 provenance artifact 路径。",
+        suggestedFix: "写入 provenance/evidence-index.json 并在 source pack 中记录路径。",
+      });
+    }
   }
 
   const documentOutputs = asArray(checks?.documentOutputs ?? checks?.documents);
@@ -544,9 +597,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "qa_gate_evaluate",
     label: "QA Gate Evaluate",
-    description: "Evaluate evidence, topic/action coverage, speaker attribution, entity safety, title sync, Feishu readiness, web access, security, and context budget checks.",
+    description: "Evaluate evidence, source-pack provenance/completeness, topic/action coverage, speaker attribution, entity safety, title sync, Feishu readiness, web access, security, and context budget checks.",
     parameters: Type.Object({
-      checks: Type.Any(),
+      checks: Type.Unknown(),
       publishIntent: Type.Optional(Type.Boolean({ description: "Whether this gate controls a customer-visible or Feishu publish action." })),
     }),
     async execute(_toolCallId, params) {
@@ -561,7 +614,7 @@ export default function (pi: ExtensionAPI) {
     description: "Write a machine-readable qa-gate.json artifact for a run.",
     parameters: Type.Object({
       runId: Type.String(),
-      gate: Type.Any(),
+      gate: Type.Unknown(),
       outputRoot: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {
@@ -572,7 +625,13 @@ export default function (pi: ExtensionAPI) {
         const details = { ok: true, runId: params.runId, qaGatePath: path };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {
-        const blocked = { status: "blocked", reason: error instanceof Error ? error.message : String(error), runId: params.runId };
+        const blocked = {
+          ok: false,
+          status: "blocked",
+          reason: error instanceof Error ? error.message : String(error),
+          runId: params.runId,
+          qaGatePath: "",
+        };
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
       }
     },

@@ -2,7 +2,7 @@
 
 Office Agent 是一个以 Pi 为执行内核的主动型办公助手。它处理问答、文件总结、多源综合、文档生成与修订、飞书协作、任务建议和会议理解；会议录音会进一步转成带证据的转录与 Meeting Intelligence，再生成纪要和后续办公资产。
 
-当前版本：2026-08-12。运行基线为 Node `>=22.19.0`、Pi `0.84.1`、`pi-subagents@0.46.0`、`@quintinshaw/pi-dynamic-workflows@3.5.1`。
+当前版本：2026-08-17。运行基线为 Node `>=22.19.0`、Pi `0.84.1`、`pi-subagents@0.46.0`、`@quintinshaw/pi-dynamic-workflows@3.5.1`。
 
 ## 当前产品能力
 
@@ -10,6 +10,7 @@ Office Agent 是一个以 Pi 为执行内核的主动型办公助手。它处理
 - 分层上下文：父级保留 task state、artifact index、决策与开放问题；worker/sub-agent 使用 fresh context 和 task-scoped context pack，不在每次调用反复拼入完整 transcript/evidence。
 - 复杂任务分发：一个独立任务用 fresh sub-agent，多个隔离轴用 Dynamic Workflow 并行、校验和综合；中间结果留在 workflow/artifact，不挤占父上下文。
 - 云端 ASR 优先：录音文件使用 DashScope 文件转写接口和 OSS；实时流使用独立 WebSocket 接口，二者不混用。
+- 公开 URL 知识来源：飞书或本地对话中的显式 YouTube、播客/RSS、小宇宙单集和公开音视频 URL 会进入独立 source-pack 链路；优先官方带时间戳文稿，没有可靠文稿时才下载受限媒体并使用云端 ASR，交付前通过真实 Policy/QA Gate。
 - 完整格式矩阵：文件端支持 `.aac/.amr/.avi/.flac/.flv/.m4a/.mkv/.mov/.mp3/.mp4/.mpeg/.ogg/.opus/.wav/.webm/.wma/.wmv`；实时端支持 `pcm/wav/mp3/opus/speex/aac/amr`。
 - 单录混音会议：文件 ASR 支持 speaker diarization；robust 模式增加双模型一致性复核。轮流发言可分角色，高重叠同时发言仍不承诺声源级恢复。
 - Meeting Intelligence：建立参会人、议题、决策状态、行动项、风险、开放问题和证据映射，驱动检索、写作、标题与 QA。
@@ -24,10 +25,14 @@ Office Agent 是一个以 Pi 为执行内核的主动型办公助手。它处理
 
 ```mermaid
 flowchart LR
-    U["用户 / 飞书 / 本地文件 / Rokid"] --> I["Office Agent 目标与任务状态"]
+    U["用户 / 飞书 / 本地文件 / 公开 URL / Rokid"] --> I["Office Agent 目标与任务状态"]
     I --> K{"输入与任务类型"}
     K -->|普通办公| X["检索 / 文档 / 修订 / 分析"]
     K -->|会议媒体| A["ASR Provider\n文件或实时流"]
+    K -->|公开媒体 URL| Z["来源解析\n官方文稿优先"]
+    Z -->|有可靠文稿| SP["分章分析 + Source Pack\nprovenance / evidence"]
+    Z -->|只有公开媒体| A2["受限下载 + 云端文件 ASR"]
+    A2 --> SP
     A --> T["完整转录 + speaker/quality + evidence index"]
     T --> M["Meeting Intelligence"]
     M --> O{"会议复杂度"}
@@ -45,6 +50,7 @@ flowchart LR
     C --> V["父级校验 / 去重 / 冲突隔离"]
     V --> L["项目长期记忆"]
     G --> F["飞书发布 / 本地交付"]
+    SP --> H["本地交接包\n不直接写外部知识库"]
 ```
 
 ## 仓库结构
@@ -70,6 +76,7 @@ flowchart LR
 - [Agent 与委派角色索引](wiki/06-agent-team-index.md)
 - [测试与验收](wiki/07-test-plan.md)
 - [运行数据与缓存](wiki/14-local-data-storage-cache-backend.md)
+- [公开 URL 与知识 Source Pack](wiki/16-public-url-source-pack.md)
 
 日期化的 `wiki/issues/`、`wiki/plan/`、`wiki/problem/`、`wiki/retrospective/` 和 `wiki/thinking/` 是历史证据，不是当前运行规范。
 
@@ -101,6 +108,17 @@ meeting-agent-pi-package/node_modules/.bin/pi \
 - Agentic 委派：`MEETING_AGENTIC_DELEGATION=auto|off`；当前产品默认 `auto`。
 - 长期记忆提炼：`MEETING_MEMORY_CURATION=auto|off`；默认 `auto`，只处理已通过 QA 的完整音频会议。
 
+公开 URL 可通过本地稳定入口直接交给 Agent：
+
+```bash
+node meeting-agent-pi-package/tools/public_url_source_cli.mjs \
+  --url "https://example.com/public-media"
+```
+
+成功后 stdout 返回 `sourcePackPath`；产物位于已忽略的 `runtime-runs/public-url/runs/{runId}/`。`--resolve-only` 只检查来源元数据和获取计划。YouTube 无官方字幕时使用成熟的 `yt-dlp` 取得受限音频；不会读取浏览器 Cookie，也不会绕过登录、付费、DRM 或地区限制。
+
+首次处理 YouTube 可在 macOS 运行 `brew install yt-dlp ffmpeg`。当前真实环境验证与成本口径见 [公开 URL 真实环境验证](wiki/17-public-url-live-validation.md)；Assignment Agent 只生成交接包，是否写入 AI Harness SaaS 或 Obsidian 由外部知识库 Agent 决定。
+
 ## 安全与数据边界
 
 办公内容、会议录音、转录、纪要和相关文件可以被当前任务选中的 ASR、模型、sub-agent、workflow、文档与 QA 能力使用。上下文分层、检索与容量控制用于质量和性能，不是内容禁用规则。
@@ -108,6 +126,7 @@ meeting-agent-pi-package/node_modules/.bin/pi \
 以下边界仍然强制执行：
 
 - API Key、Token、Cookie、Authorization、App Secret、签名 URL 与登录会话不得进入 prompt、普通日志、会议产物或长期记忆。
+- 公开 URL 只处理用户明确提供的地址；每次 DNS/重定向都校验公网目标，并限制响应大小、媒体大小和时长。完整第三方媒体与转录只保存在已忽略运行目录，source pack 只作为外部知识库交接包。
 - 凭证泄漏、高影响、不可逆或目标不明的外部动作进入 Policy Gate；明确目标的用户请求不重复确认。
 - 云端 ASR 会把音视频上传至配置的 DashScope/OSS；本地 ASR 不上传媒体。运行产物必须真实记录 provider 和 `rawMediaExternalUpload`。
 - 不得把 sub-agent/workflow 的工具成功等同于会议事实成立；父 Agent 的 transcript segment 集合是证据范围真相源。
@@ -120,4 +139,15 @@ python3 meeting-agent-pi-package/tools/local_ci_check.py
 cd meeting-agent-pi-package && npm audit --omit=dev
 ```
 
-当前自动测试覆盖 ASR 文件/实时边界、格式矩阵、speaker diarization、单录混音复核、Meeting Intelligence、参会人别名、Pi 0.46 Sub-agent API、Dynamic Workflow 生成、真实工具事件解析、模型回退、父级证据隔离，以及长期记忆候选校验、去重和冲突处理。
+涉及任务合同、TypeScript 或 npm 包边界时，再在 package 目录运行：
+
+```bash
+npm run typecheck
+npm run release:local
+```
+
+后者只生成并安装本地 tgz，校验 ESM、`.d.ts`、source map、exports/files 和临时 NodeNext consumer，不会执行 npm publish。
+
+当前类型与跨语言合同覆盖、实际修复及其业务影响见 [TypeScript、运行合同与 npm 包可靠性](wiki/18-typescript-contract-and-package-reliability.md)。
+
+当前自动测试覆盖公开 URL 分类与真实入口、SSRF/重定向/大小边界、官方文稿优先、云端 ASR fallback、source pack provenance，以及 ASR 文件/实时边界、Meeting Intelligence、Agentic 委派、文档、Todo 和长期记忆治理。

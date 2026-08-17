@@ -23,6 +23,7 @@ import { attachmentKind, buildFileContexts, fileExtension, sha256File } from "./
 import { CLOUD_ASR_MEDIA_EXTENSIONS, readCloudAsrMediaHeader, validateCloudAsrMediaHeader } from "./asr_media_formats.mjs";
 import { publishDocumentsToWiki, wikiPlanPath, wikiPublishPath, wikiTargetRegistryPath } from "./feishu_wiki_publish_helpers.mjs";
 import { buildPublishTaxonomy, publishTaxonomyPath } from "./feishu_publish_taxonomy.mjs";
+import { redactSensitiveUrlsInText } from "./public_url_security.mjs";
 import {
   DESTRUCTIVE_REQUEST_PATTERN,
   FILE_REFERENCE_PATTERN,
@@ -32,6 +33,13 @@ import {
   classifyTaskIntent,
   cleanUserPrompt,
 } from "./task_router.mjs";
+import {
+  FAST_ANSWER_EXECUTION_PROFILE,
+  FAST_REASONING_DEPTH,
+  assertFeishuEvent,
+  assertFeishuRunState,
+  assertFeishuTask,
+} from "../dist/index.js";
 
 const toolDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(toolDir);
@@ -41,6 +49,7 @@ const DEFAULT_OUTPUT_ROOT = join(workspaceDir, "runtime-runs", "feishu-agent");
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8788;
 const ATTACHMENT_CACHE_VERSION = "feishu-attachment-cache-v1";
+const EXECUTION_LEDGER_THREAD_INDEX_VERSION = "execution-ledger-thread-index-v1";
 const ATTACHMENT_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 const DEFAULT_ATTACHMENT_DOWNLOAD_IDENTITIES = ["bot", "user"];
 const DEFAULT_ATTACHMENT_DOWNLOAD_MAX_ATTEMPTS = 2;
@@ -117,7 +126,7 @@ function outputRoot(input) {
 }
 
 function redactString(value) {
-  return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), value);
+  return SECRET_PATTERNS.reduce((text, pattern) => text.replace(pattern, "[redacted]"), redactSensitiveUrlsInText(value));
 }
 
 function classifyFeishuFileReadFailure(stderr) {
@@ -213,7 +222,7 @@ function sanitize(value, key = "") {
   if (value && typeof value === "object") {
     const output = {};
     for (const [entryKey, entryValue] of Object.entries(value)) {
-      if (["rawSecretsReturned", "rawMediaExternalUpload", "rawMeetingContentIncluded", "tokensIncluded"].includes(entryKey)) {
+      if (["rawSecretsReturned", "rawMediaExternalUpload", "rawMeetingContentIncluded", "tokensIncluded", "cookiesUsed"].includes(entryKey)) {
         output[entryKey] = entryValue;
       } else if (/secret|token|cookie|session|authorization/i.test(entryKey) && !/folderToken|fileToken|wikiToken/i.test(entryKey)) {
         output[entryKey] = "[redacted]";
@@ -276,7 +285,7 @@ function parseText(content) {
 }
 
 function normalizeDirectEvent(input) {
-  if (input?.schemaVersion === "feishu-event-v1") return sanitize(input);
+  if (input?.schemaVersion === "feishu-event-v1") return assertFeishuEvent(sanitize(input));
   const envelope = input?.event ?? input?.data?.event ?? input?.data ?? input;
   const message = envelope?.message ?? input?.message ?? {};
   const sender = envelope?.sender ?? input?.sender ?? {};
@@ -288,7 +297,7 @@ function normalizeDirectEvent(input) {
   if (fileKey) attachments.push({ resourceType: "file", fileKey: String(fileKey), name: String(parsed.file_name ?? parsed.name ?? fileKey) });
   if (imageKey) attachments.push({ resourceType: "image", fileKey: String(imageKey), name: String(parsed.file_name ?? parsed.name ?? imageKey) });
   const eventId = String(input?.eventId ?? input?.event_id ?? message?.message_id ?? hashJson(input).slice(0, 24));
-  return {
+  return assertFeishuEvent({
     schemaVersion: "feishu-event-v1",
     eventId,
     eventType: input?.eventType ?? input?.event_type ?? "im.message.receive_v1",
@@ -303,7 +312,7 @@ function normalizeDirectEvent(input) {
       parentId: input?.parentId ?? message?.parent_id ?? message?.parentId ?? null,
       threadId: input?.threadId ?? message?.thread_id ?? message?.threadId ?? null,
       createTime: input?.createTime ?? message?.create_time ?? message?.createTime ?? null,
-      text: String(input?.text ?? parseText(content) ?? "").slice(0, 12000),
+      text: String(input?.text ?? message?.text ?? parseText(content) ?? "").slice(0, 12000),
       contentPreview: typeof content === "string" ? redactString(content).slice(0, 500) : "",
       attachments,
     },
@@ -314,7 +323,7 @@ function normalizeDirectEvent(input) {
     rawEventStored: true,
     rawEventPath: null,
     rawSecretsReturned: false,
-  };
+  });
 }
 
 function runIdFor(event) {
@@ -351,13 +360,14 @@ function runPaths(root, runId) {
 }
 
 function addStep(state, name, status, details = {}) {
-  state.steps.push({ name, status, at: nowIso(), ...details });
+  const { name: _detailName, status: _detailStatus, at: _detailAt, ...safeDetails } = details;
+  state.steps.push({ ...safeDetails, name, status, at: nowIso() });
   state.status = status === "failed" ? "failed" : status === "blocked" ? "blocked" : status === "needs_fix" ? "needs_fix" : state.status;
   state.updatedAt = nowIso();
 }
 
 function writeState(paths, state) {
-  writeJson(paths.statePath, state);
+  writeJson(paths.statePath, assertFeishuRunState(state));
 }
 
 function hasExplicitFeishuFileReferences(text) {
@@ -460,7 +470,8 @@ function runCommand(command, args, options = {}) {
     });
     child.on("error", (error) => {
       clearTimeout(timeout);
-      resolveCommand({ exitCode: error.code === "ENOENT" ? 127 : 1, signal: null, stdout, stderr, error: error.message, timedOut });
+      const errorCode = "code" in error ? error.code : null;
+      resolveCommand({ exitCode: errorCode === "ENOENT" ? 127 : 1, signal: null, stdout, stderr, error: error.message, timedOut });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timeout);
@@ -512,6 +523,100 @@ function threadKey(event) {
 
 function attachmentCachePath(root) {
   return join(root, ".feishu-attachment-cache.json");
+}
+
+function ledgerThreadIndexPath(root) {
+  return join(root, ".execution-ledger-thread-index.json");
+}
+
+function loadLedgerThreadIndex(root) {
+  const path = ledgerThreadIndexPath(root);
+  if (!existsSync(path)) return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: [] };
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: Array.isArray(value.entries) ? value.entries : [] };
+  } catch {
+    return { schemaVersion: EXECUTION_LEDGER_THREAD_INDEX_VERSION, entries: [] };
+  }
+}
+
+function threadScopeHash(event) {
+  const thread = threadKey(event);
+  const chat = event.message?.chatId ?? "";
+  const sender = stableSenderId(event.sender);
+  return thread || chat ? hashText(`${chat}:${thread || "chat"}:${sender || "unknown"}`).slice(0, 32) : "";
+}
+
+function indexExecutionLedgerForThread(root, event, runId, plannerEnvelopePath, agentOutput) {
+  if (!existsSync(plannerEnvelopePath)) return { status: "skipped", reason: "execution_ledger_missing" };
+  const scopeHash = threadScopeHash(event);
+  if (!scopeHash) return { status: "skipped", reason: "thread_scope_missing" };
+  const index = loadLedgerThreadIndex(root);
+  const entry = {
+    scopeHash,
+    runId,
+    plannerEnvelopePath: workspaceRelative(plannerEnvelopePath),
+    sourceEventPath: workspaceRelative(join(dirname(plannerEnvelopePath), "event.json")),
+    updatedAt: nowIso(),
+    status: agentOutput?.status ?? null,
+  };
+  index.entries = [entry, ...(index.entries ?? []).filter((item) => item.scopeHash !== scopeHash && item.runId !== runId)].slice(0, 300);
+  writeJson(ledgerThreadIndexPath(root), { ...index, updatedAt: nowIso(), rawSecretsReturned: false });
+  return { status: "indexed", entry };
+}
+
+function selectPreviousThreadLedger(root, event) {
+  const scopeHash = threadScopeHash(event);
+  if (!scopeHash) return null;
+  const index = loadLedgerThreadIndex(root);
+  for (const entry of index.entries ?? []) {
+    if (entry.scopeHash !== scopeHash) continue;
+    const path = resolve(workspaceDir, String(entry.plannerEnvelopePath ?? ""));
+    if (!isInside(workspaceDir, path) || !existsSync(path)) continue;
+    try {
+      const ledger = JSON.parse(readFileSync(path, "utf8"));
+      if (ledger?.schemaVersion !== "adaptive-execution-ledger-v1") continue;
+      return { ...entry, path, ledger };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+export function resolveLedgerSelection(text, ledger) {
+  const prompt = String(text ?? "").trim();
+  if (!prompt || !ledger?.interactionItems?.length) return null;
+  const optionMap = new Map([
+    ["prd", "prd"], ["产品需求", "prd"],
+    ["客户需求确认表", "customer-requirement-checklist"], ["客户确认表", "customer-requirement-checklist"], ["checklist", "customer-requirement-checklist"],
+    ["技术架构", "tech-architecture"], ["架构", "tech-architecture"],
+    ["运营方案", "ops-plan"],
+    ["仅保留会议纪要", "keep-meeting-minutes-only"], ["只保留会议纪要", "keep-meeting-minutes-only"],
+    ["审阅客户问题", "review-customer-questions"], ["先看问题", "review-customer-questions"],
+    ["审阅 source pack", "review-source-pack"], ["先审阅 source pack", "review-source-pack"], ["查看 source pack", "review-source-pack"],
+    ["仅保留本地 source pack", "keep-source-pack-local"], ["保留本地", "keep-source-pack-local"],
+  ]);
+  let selectedOption = null;
+  for (const [term, option] of optionMap) {
+    if (prompt.toLowerCase().includes(term.toLowerCase())) {
+      selectedOption = option;
+      break;
+    }
+  }
+  if (!selectedOption) return null;
+  const interaction = ledger.interactionItems.find((item) => item.status === "pending" && (
+    (item.options ?? []).includes(selectedOption) || (item.suggestedDocuments ?? []).includes(selectedOption)
+  ));
+  if (!interaction) return null;
+  return {
+    itemId: interaction.itemId,
+    selectedOption,
+    requestedDocuments: ["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(selectedOption) ? [selectedOption] : [],
+    sourceRunId: ledger.runId ?? null,
+    sourcePlanId: ledger.planId ?? null,
+    sourceRevision: ledger.revision ?? null,
+  };
 }
 
 function loadAttachmentCache(root) {
@@ -1599,7 +1704,7 @@ function buildAgentTaskMarkdown(task, paths) {
     "",
     "你是本地 PI meeting-agent runtime。请按以下真实链路处理，不要绕过模块：",
     "",
-    "1. 调用 Planner Envelope，基于 Feishu inbound 事件、附件和用户文本选择 capability。",
+    "1. 调用 Adaptive Execution Ledger，基于 Feishu inbound 事件、附件和用户文本建立权威任务状态并选择 capability。",
     "2. 通过 Capability Registry 选择 `feishu-agent-bridge`、`local-asr`、`meeting-minutes`、`doc-writer`、`document-worker-runtime`、`model-fallback` 等需要的能力。",
     "3. 若附件是云端 ASR 支持的音频或视频容器，优先使用 cloud ASR，并在转录后运行 Meeting Intelligence：生成 participant map、meeting profile、topic map、evidence map 和 agent plan。会议内容可由所选能力使用，但凭证、OSS 签名、Cookie 和 Authorization 不得进入模型。图片理解仍不支持。",
     "4. 若附件是 PDF/Word/Excel/Markdown/TXT/CSV 等文本型文件，可作为 file-context 发送给 LLM；若 provider 不支持原生文件输入，使用 file-context 的 extractedTextPath/contextPreview 做渐进披露。",
@@ -2013,8 +2118,45 @@ function userFacingSummary(task, agentOutput, publish) {
     .filter((line) => !/(runId|Policy Gate|QA Gate|agent-output|publish_customer_visible|PI agent|handler|本地 run artifact)/i.test(line))
     .join("\n")
     .trim();
+  if (task.taskIntent?.responseMode === "source_pack" && agentOutput?.status === "completed") {
+    const handoffPath = agentOutput?.details?.readableSourcePackPath ?? agentOutput?.details?.sourcePackPath ?? null;
+    if (handoffPath) summary = [summary, `本地交接包：${safeShortText(handoffPath, 500)}`].filter(Boolean).join("\n");
+  }
   if (!summary && agentOutput?.status === "blocked") return publish?.reason === "qa_gate_not_publishable" ? "任务处理暂未完成，请稍后重试。" : UNSUPPORTED_FEATURE_REPLY;
   return summary;
+}
+
+function userFacingTodo(agentOutput) {
+  const projection = agentOutput?.details?.todo ?? agentOutput?.todo ?? null;
+  if (!projection || !Array.isArray(projection.items)) return [];
+  return projection.items
+    .filter((item) => item?.interactive === true && item?.status === "pending")
+    .sort((left, right) => ({ high: 0, medium: 1, low: 2 }[left.priority] ?? 3) - ({ high: 0, medium: 1, low: 2 }[right.priority] ?? 3))
+    .slice(0, 5);
+}
+
+function todoMarkdownLines(agentOutput) {
+  const items = userFacingTodo(agentOutput);
+  if (items.length === 0) return [];
+  const lines = ["", "下一步与待确认："];
+  for (const item of items) {
+    lines.push(`- ${item.label}${item.description ? `：${safeShortText(item.description, 180)}` : ""}`);
+    if (Array.isArray(item.options) && item.options.length > 0) {
+      const labels = item.options.map((option) => ({
+        prd: "生成 PRD",
+        "customer-requirement-checklist": "生成客户需求确认表",
+        "tech-architecture": "生成技术架构",
+        "ops-plan": "生成运营方案",
+        "review-customer-questions": "先审阅客户问题",
+        "keep-meeting-minutes-only": "仅保留会议纪要",
+        "review-source-pack": "先审阅 source pack",
+        "keep-source-pack-local": "仅保留本地交接包",
+      })[option] ?? option);
+      lines.push(`  可选：${labels.join(" / ")}`);
+    }
+  }
+  lines.push("你可以直接回复选择，也可以补充或重排自己的下一步。");
+  return lines;
 }
 
 function userFacingFailureReason(report) {
@@ -2333,7 +2475,7 @@ async function replyToFeishu(event, task, agentOutput, publish, paths, options) 
   const documentLines = (publish.documents ?? []).map((doc) => `- ${doc.title}: ${doc.status}${doc.url ? ` ${doc.url}` : ""}`);
   const summary = userFacingSummary(task, agentOutput, publish);
   const markdown = documentLines.length === 0 && summary
-    ? summary
+    ? [summary, ...todoMarkdownLines(agentOutput)].filter(Boolean).join("\n")
     : [
         publish.status === "published" ? "已完成处理，并已发布文档。" : "已完成处理。",
         "",
@@ -2341,6 +2483,7 @@ async function replyToFeishu(event, task, agentOutput, publish, paths, options) 
         publish.reason && publish.reason !== "direct_answer_no_document_publish" ? `原因：${publish.reason}` : "",
         "",
         ...documentLines,
+        ...todoMarkdownLines(agentOutput),
       ].filter(Boolean).join("\n");
   const reply = {
     runId: task.runId,
@@ -2446,6 +2589,8 @@ function buildHandlerResponseText(task, agentOutput, publish, stateStatus) {
       lines.push(`- ${title}: ${doc.status || "ready"}${doc.url ? ` ${doc.url}` : ""}`);
     }
   }
+
+  lines.push(...todoMarkdownLines(agentOutput));
 
   return lines.join("\n").slice(0, 3500);
 }
@@ -2587,6 +2732,8 @@ function buildRunManifest({ event, task, state, agentOutput, publish, reply, pat
         name: artifact.name ?? null,
         localPath: workspaceRelative(artifact.localPath),
       })),
+      todo: agentOutput?.details?.todo ?? agentOutput?.todo ?? null,
+      interactionItems: agentOutput?.details?.interactionItems ?? agentOutput?.interactionItems ?? [],
     },
     gates: {
       qaGate: agentOutput?.qaGate ?? { status: "not_run", issues: [] },
@@ -2735,6 +2882,41 @@ async function indexRuntimeStoreRun(paths, options, state, metrics) {
 export async function handleEvent(input, options) {
   const event = normalizeDirectEvent(input);
   const root = outputRoot(options.outputRoot);
+  const previousThreadLedger = selectPreviousThreadLedger(root, event);
+  const ledgerSelection = resolveLedgerSelection(event.message?.text ?? "", previousThreadLedger?.ledger);
+  if (ledgerSelection) {
+    const selected = previousThreadLedger.ledger;
+    const interactionItems = (selected.interactionItems ?? []).map((item) => item.itemId === ledgerSelection.itemId
+      ? { ...item, status: "answered", answer: ledgerSelection.selectedOption }
+      : item);
+    const revision = Number(selected.revision ?? 1) + 1;
+    const updatedLedger = {
+      ...selected,
+      revision,
+      status: "active",
+      interactionItems,
+      openQuestions: interactionItems.filter((item) => item.kind === "question" && item.status === "pending").map((item) => item.itemId),
+      updatedAt: nowIso(),
+      events: [
+        ...(selected.events ?? []),
+        { eventId: `event-${hashText(`${selected.planId}:${revision}:${ledgerSelection.itemId}`).slice(0, 10)}`, type: "user_selection_recorded", at: nowIso(), actor: "user", operationId: `feishu-selection:${event.eventId}` },
+      ].slice(-500),
+    };
+    updatedLedger.userTodoProjection = {
+      ...(selected.userTodoProjection ?? {}),
+      revision,
+      awaitingUser: interactionItems.some((item) => item.status === "pending" && ["decision", "question"].includes(item.kind)),
+      items: (selected.userTodoProjection?.items ?? []).map((item) => item.itemId === ledgerSelection.itemId
+        ? { ...item, status: "answered", interactive: false }
+        : item),
+    };
+    writeJson(previousThreadLedger.path, updatedLedger);
+    previousThreadLedger.ledger = updatedLedger;
+    event.ledgerSelection = {
+      ...ledgerSelection,
+      sourceLedgerPath: workspaceRelative(previousThreadLedger.path),
+    };
+  }
   // Source resolution rule: current attachments and explicit URLs outrank parent/root lookup and recent cache.
   const explicitFileReferences = extractFeishuFileReferences(event.message?.text ?? "");
   if (explicitFileReferences.length > 0) {
@@ -2834,6 +3016,57 @@ export async function handleEvent(input, options) {
   writeState(paths, state);
 
   const taskIntent = classifyTaskIntent(event, attachments, fileContexts, attachmentResolution);
+  if (ledgerSelection?.requestedDocuments?.length > 0) {
+    taskIntent.taskType = "doc_writer";
+    taskIntent.responseMode = "document_pipeline";
+    taskIntent.executionProfile = "document_generation";
+    taskIntent.reasoningDepth = "deep";
+    taskIntent.requestedDocuments = ledgerSelection.requestedDocuments;
+    taskIntent.sourcePreparation = {
+      ...(taskIntent.sourcePreparation ?? {}),
+      requestedDocuments: ledgerSelection.requestedDocuments,
+      sourceSetMode: "consolidated",
+      sourceRunId: ledgerSelection.sourceRunId,
+      sourcePlanId: ledgerSelection.sourcePlanId,
+      sourceLedgerPath: workspaceRelative(previousThreadLedger.path),
+      conflictPolicy: "source_attribution",
+    };
+  } else if (ledgerSelection?.selectedOption === "review-customer-questions") {
+    const questions = (previousThreadLedger.ledger.interactionItems ?? [])
+      .filter((item) => item.kind === "question" && item.status === "pending")
+      .sort((left, right) => ({ high: 0, medium: 1, low: 2 }[left.priority] ?? 3) - ({ high: 0, medium: 1, low: 2 }[right.priority] ?? 3))
+      .slice(0, 10);
+    taskIntent.taskType = "task_management";
+    taskIntent.responseMode = "direct_answer";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
+    taskIntent.immediateResponse = questions.length > 0
+      ? ["建议下一轮优先向客户确认：", ...questions.map((item, index) => `${index + 1}. ${item.label}${item.description ? `（${safeShortText(item.description, 160)}）` : ""}`)].join("\n")
+      : "当前 Execution Ledger 没有尚待确认的客户问题。";
+  } else if (ledgerSelection?.selectedOption === "keep-meeting-minutes-only") {
+    taskIntent.taskType = "task_management";
+    taskIntent.responseMode = "direct_answer";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
+    taskIntent.immediateResponse = "已记录：本轮仅保留会议纪要，不继续生成 PRD、技术架构或客户需求确认表。";
+  } else if (ledgerSelection?.selectedOption === "review-source-pack") {
+    const sourcePackPath = join(dirname(previousThreadLedger.path), "artifacts", "public-source", "source-pack", "source-pack.readable.md");
+    const sourcePackPreview = existsSync(sourcePackPath) ? readFileSync(sourcePackPath, "utf8").slice(0, 2600).trim() : "";
+    taskIntent.taskType = "task_management";
+    taskIntent.responseMode = "direct_answer";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
+    taskIntent.immediateResponse = sourcePackPreview
+      ? [`以下是 source pack 的有界预览：`, sourcePackPreview, `本地交接包：${workspaceRelative(sourcePackPath)}`].join("\n\n")
+      : "未找到上一轮 source pack 的本地文件，请重新处理原 URL。";
+  } else if (ledgerSelection?.selectedOption === "keep-source-pack-local") {
+    const sourcePackPath = join(dirname(previousThreadLedger.path), "artifacts", "public-source", "source-pack", "source-pack.readable.md");
+    taskIntent.taskType = "task_management";
+    taskIntent.responseMode = "direct_answer";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
+    taskIntent.immediateResponse = `已记录：本轮仅保留本地 source pack，不执行外部知识库写入。交接路径：${workspaceRelative(sourcePackPath)}`;
+  }
   const task = {
     schemaVersion: "feishu-task-v1",
     runId,
@@ -2855,7 +3088,7 @@ export async function handleEvent(input, options) {
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
   };
-  writeJson(paths.taskPath, task);
+  writeJson(paths.taskPath, assertFeishuTask(task));
   addStep(state, "task_created", "completed", { artifact: paths.taskPath });
   metrics.taskType = taskIntent.taskType ?? "feishu_agent";
   appendMetric(metrics, "planner", {
@@ -3000,6 +3233,12 @@ export async function handleEvent(input, options) {
       : publish.status === "blocked"
         ? "blocked"
         : "needs_fix";
+  const ledgerIndex = indexExecutionLedgerForThread(root, event, task.runId, join(paths.runDir, "planner-envelope.json"), agent.output);
+  addStep(state, "execution_ledger_thread_index", ledgerIndex.status === "indexed" ? "completed" : "skipped", {
+    reason: ledgerIndex.reason ?? null,
+    sourceRunId: ledgerSelection?.sourceRunId ?? null,
+    selectedOption: ledgerSelection?.selectedOption ?? null,
+  });
   writeRunArtifacts({ event, task, state, agentOutput: agent.output, publish, reply, paths, metrics });
   await indexRuntimeStoreRun(paths, options, state, metrics);
   writeState(paths, state);
@@ -3165,7 +3404,7 @@ async function main() {
   startServer(options, host, port);
 }
 
-export { normalizeDirectEvent, optionsFromArgs };
+export { addStep, normalizeDirectEvent, optionsFromArgs };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {

@@ -1,5 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { attachmentKind } from "./im_file_context_helpers.mjs";
+import { extractPublicUrls } from "./public_url_security.mjs";
+import {
+  DEEP_REASONING_EXECUTION_PROFILES,
+  FAST_REASONING_DEPTH,
+  TASK_EXECUTION_PROFILES,
+} from "../dist/index.js";
 
 export const TASK_INTENT_SCHEMA_VERSION = "task-intent-v1";
 export const UNSUPPORTED_FEATURE_REPLY = "目前暂不支持该功能";
@@ -14,22 +20,23 @@ const UNSUPPORTED_REQUEST_PATTERN = /日历|calendar|创建任务|分配任务|a
 const DOCUMENT_REVISION_REQUEST_PATTERN = /批注|评论|修改内容|修订|修正|重新优化|优化下|优化一下|根据.*(修改|批注|评论|建议)|review|comment|suggestion|revision|redline/i;
 const DOCUMENT_PIPELINE_STAGES = ["evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish", "reply"];
 const NON_DOCUMENT_STAGES = ["audio_normalize", "asr_provider_resolved", "asr_transcribe", "local_asr", "cloud_asr", "evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"];
-const KNOWN_EXECUTION_PROFILES = [
-  "fast_answer",
-  "file_summary",
-  "audio_minutes",
-  "document_generation",
-  "document_revision",
-  "multi_source_synthesis",
-  "publish_only",
-  "unsupported",
-];
+export const KNOWN_EXECUTION_PROFILES = [...TASK_EXECUTION_PROFILES];
+const DEEP_REASONING_EXECUTION_PROFILE_SET = new Set(DEEP_REASONING_EXECUTION_PROFILES);
 
 export function cleanUserPrompt(text) {
   return String(text ?? "")
     .replace(/@\S+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isFeishuWorkspaceUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+    return ["feishu.cn", "feishu.com", "larksuite.cn", "larksuite.com"].some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
 }
 
 function requiresAsr(attachments) {
@@ -107,6 +114,7 @@ function executionProfileForIntent(intent) {
   if (intent.responseMode === "unsupported" || intent.taskType === "unsupported") return "unsupported";
   if (intent.taskType === "publish_only") return "publish_only";
   if (intent.operation === "document_revision" || intent.taskType === "document_revision") return "document_revision";
+  if (intent.taskType === "knowledge_source" || intent.responseMode === "source_pack") return "url_source_pack";
   if (intent.taskType === "meeting_minutes" && intent.requiresLocalAsr) return "audio_minutes";
   if (
     intent.responseMode === "document_pipeline" &&
@@ -120,7 +128,7 @@ function executionProfileForIntent(intent) {
 }
 
 function reasoningDepthForProfile(profile) {
-  return ["audio_minutes", "document_generation", "document_revision"].includes(profile) ? "deep" : "fast";
+  return DEEP_REASONING_EXECUTION_PROFILE_SET.has(profile) ? "deep" : FAST_REASONING_DEPTH;
 }
 
 function dedupeStages(stages) {
@@ -164,6 +172,12 @@ function stagePlanForIntent(intent, profile) {
       skipStages: ["direct_answer"],
     };
   }
+  if (profile === "url_source_pack") {
+    return {
+      requiredStages: ["policy_gate", "public_url_resolve", "official_transcript_or_media", "cloud_asr_if_needed", "chapter_analysis", "source_pack", "provenance", "qa_gate", "reply"],
+      skipStages: ["meeting_intelligence", "meeting_minutes", "document_workers", "publish"],
+    };
+  }
   if (profile === "document_revision") {
     return {
       requiredStages: dedupeStages([
@@ -204,6 +218,7 @@ function finalizeTaskIntent(intent) {
 export function classifyTaskIntent(event, attachments = [], fileContextBatch = {}, attachmentResolution = {}) {
   const rawText = event.message?.text ?? "";
   const prompt = cleanUserPrompt(rawText);
+  const publicUrls = extractPublicUrls(rawText).filter((value) => !isFeishuWorkspaceUrl(value));
   const explicitDocs = requestedDocumentsFromText(prompt, attachments);
   const contexts = fileContextBatch.contexts ?? [];
   const inferredDocs = inferRequestedDocumentsFromContexts(contexts);
@@ -241,6 +256,24 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       responseMode: "unsupported",
       unsupportedReason: "destructive_action_not_supported",
       immediateResponse: UNSUPPORTED_FEATURE_REPLY,
+    });
+  }
+  if (publicUrls.length > 0) {
+    return finalizeTaskIntent({
+      taskType: "knowledge_source",
+      requestedDocuments: [],
+      hasAttachments,
+      hasFileContexts,
+      requiresAsr: false,
+      requiresLocalAsr: false,
+      sourcePreparation: {
+        ...sourcePreparation,
+        inputModalities: [...new Set([...sourcePreparation.inputModalities, "public_url"])],
+        publicUrls,
+        sourceSetMode: "explicit_public_url",
+        requestedDocuments: [],
+      },
+      responseMode: "source_pack",
     });
   }
   if (UNSUPPORTED_REQUEST_PATTERN.test(prompt)) {

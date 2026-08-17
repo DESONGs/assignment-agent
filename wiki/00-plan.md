@@ -1,6 +1,19 @@
-# Meeting Agent 当前路线图
+# Office Agent 当前路线图
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
+
+## 2026-08-17 公开 URL 知识来源
+
+- 本地与飞书的显式 YouTube、播客/RSS、小宇宙和公开音视频 URL 进入独立 `url_source_pack` profile。
+- 优先官方带时间戳文稿；缺失时才复用 OSS + DashScope 云端文件 ASR。
+- 长转写按有界章节分析，交付 source pack 与 provenance；外部知识库是独立 Agent 的后续决策。
+
+## 2026-08-13 任务控制与产品发现升级
+
+- Planner 从审计 envelope 升级为权威 Adaptive Execution Ledger。
+- 增加可交互 Todo/下一步投影，Pi `/todos` 与飞书回复均可消费。
+- 客户问题、工作流、潜在需求、假设、验收信号和 PRD readiness 纳入 Meeting Intelligence。
+- PRD 与客户需求确认表 Prompt 已增强；前端只保留后续方案，不进入当前开发。
 
 ## 产品目标
 

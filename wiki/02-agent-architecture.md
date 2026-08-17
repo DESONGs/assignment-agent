@@ -1,6 +1,8 @@
 # Office Agent：Agent 端专项架构
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
+
+> 当前任务控制面已升级为 `Adaptive Execution Ledger`；详细状态、Todo 投影和产品发现链见 [15-adaptive-execution-ledger-and-product-discovery.md](15-adaptive-execution-ledger-and-product-discovery.md)。
 
 本文是当前 Agent 架构的唯一详细说明。它描述通用办公父 Agent 如何维护任务状态、按需使用会议与文档能力、分发复杂工作、回收证据，以及怎样把结果交付到本地或飞书。代码目录映射见 [11-current-project-architecture.md](11-current-project-architecture.md)。
 
@@ -21,10 +23,11 @@ Agent 的核心职责不是把一组步骤按顺序跑完，而是围绕当前�
 
 ```mermaid
 flowchart TB
-    User["用户"] --> Channels["本地文件 / 飞书 / Rokid / 智能眼镜"]
+    User["用户"] --> Channels["本地文件 / 公开 URL / 飞书 / Rokid / 智能眼镜"]
     Channels --> Parent["Pi Office Parent Agent"]
     Parent --> Task["Task State / Artifact Index"]
     Parent --> Media["文件 ASR / 实时流 ASR"]
+    Parent --> PublicSource["公开 URL Resolver / Source Pack"]
     Parent --> Lark["飞书 CLI / OpenAPI"]
     Parent --> Models["主模型 / 审阅模型"]
     Parent --> Children["Fresh Sub-agent / Dynamic Workflow"]
@@ -111,17 +114,28 @@ flowchart LR
     Worker --> QAGate
 ```
 
-Planner Envelope 与 task state 记录目标、输入、领域状态摘要、候选能力、依赖、模型路线、预期产物和风险。Artifact index 指向完整来源和中间结果。它们构成可更新控制面，不是全局固定 workflow。Capability Registry 提供可选能力；Policy Gate 只判断凭证与高影响动作边界，不替 Agent 编排业务。
+Adaptive Execution Ledger 记录目标、输入、领域状态摘要、候选能力、步骤、依赖、验收、结果引用、用户选择和风险。Artifact index 指向完整来源和中间结果；task state、Todo 和频道状态从 Ledger 派生。Ledger 构成可更新控制面，不是全局固定 workflow。Capability Registry 提供可选能力；Policy Gate 只判断凭证与高影响动作边界，不替 Agent 编排业务。
 
-## 5. 会议黄金流程
+## 5. 会议黄金流程与公开 URL 输入
 
 ```mermaid
 flowchart TD
-    Start["收到文件、实时流或飞书事件"] --> Parse["解析目标、附件与参会人显式映射"]
+    Start["收到文件、公开 URL、实时流或飞书事件"] --> Parse["解析目标、输入与显式上下文"]
     Parse --> Kind{"输入类型"}
     Kind -->|录音文件| FileASR["DashScope 文件接口 + OSS\n或显式本地 provider"]
     Kind -->|实时音频| StreamASR["DashScope WebSocket 实时接口"]
     Kind -->|文本/文档| Evidence["提取 Source Context"]
+    Kind -->|公开媒体 URL| URLPolicy["Policy Gate\n显式公网访问"]
+    URLPolicy --> URL["校验公网来源、DNS、重定向与限额"]
+    URL --> Transcript{"可靠官方时间戳文稿?"}
+    Transcript -->|是| SourceEvidence["标准化 transcript + provenance"]
+    Transcript -->|否| URLASR["受限媒体下载 + 云端文件 ASR"]
+    URLASR --> URLComplete{"完整且非 partial?"}
+    URLComplete -->|否| URLBlock["blocked + 可恢复诊断"]
+    URLComplete -->|是| SourceEvidence
+    SourceEvidence --> SourcePack["有界章节分析 + Knowledge Source Pack"]
+    SourcePack --> SourceQA["QA Gate\n完整性与 provenance"]
+    SourceQA --> Handoff["本地交接路径\n不直接写外部知识库"]
     FileASR --> Complete{"ASR complete 且非 partial?"}
     StreamASR --> Complete
     Complete -->|否| Block["保留诊断并阻止完整纪要"]
@@ -143,6 +157,8 @@ flowchart TD
 ```
 
 文件端和实时流端是两个能力端口。文件端接受产品声明的完整媒体格式矩阵，通过 OSS 提交异步文件转写；实时流端接收编码帧并使用 WebSocket。只有 provider 拒绝容器或本地模型需要时才派生转码文件，不能把本地模型输入格式误写成产品格式限制。
+
+公开 URL 是独立知识来源端口。显式 YouTube、播客/RSS、小宇宙和直接媒体 URL 进入 `url_source_pack`；官方文稿优先，没有可靠文稿时才复用云端文件 ASR。节目内容默认不建立参会人、决定或行动项，而是区分明确事实、作者观点、Agent 推断、争议/风险和开放问题。长来源按官方章节或有界时间窗分发，父 Agent 只保留任务状态、章节摘要和 artifact 引用。
 
 ## 6. 委派决策
 
@@ -200,6 +216,8 @@ erDiagram
     RUN ||--o{ SOURCE : contains
     RUN ||--o{ ARTIFACT : produces
     SOURCE ||--o{ TRANSCRIPT_SEGMENT : transcribes
+    SOURCE ||--o{ SOURCE_CLAIM : yields
+    TRANSCRIPT_SEGMENT }o--o{ SOURCE_CLAIM : supports
     TRANSCRIPT_SEGMENT }o--o{ TOPIC : supports
     TRANSCRIPT_SEGMENT }o--o{ DECISION : supports
     TRANSCRIPT_SEGMENT }o--o{ ACTION_ITEM : supports
@@ -219,6 +237,9 @@ erDiagram
 | `summary.json` | run 总状态、provider、失败与交付摘要 |
 | `transcripts/transcript.full.json` | 完整 segment 及时间、speaker、quality |
 | `evidence/evidence-index.json` | 当前证据范围真相源 |
+| `public-source/source-metadata.json` | URL、平台、节目/作者、日期、时长、语言与获取方式 |
+| `public-source/source-pack/source-pack.json` / `source-pack.readable.md` | 章节化知识交接包，不等同会议纪要 |
+| `public-source/provenance/evidence-index.json` | source claim 到官方文稿或 ASR segment 的映射 |
 | `participant-map.json` | speaker id、稳定代号和用户显式姓名 |
 | `meeting-intelligence.json` | 会议类型、议题、决定、行动、风险、开放问题 |
 | `agentic-orchestration-plan.json` | direct/sub-agent/workflow 选择与 executor 参数 |
@@ -299,6 +320,7 @@ flowchart TB
 | Agentic 计划 | `extensions/meeting-agentic-orchestrator.ts`、`tools/meeting_workflow_helpers.mjs` |
 | Pi 执行与父级回收 | `tools/pi_meeting_orchestration_helpers.mjs` |
 | ASR 文件与实时流 | `tools/dashscope_asr_client.mjs`、`asr_media_formats.mjs` |
+| 公开 URL 与 Source Pack | `extensions/public-url-source.ts`、`tools/public_url_source_cli.mjs`、`public_url_security.mjs`、`public_url_source_helpers.mjs`、`public_url_source_pack_helpers.mjs` |
 | 单录混音复核 | `tools/single_mix_asr_helpers.mjs` |
 | Meeting Intelligence | `tools/meeting_intelligence_helpers.mjs` |
 | 双层记忆 | `.pi/settings.json`、`.pi/agents/meeting-memory-curator.md`、`tools/meeting_memory_helpers.mjs` |
@@ -314,6 +336,8 @@ flowchart TB
 - 工具成功不等于证据接受。
 - 当前 transcript segment 集合是委派证据范围真相源。
 - 文件 ASR 与实时流 ASR 不共用端口契约。
+- 公开 URL 必须由用户明确提供；不使用 Cookie 或绕过访问控制，partial 来源不得生成完整 source pack。
+- URL source pack 只交付本地路径，不直接写外部知识库，也不默认进入 Meeting Intelligence。
 - speaker diarization 不等于声源分离。
 - QA Gate 判断内容是否可交付；Policy Gate 只判断凭证和高影响动作是否可执行。可自动修复、披露或降级的问题不应机械阻断。
 - Pi 原生 Compaction 是短期上下文机制，不是长期事实库。

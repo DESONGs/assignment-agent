@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -13,6 +13,27 @@ type PromptRecord = {
   audience?: string;
   operationOverlays?: Record<string, string>;
   requiredSections: string[];
+};
+
+type DocumentPromptBlocked = {
+  status: string;
+  reason: string;
+  rawSecretsReturned?: boolean;
+};
+
+type PromptCatalogDetails = {
+  promptsDir: string;
+  promptRegistryPath: string;
+  prompts: ReturnType<typeof listPromptCatalog>;
+  loadMode: string;
+  rawSecretsReturned: boolean;
+};
+
+type PromptBatchDetails = {
+  documentWorkItems: ReturnType<typeof renderWorkItem>[];
+  hardcodedDocumentScaffoldUsed: boolean;
+  promptRegistryPath: string;
+  rawSecretsReturned: boolean;
 };
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
@@ -194,14 +215,14 @@ function containsSecretLikeValue(value: unknown) {
 function renderWorkItem(params: {
   docType?: string;
   promptFile?: string;
-  input?: unknown;
-  routerConclusion?: unknown;
-  evidenceSummary?: unknown;
-  upstreamDocuments?: unknown;
-  operation?: string;
-  reviewContext?: unknown;
-  contextEnvelopeRef?: string;
-  workUnits?: unknown[];
+  input?: unknown | undefined;
+  routerConclusion?: unknown | undefined;
+  evidenceSummary?: unknown | undefined;
+  upstreamDocuments?: unknown | undefined;
+  operation?: string | undefined;
+  reviewContext?: unknown | undefined;
+  contextEnvelopeRef?: string | undefined;
+  workUnits?: unknown[] | undefined;
 }) {
   if (
     containsSecretLikeValue(params.input) ||
@@ -322,7 +343,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       includeTemplate: Type.Optional(Type.Boolean({ description: "Return full prompt template content." })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<PromptCatalogDetails | DocumentPromptBlocked>> {
       try {
         const details = {
           promptsDir,
@@ -364,16 +385,16 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       docType: Type.Optional(Type.String()),
       promptFile: Type.Optional(Type.String()),
-      input: Type.Optional(Type.Any()),
-      routerConclusion: Type.Optional(Type.Any()),
-      evidenceSummary: Type.Optional(Type.Any()),
-      upstreamDocuments: Type.Optional(Type.Any()),
+      input: Type.Optional(Type.Unknown()),
+      routerConclusion: Type.Optional(Type.Unknown()),
+      evidenceSummary: Type.Optional(Type.Unknown()),
+      upstreamDocuments: Type.Optional(Type.Unknown()),
       operation: Type.Optional(Type.String()),
-      reviewContext: Type.Optional(Type.Any()),
+      reviewContext: Type.Optional(Type.Unknown()),
       contextEnvelopeRef: Type.Optional(Type.String()),
-      workUnits: Type.Optional(Type.Array(Type.Any())),
+      workUnits: Type.Optional(Type.Array(Type.Unknown())),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<ReturnType<typeof renderWorkItem> | DocumentPromptBlocked>> {
       try {
         const details = renderWorkItem(params);
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -394,16 +415,16 @@ export default function (pi: ExtensionAPI) {
     description: "Create context-plane document work items from selected prompt templates.",
     parameters: Type.Object({
       documents: Type.Array(Type.String()),
-      input: Type.Optional(Type.Any()),
-      routerConclusion: Type.Optional(Type.Any()),
-      evidenceSummary: Type.Optional(Type.Any()),
-      upstreamDocuments: Type.Optional(Type.Any()),
+      input: Type.Optional(Type.Unknown()),
+      routerConclusion: Type.Optional(Type.Unknown()),
+      evidenceSummary: Type.Optional(Type.Unknown()),
+      upstreamDocuments: Type.Optional(Type.Unknown()),
       operation: Type.Optional(Type.String()),
-      reviewContext: Type.Optional(Type.Any()),
+      reviewContext: Type.Optional(Type.Unknown()),
       contextEnvelopeRef: Type.Optional(Type.String()),
-      workUnits: Type.Optional(Type.Array(Type.Any())),
+      workUnits: Type.Optional(Type.Array(Type.Unknown())),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<PromptBatchDetails | DocumentPromptBlocked>> {
       try {
         const documentWorkItems = params.documents.map((docType) =>
           renderWorkItem({

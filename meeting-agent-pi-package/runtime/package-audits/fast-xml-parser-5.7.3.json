@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "package-audit-v1",
+  "packageName": "fast-xml-parser",
+  "version": "5.7.3",
+  "source": "https://www.npmjs.com/package/fast-xml-parser/v/5.7.3",
+  "sourceRepository": "https://github.com/NaturalIntelligence/fast-xml-parser",
+  "readmeSummary": "Pure JavaScript XML parser used only for bounded podcast RSS documents and Podcasting 2.0 transcript/enclosure metadata.",
+  "dependencies": ["@nodable/entities", "fast-xml-builder", "path-expression-matcher", "strnum"],
+  "envReads": [],
+  "networkAccess": ["No network access in the imported XMLParser path; URL acquisition remains owned by public_url_security.mjs"],
+  "fileWrites": ["None in the imported XMLParser API; the package CLI is not invoked"],
+  "promptInjectionRisk": "RSS text is untrusted source data. It is size-bounded, converted into source metadata or timestamp evidence, and never treated as system instructions.",
+  "credentialHandling": "The parser receives no credentials, cookies, Authorization headers, or signed URLs. XML entity processing is disabled.",
+  "disableOrUninstallPath": "Remove fast-xml-parser from meeting-agent-pi-package/package.json and replace the RSS parser adapter, then run npm install.",
+  "decision": "passed_smoke_lazy_enable",
+  "defaultLoad": false,
+  "rawSecretsReturned": false,
+  "rawTranscriptIncluded": false
+}

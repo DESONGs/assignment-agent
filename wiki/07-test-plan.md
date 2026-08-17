@@ -1,6 +1,6 @@
 # 测试与发布验收
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
 
 测试目标是证明真实入口、状态、证据、Agent 委派和交付边界完整贯通，而不只是 schema 或 mock 存在。
 
@@ -17,6 +17,7 @@ git diff --check
 | --- | --- |
 | Workspace | 目录、package、runtime schema、prompt marker、文档链接与安全边界 |
 | ASR | 文件/实时格式矩阵、endpoint 分离、diarization、single-mix robust、cache key |
+| Public URL | URL 分类、RSS/小宇宙/YouTube/direct 适配、官方文稿优先、云端 ASR fallback、SSRF/重定向/大小限制、source pack provenance、真实 router |
 | Meeting Intelligence | participant alias、topic/evidence、decision/action 验证、quality 传播 |
 | Agentic | direct/single/dynamic 计划、Pi 0.46 API、workflow 生成、模型 fallback |
 | Tool event | `tool_execution_end` 解析、未调用/失败状态、真实执行证明 |
@@ -25,6 +26,8 @@ git diff --check
 | Document | prompt registry、section ordering、model route、QA gate |
 | Channel | 飞书 event/task/file context/publish contract 与 secret scan |
 | Runtime | Host-owned store、cache/CAS/retention、Docker job boundary |
+| Type/Contract | 全部 TS extension strict、全部直接编写 MJS checkJs、Execution Profile/Ledger/Todo/Provider/飞书与跨语言 manifest 一致性 |
+| npm Package | ESM exports、生成 `.d.ts`/source map、files allowlist、publint、pack dry-run 与临时 NodeNext consumer |
 
 ## 2. ASR 验收
 
@@ -36,6 +39,18 @@ git diff --check
 - diarization 的匿名 speaker id 稳定，2–100 人 hint 合法；实时不虚报文件端 speaker 能力。
 - robust 模式双模型冲突进入 `needs_review`，不以投票覆盖原转录。
 - 高重叠同时发言只标记风险，不测试或宣称声源级完整恢复。
+
+### 公开 URL 验收
+
+- 显式 URL 经本地与飞书共用的 Task Router 进入 `url_source_pack`；飞书文档链接不能误路由。
+- YouTube、RSS/播客、小宇宙和直接媒体 fixture 均保留来源元数据；可靠官方带时间戳文稿必须跳过媒体与 ASR。
+- 无可靠文稿时只允许完整云端文件 ASR；媒体未下载、ASR partial、零 segment 或模型章节失败均不能生成完整 source pack。
+- 初始 URL、DNS 结果和每次重定向都拒绝内网/保留地址；响应、媒体和时长超过上限立即停止。
+- source pack 每个事实/观点/推断都引用当前 transcript segment，并记录来自官方文稿还是 ASR。
+- 成功路径必须写出真实 `policy-gate.json` 与 `qa-gate.json`，输出引用同一决策时间；不得由 runner 直接构造伪 pass。
+- 真实小宇宙 smoke 至少验证公开页面元数据、媒体 probe、文稿可用性和 fallback 状态；`--resolve-only` 不得下载媒体或声称已转写。
+- YouTube 官方字幕路径与无可靠字幕的云端 ASR fallback 都要至少完成一次公开短样例真实运行；live、private、playlist、大小和时长边界可用稳定 fixture/公开样例组合验证。
+- 当前 2026-08-17 的小宇宙、YouTube 与飞书环境证据记录在 [17-public-url-live-validation.md](17-public-url-live-validation.md)，完整媒体和逐字稿仍只留在 ignored runtime。
 
 ## 3. Meeting Intelligence 验收
 
@@ -106,10 +121,21 @@ docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-docume
 发布前集中执行一次：
 
 1. workspace validator。
-2. Node test + agentic typecheck。
+2. Node test + 全部 extension/runtime/test/release script typecheck。
 3. local CI check。
 4. `npm audit --omit=dev`。
 5. Markdown 链接、Mermaid fence、`git diff --check`。
 6. 至少一次与本次变化同层的真实 smoke；若外部凭证或 provider 不可用，明确记录未验证项。
+
+若变化触及 TypeScript 合同或 npm 包边界，还要运行：
+
+```bash
+cd meeting-agent-pi-package
+npm run publint
+npm run pack:dry-run
+npm run release:local
+```
+
+`release:local` 必须从 tgz 在临时目录执行真实 npm 安装，再以 NodeNext strict consumer 编译并执行 ESM import。源码 checkout 测试通过不能代替该验证。所有 TS extension 必须保持 strict；所有直接编写 MJS 必须保持 checkJs。不得用 TypeScript 文件比例代替覆盖证据，也不得把非 strict JavaScript 描述为完整强类型。
 
 `qa-runs/` 是 legacy `qa-runs/`，只保留 non-production fixture 指针；`qa-runs/**/*.json|jsonl|txt|wav` 不得作为当前生产成功证据提交。

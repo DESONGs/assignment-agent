@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -74,12 +74,12 @@ function isBlockedCandidate(candidate: ModelCandidate) {
 
 export function planRoute(params: {
   taskType: string;
-  docType?: string;
-  reasoningDepth?: "fast" | "deep";
-  userRequestedDeepThinking?: boolean;
-  estimatedComplexity?: "low" | "medium" | "high";
-  unavailableProviders?: string[];
-  userRequiresExactModel?: boolean;
+  docType?: string | undefined;
+  reasoningDepth?: "fast" | "deep" | undefined;
+  userRequestedDeepThinking?: boolean | undefined;
+  estimatedComplexity?: "low" | "medium" | "high" | undefined;
+  unavailableProviders?: string[] | undefined;
+  userRequiresExactModel?: boolean | undefined;
   /** Deprecated compatibility input. Meeting content no longer blocks model routing. */
 }) {
   const routing = loadRouting();
@@ -125,6 +125,16 @@ export function planRoute(params: {
   }
 
   const selected = candidates[selectedIndex];
+  if (!selected) {
+    return {
+      status: "blocked",
+      reason: "selected_model_candidate_missing",
+      taskType: params.taskType,
+      resolvedTaskType,
+      candidates,
+      policy: routing.defaultPolicy,
+    };
+  }
   const fallbackOccurred = selectedIndex > 0;
   const fallbackReason = fallbackOccurred ? "primary_or_prior_candidate_unavailable" : null;
   if (isBlockedCandidate(selected)) {
@@ -151,6 +161,7 @@ export function planRoute(params: {
 
   return {
     status: "selected",
+    reason: null,
     taskType: params.taskType,
     resolvedTaskType,
     selected,
@@ -168,10 +179,10 @@ export function planRoute(params: {
 
 function resolveRouteTaskType(params: {
   taskType: string;
-  docType?: string;
-  reasoningDepth?: "fast" | "deep";
-  userRequestedDeepThinking?: boolean;
-  estimatedComplexity?: "low" | "medium" | "high";
+  docType?: string | undefined;
+  reasoningDepth?: "fast" | "deep" | undefined;
+  userRequestedDeepThinking?: boolean | undefined;
+  estimatedComplexity?: "low" | "medium" | "high" | undefined;
 }) {
   if (params.taskType === "document_shard") {
     if (params.docType === "meeting-minutes") return "meeting_minutes";
@@ -243,10 +254,10 @@ export default function (pi: ExtensionAPI) {
     description: "Write the selected model route to runtime-runs/{runId}/model-route.json.",
     parameters: Type.Object({
       runId: Type.String(),
-      route: Type.Any({ description: "Output from model_route_plan plus actual model call metadata if available." }),
+      route: Type.Unknown({ description: "Output from model_route_plan plus actual model call metadata if available." }),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const path = recordRouteArtifact(params.runId, params.route, params.outputRoot);
         const details = { ok: true, runId: params.runId, modelRoutePath: path };

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
 
@@ -12,6 +12,31 @@ type LarkCliResult = {
 };
 
 type RedactionPolicy = "none" | "auth-status-summary" | "secret-scan";
+
+type FeishuCliDetails = {
+  provider: string;
+  mode: string;
+  commandCategory?: string;
+  command?: string[];
+  blocked?: boolean;
+  reason?: string;
+  redactionPolicy?: string;
+  cliAvailable?: boolean;
+  authVerified?: boolean;
+  loginState?: string;
+  exitCode?: number;
+  signal?: NodeJS.Signals | null;
+  timedOut?: boolean;
+  stdout?: string;
+  stderr?: string;
+  error?: string | null;
+  json?: unknown;
+  jsonParseError?: string | null;
+  checkedAt?: string;
+  rawOutputReturned?: boolean;
+  identityRedacted?: boolean;
+  errorCategory?: string | null;
+};
 
 const SECRET_PATTERNS = [
   /(app_secret|client_secret|refresh_token|access_token|authorization|cookie|session)\s*[:=]\s*["']?[A-Za-z0-9._\-]{8,}/i,
@@ -177,7 +202,7 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<FeishuCliDetails>> {
       const timeoutMs = params.timeoutMs ?? 120_000;
       const redactionPolicy = (params.redactionPolicy ?? "secret-scan") as RedactionPolicy;
 

@@ -28,6 +28,7 @@ public struct RunSummary: Identifiable, Sendable {
   public let policyStatus: String
   public let publishStatus: String
   public let failureReasons: [FailureReason]
+  public let contractWarnings: [String]
 }
 
 public enum FailureReason: String, CaseIterable, Identifiable, Sendable {
@@ -139,5 +140,6 @@ public struct RuntimeRun: Identifiable, Sendable {
   public let policyStatus: String
   public let publishStatus: String
   public let failureReasons: [FailureReason]
+  public let contractWarnings: [String]
   public let safetyNotes: [String]
 }

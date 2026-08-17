@@ -1,0 +1,31 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "allowImportingTsExtensions": true
+  },
+  "files": [
+    "extensions/agent-team-runtime.ts",
+    "extensions/capability-registry.ts",
+    "extensions/context-offload.ts",
+    "extensions/document-generation.ts",
+    "extensions/document-worker-runtime.ts",
+    "extensions/execution-todo-ui.ts",
+    "extensions/feishu-bot-gateway.ts",
+    "extensions/feishu-tools.ts",
+    "extensions/media-tools.ts",
+    "extensions/meeting-agentic-orchestrator.ts",
+    "extensions/model-provider.ts",
+    "extensions/model-routing.ts",
+    "extensions/office-runtime.ts",
+    "extensions/planner-runtime.ts",
+    "extensions/policy-gate.ts",
+    "extensions/public-url-source.ts",
+    "extensions/qa-gate.ts",
+    "extensions/rokid-tools.ts",
+    "extensions/runtime-observability.ts",
+    "extensions/source-context-runtime.ts"
+  ]
+}

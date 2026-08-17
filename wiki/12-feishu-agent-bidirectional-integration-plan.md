@@ -1,6 +1,8 @@
 # 飞书双向 Agent 集成规范
 
-更新时间：2026-08-12。
+更新时间：2026-08-13。
+
+> 飞书回复已可展示 Execution Ledger Todo；同一 thread/chat 中用户选择 PRD、客户需求确认表、技术架构或运营方案时，handler 会关联上一轮 Ledger 与来源 artifact，形成后续文档任务。
 
 文件名保留早期 `plan` 后缀以避免外部链接失效；本文描述的是当前实现，不是未来计划。
 
@@ -37,8 +39,8 @@ node meeting-agent-pi-package/tools/feishu_event_runner.mjs \
   --handler-url http://127.0.0.1:8788/feishu/events
 ```
 
-- CLI-first：`lark-cli event consume` → `feishu_event_runner.mjs` → handler。
-- 可选 SDK：`feishu_bot_event_gateway.mjs` 订阅 `im.message.receive_v1`，转发到同一 handler。
+- CLI-first：`lark-cli event consume` → `feishu_event_runner.mjs` → handler；`local_runtime_ctl.py start` 默认启动这条路径。
+- 可选 SDK：仅在 `FEISHU_INBOUND_MODE=sdk` 时由 `feishu_bot_event_gateway.mjs` 订阅 `im.message.receive_v1`，并转发到同一 handler。
 - 长任务使用 `FEISHU_AGENT_ASYNC=1`；HTTP 返回接受状态，最终结果由 handler 回复。
 - Gateway 和 handler 通过 `suppressGatewayReply` 避免重复回复。
 

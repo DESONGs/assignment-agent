@@ -34,6 +34,7 @@ REQUIRED_SKILLS = [
     "policy-gate",
     "agent-team-runtime",
     "context-offload",
+    "public-url-source",
 ]
 
 REQUIRED_AGENT_ROLES = [
@@ -65,6 +66,7 @@ REQUIRED_EXTENSIONS = [
     "runtime-observability.ts",
     "capability-registry.ts",
     "planner-runtime.ts",
+    "execution-todo-ui.ts",
     "policy-gate.ts",
     "document-generation.ts",
     "document-worker-runtime.ts",
@@ -73,6 +75,7 @@ REQUIRED_EXTENSIONS = [
     "source-context-runtime.ts",
     "office-runtime.ts",
     "meeting-agentic-orchestrator.ts",
+    "public-url-source.ts",
 ]
 
 REQUIRED_RUNTIME_FILES = [
@@ -118,6 +121,7 @@ REQUIRED_EXECUTION_PROFILES = [
     "document_generation",
     "document_revision",
     "multi_source_synthesis",
+    "url_source_pack",
     "publish_only",
     "unsupported",
 ]
@@ -139,6 +143,15 @@ PROFILE_REQUIRED_MARKER_ALIASES = {
     "document_generation": {
         "prompt_registry": ("prompt_registry", "prompt registry", "document-prompt-registry", "document_prompt_render_batch"),
         "document_workers": ("document_workers", "document worker", "document-worker", "document_workers_run"),
+    },
+    "url_source_pack": {
+        "public_url_resolve": ("public_url_resolve", "public url resolve", "public-url-source"),
+        "official_transcript_or_media": ("official_transcript_or_media", "official transcript", "official subtitle"),
+        "cloud_asr_if_needed": ("cloud_asr_if_needed", "aliyun_dashscope_paraformer", "cloud asr"),
+        "source_pack": ("source_pack", "source pack", "source-pack"),
+        "provenance": ("provenance", "evidence index"),
+        "qa_gate": ("qa_gate", "qa gate", "qa-gate"),
+        "policy_gate": ("policy_gate", "policy gate", "policy-gate"),
     },
 }
 
@@ -397,6 +410,10 @@ def capability_trace_markers(capability_id: str) -> set[str]:
         markers.update({"calendar_task", "calendar", "mutate_calendar"})
     if capability_id == "rokid-import":
         markers.update({"rokid-tools", "Rokid", "Lingzhu"})
+    if capability_id == "pi-subagents":
+        markers.update({"pi-subagents", "pi-subagents@0.46.0", "fresh sub-agent"})
+    if capability_id == "pi-dynamic-workflows":
+        markers.update({"pi-dynamic-workflows", "@quintinshaw/pi-dynamic-workflows", "Dynamic Workflow"})
     return {normalized_marker(marker) for marker in markers if marker}
 
 
@@ -490,12 +507,98 @@ def validate_package() -> None:
     if package.get("engines", {}).get("node") != ">=22.19.0":
         fail("meeting-agent-pi-package must declare the Pi 0.84-compatible Node baseline")
     dependencies = package.get("dependencies", {})
-    if dependencies.get("pi-subagents") != "0.46.0":
-        fail("meeting-agent-pi-package must pin audited pi-subagents@0.46.0")
-    if dependencies.get("@quintinshaw/pi-dynamic-workflows") != "3.5.1":
-        fail("meeting-agent-pi-package must pin audited pi-dynamic-workflows@3.5.1")
-    if package.get("devDependencies", {}).get("@earendil-works/pi-coding-agent") != "0.84.1":
+    dev_dependencies = package.get("devDependencies", {})
+    peer_dependencies = package.get("peerDependencies", {})
+    if dev_dependencies.get("pi-subagents") != "0.46.0" or peer_dependencies.get("pi-subagents") != ">=0.46.0 <0.47.0":
+        fail("meeting-agent-pi-package must test pi-subagents@0.46.0 and expose a controlled 0.46 peer range")
+    if dev_dependencies.get("@quintinshaw/pi-dynamic-workflows") != "3.5.1" or peer_dependencies.get("@quintinshaw/pi-dynamic-workflows") != ">=3.5.1 <3.6.0":
+        fail("meeting-agent-pi-package must test pi-dynamic-workflows@3.5.1 and expose a controlled 3.5 peer range")
+    if dependencies.get("fast-xml-parser") != "5.7.3":
+        fail("meeting-agent-pi-package must pin audited fast-xml-parser@5.7.3")
+    if dev_dependencies.get("@earendil-works/pi-coding-agent") != "0.84.1":
         fail("meeting-agent-pi-package must pin the tested Pi 0.84.1 development runtime")
+    for pi_peer in ("@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"):
+        if peer_dependencies.get(pi_peer) != ">=0.84.1 <0.85.0":
+            fail(f"meeting-agent-pi-package must expose the controlled Pi 0.84 peer range: {pi_peer}")
+    if package.get("type") != "module" or package.get("main") != "./dist/index.js" or package.get("types") != "./dist/index.d.ts":
+        fail("meeting-agent-pi-package must expose its built ESM and declaration entrypoints")
+    root_export = package.get("exports", {}).get(".", {})
+    if root_export.get("import") != package.get("main") or root_export.get("types") != package.get("types"):
+        fail("meeting-agent-pi-package exports must align with main/types")
+    if package.get("private") is True or "dist/" not in package.get("files", []):
+        fail("meeting-agent-pi-package must remain packable with an explicit dist files allowlist")
+    ts_base_config = load_json(ROOT / "meeting-agent-pi-package" / "tsconfig.base.json")
+    ts_base_options = ts_base_config.get("compilerOptions", {})
+    if ts_base_options.get("strict") is not True or ts_base_options.get("noUncheckedIndexedAccess") is not True or ts_base_options.get("exactOptionalPropertyTypes") is not True:
+        fail("TypeScript source must retain strict, noUncheckedIndexedAccess, and exactOptionalPropertyTypes")
+    extensions_config = load_json(ROOT / "meeting-agent-pi-package" / "tsconfig.extensions.json")
+    expected_extensions = {
+        str(path.relative_to(ROOT / "meeting-agent-pi-package"))
+        for path in (ROOT / "meeting-agent-pi-package" / "extensions").glob("*.ts")
+    }
+    if set(extensions_config.get("files", [])) != expected_extensions:
+        fail("strict extension TypeScript coverage must include every authored extension")
+    for extension_path in (ROOT / "meeting-agent-pi-package" / "extensions").glob("*.ts"):
+        if "Type.Any(" in extension_path.read_text(encoding="utf-8"):
+            fail(f"authored TypeScript tool schema must normalize Type.Unknown input instead of Type.Any: {extension_path.name}")
+    accidental_adjacent_emits = [
+        *(ROOT / "meeting-agent-pi-package" / "extensions").glob("*.js"),
+        *(ROOT / "meeting-agent-pi-package" / "src").rglob("*.js"),
+        *(ROOT / "meeting-agent-pi-package" / "src").rglob("*.d.ts"),
+    ]
+    if accidental_adjacent_emits:
+        fail("TypeScript compiler output must be emitted only to dist/: " + ", ".join(path.name for path in accidental_adjacent_emits))
+    runtime_js_config = load_json(ROOT / "meeting-agent-pi-package" / "tsconfig.runtime-js.json")
+    runtime_js_options = runtime_js_config.get("compilerOptions", {})
+    if runtime_js_options.get("allowJs") is not True or runtime_js_options.get("checkJs") is not True:
+        fail("runtime boundary MJS must be included in checkJs coverage")
+    for required_boundary in (
+        "tools/task_router.mjs",
+        "tools/public_url_security.mjs",
+        "tools/dashscope_asr_client.mjs",
+        "tools/feishu_bot_event_gateway.mjs",
+        "tools/runtime_tool_cli.mjs",
+    ):
+        if required_boundary not in runtime_js_config.get("files", []):
+            fail(f"runtime boundary checkJs config missing: {required_boundary}")
+    expected_runtime_tools = {
+        str(path.relative_to(ROOT / "meeting-agent-pi-package"))
+        for path in (ROOT / "meeting-agent-pi-package" / "tools").glob("*.mjs")
+    }
+    if set(runtime_js_config.get("files", [])) != expected_runtime_tools:
+        fail("runtime checkJs coverage must include every directly authored MJS tool")
+    tests_js_config = load_json(ROOT / "meeting-agent-pi-package" / "tsconfig.tests-js.json")
+    tests_js_options = tests_js_config.get("compilerOptions", {})
+    if tests_js_options.get("allowJs") is not True or tests_js_options.get("checkJs") is not True:
+        fail("MJS tests must be included in checkJs coverage")
+    if "tests/*.test.mjs" not in tests_js_config.get("include", []):
+        fail("test checkJs config must cover the complete MJS test suite")
+    scripts_js_config = load_json(ROOT / "meeting-agent-pi-package" / "tsconfig.scripts-js.json")
+    scripts_js_options = scripts_js_config.get("compilerOptions", {})
+    if scripts_js_options.get("allowJs") is not True or scripts_js_options.get("checkJs") is not True:
+        fail("npm build and release MJS scripts must be included in checkJs coverage")
+    if "scripts/*.mjs" not in scripts_js_config.get("include", []):
+        fail("script checkJs config must cover all package build and release scripts")
+
+    contract_manifest = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "contract-manifest.json")
+    if contract_manifest.get("schemaVersion") != "assignment-agent-runtime-contracts-v1":
+        fail("runtime contract manifest version mismatch")
+    feishu_task_schema = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "feishu-task.schema.json")
+    feishu_event_schema = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "feishu-event.schema.json")
+    feishu_run_schema = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "feishu-run-state.schema.json")
+    provider_schema = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "model-providers.schema.json")
+    manifest_feishu = contract_manifest.get("feishu", {})
+    manifest_task = contract_manifest.get("task", {})
+    if set(manifest_task.get("executionProfiles", [])) != set(feishu_task_schema["properties"]["taskIntent"]["properties"]["executionProfile"]["enum"]):
+        fail("runtime contract manifest execution profiles drifted from Feishu task schema")
+    if set(manifest_feishu.get("eventSources", [])) != set(feishu_event_schema["properties"]["source"]["enum"]):
+        fail("runtime contract manifest event sources drifted from Feishu event schema")
+    if set(manifest_feishu.get("runStatuses", [])) != set(feishu_run_schema["properties"]["status"]["enum"]):
+        fail("runtime contract manifest run statuses drifted from Feishu run schema")
+    if set(manifest_feishu.get("runStepStatuses", [])) != set(feishu_run_schema["properties"]["steps"]["items"]["properties"]["status"]["enum"]):
+        fail("runtime contract manifest step statuses drifted from Feishu run schema")
+    if set(contract_manifest.get("modelProvider", {}).get("protocols", [])) != set(provider_schema["properties"]["providers"]["items"]["properties"]["protocol"]["enum"]):
+        fail("runtime contract manifest provider protocols drifted from provider schema")
     if (ROOT / ".nvmrc").read_text(encoding="utf-8").strip() != "22.23.1":
         fail(".nvmrc must pin the tested Node 22.23.1 runtime")
 
@@ -525,6 +628,10 @@ def validate_package() -> None:
         audit = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "package-audits" / audit_name)
         if audit.get("decision") != "passed_smoke_lazy_enable":
             fail(f"package audit must record passed smoke decision: {audit_name}")
+
+    xml_audit = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "package-audits" / "fast-xml-parser-5.7.3.json")
+    if xml_audit.get("decision") not in {"passed", "passed_smoke_lazy_enable"}:
+        fail("package audit must record a passed decision: fast-xml-parser-5.7.3.json")
 
     meeting_workflow = (ROOT / "meeting-agent-pi-package" / "tools" / "meeting_workflow_helpers.mjs").read_text(
         encoding="utf-8"
@@ -760,7 +867,7 @@ def validate_required_behavior_docs() -> None:
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
     for marker in (
-        "2026-08-12",
+        "2026-08-13",
         "auth-status-summary",
         "secret-scan",
         "Meeting Intelligence",
@@ -773,7 +880,7 @@ def validate_required_behavior_docs() -> None:
         "Agentic Planner",
         "Policy Gate",
         "Capability Registry",
-        "Planner Envelope",
+        "Adaptive Execution Ledger",
         "planner-selectable capability descriptions",
         "policy_gate_check",
         "package audit/install mechanism",
@@ -1180,7 +1287,7 @@ def validate_extensions() -> None:
     for marker in (
         "WeChat adapter skeleton",
         "im-event-v1",
-        "office-task-state-v1",
+        "office-task-state-v2",
         "wechat-adapter-fixture",
         "invoke-handler",
         "feishu_agent_task_handler.mjs",
@@ -1329,7 +1436,7 @@ def validate_extensions() -> None:
         "runtime-runs/_services/ci/latest.json",
         "validate_workspace.py",
         "docker-compose.local-runtime.yml",
-        "swift-test-agent-workbench",
+        "swift-contract-smoke-agent-workbench",
         "rawSecretsReturned",
     ):
         if marker not in local_ci_check_text:
@@ -1593,9 +1700,13 @@ def validate_extensions() -> None:
         encoding="utf-8"
     )
     for marker in (
-        "Planner Envelope",
+        "Adaptive Execution Ledger",
         "planner_envelope",
-        "office_agent_adaptive_control_loop",
+        "adaptive_execution_ledger",
+        "execution_ledger_reconcile",
+        "execution_ledger_todo",
+        "expectedRevision",
+        "userTodoProjection",
         "fixedWorkflow",
         "goal",
         "taskType",
@@ -1609,7 +1720,7 @@ def validate_extensions() -> None:
         'meetingContentAccess: "allowed"',
     ):
         if marker not in planner_runtime:
-            fail(f"planner-runtime.ts missing Planner Envelope marker: {marker}")
+            fail(f"planner-runtime.ts missing Adaptive Execution Ledger marker: {marker}")
 
     policy_gate = (ROOT / "meeting-agent-pi-package" / "extensions" / "policy-gate.ts").read_text(
         encoding="utf-8"
@@ -2033,7 +2144,7 @@ def validate_runtime_configs() -> None:
         "im-attachment.schema.json": ("im-attachment-v1", "audio", "sourcePath", "rawMediaExternalUpload"),
         "im-reply.schema.json": ("im-reply-v1", "reply", "publish", "rawSecretsReturned"),
         "publish-target.schema.json": ("publish-target-v1", "destructiveActionsAllowed", "folderToken", "fileToken"),
-        "office-task-state.schema.json": ("office-task-state-v1", "accepted", "processing", "completed", "unsupported"),
+        "office-task-state.schema.json": ("office-task-state-v2", "objective", "requestedDocuments", "completedWorkUnits", "openQuestions", "completed", "blocked", "rawSecretsReturned"),
         "office-context.schema.json": ("office-context-v1", "version", "channel", "context", "actor", "conversation", "workspace", "sourceRun", "rawSecretsReturned"),
         "office-object.schema.json": ("office-object-v1", "version", "objectType", "channel", "context", "sourceRun", "pointers", "artifactPointer", "rawMediaExternalUpload"),
         "document-lifecycle.schema.json": ("document-lifecycle-v1", "version", "documentId", "channel", "context", "sourceRun", "lifecycleEvents", "diffPointer", "destructiveActionsAllowed", "rawMediaExternalUpload"),
@@ -2110,16 +2221,9 @@ def validate_runtime_configs() -> None:
 
 def validate_dependency_policy() -> None:
     package = load_json(ROOT / "meeting-agent-pi-package" / "package.json")
-    bundled_pi_peers = {
-        "@earendil-works/pi-agent-core",
-        "@earendil-works/pi-ai",
-        "@earendil-works/pi-coding-agent",
-        "@earendil-works/pi-tui",
-        "typebox",
-    }
     for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
         for name, version in package.get(section, {}).items():
-            if version == "*" and not (section == "peerDependencies" and name in bundled_pi_peers):
+            if version == "*":
                 fail(f"wildcard runtime dependency is not allowed: {section}.{name}")
 
 
@@ -2283,12 +2387,23 @@ def validate_runtime_store_backend() -> None:
         "cleanup",
         "pin",
         "unpin",
+        "contract-manifest.json",
+        "validate_runtime_store_result",
     ):
         if marker not in store_text:
             fail(f"runtime_store_cli.py missing store backend marker: {marker}")
     for forbidden in ("postgres", "minio", "boto3", "redis-py"):
         if forbidden in store_text.lower():
             fail(f"runtime_store_cli.py must stay sqlite/filesystem-only, found marker: {forbidden}")
+
+    swift_contract = ROOT / "AgentWorkbench" / "Sources" / "AgentWorkbenchCore" / "RuntimeContract.swift"
+    swift_smoke = ROOT / "AgentWorkbench" / "scripts" / "validate_contract_smoke.sh"
+    if not swift_contract.exists() or not swift_smoke.exists():
+        fail("AgentWorkbench runtime contract loader and smoke script are required")
+    swift_contract_text = swift_contract.read_text(encoding="utf-8")
+    for marker in ("assignment-agent-runtime-contracts-v1", "contract-manifest.json", "execution_profile_unknown", "run_step_status_unknown"):
+        if marker not in swift_contract_text:
+            fail(f"AgentWorkbench runtime contract missing marker: {marker}")
 
     handler_text = handler.read_text(encoding="utf-8")
     for marker in (

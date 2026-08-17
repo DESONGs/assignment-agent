@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RUNTIME_ROOT = ROOT / "runtime-runs"
 DEFAULT_DB = DEFAULT_RUNTIME_ROOT / "_store" / "runtime-store.sqlite"
 STORE_SCHEMA_VERSION = "runtime-store-v1"
+CONTRACT_MANIFEST_PATH = ROOT / "meeting-agent-pi-package" / "runtime" / "contract-manifest.json"
+RUNTIME_CONTRACT_SCHEMA_VERSION = "assignment-agent-runtime-contracts-v1"
 HASH_CHUNK_BYTES = 1024 * 1024
 BOUNDED_PREVIEW_CHARS = 1200
 CONTROL_FILE_NAMES = {
@@ -194,6 +196,35 @@ class StoreError(RuntimeError):
     """Runtime store command error."""
 
 
+def load_runtime_contract_manifest() -> dict[str, Any]:
+    try:
+        manifest = json.loads(CONTRACT_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StoreError(f"runtime contract manifest unavailable: {exc}") from exc
+    if manifest.get("schemaVersion") != RUNTIME_CONTRACT_SCHEMA_VERSION:
+        raise StoreError("runtime contract manifest version mismatch")
+    runtime_store = manifest.get("runtimeStore")
+    if not isinstance(runtime_store, dict) or runtime_store.get("schemaVersion") != STORE_SCHEMA_VERSION:
+        raise StoreError("runtime store contract version mismatch")
+    statuses = runtime_store.get("resultStatuses")
+    if not isinstance(statuses, list) or not all(isinstance(item, str) for item in statuses):
+        raise StoreError("runtime store result status contract invalid")
+    return manifest
+
+
+def validate_runtime_store_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        raise StoreError("runtime store CLI result must be an object")
+    runtime_store = load_runtime_contract_manifest()["runtimeStore"]
+    status = value.get("status")
+    if status is not None and status not in set(runtime_store["resultStatuses"]):
+        raise StoreError(f"runtime store result status is not in contract: {status}")
+    schema_version = value.get("schemaVersion")
+    if schema_version is not None and schema_version != STORE_SCHEMA_VERSION:
+        raise StoreError(f"runtime store result schema mismatch: {schema_version}")
+    return value
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -249,8 +280,9 @@ def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def print_json(value: Any) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+def print_json(value: Any, *, validate: bool = True) -> None:
+    payload = validate_runtime_store_result(value) if validate else value
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def is_inside(parent: Path, child: Path) -> bool:
@@ -2215,5 +2247,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except StoreError as exc:
-        print_json({"schemaVersion": STORE_SCHEMA_VERSION, "status": "error", "error": str(exc)})
+        print_json({"schemaVersion": STORE_SCHEMA_VERSION, "status": "error", "error": str(exc)}, validate=False)
         raise SystemExit(2)

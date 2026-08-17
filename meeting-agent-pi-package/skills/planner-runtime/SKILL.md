@@ -1,15 +1,19 @@
 ---
 name: planner-runtime
-description: Build an auditable planner envelope before enabling optional Agentic Office Runtime capabilities.
+description: Build and reconcile the authoritative Adaptive Execution Ledger before enabling optional Agentic Office Runtime capabilities.
 ---
 
-# Planner Runtime Skill
+# Adaptive Execution Ledger Skill
 
 Use this skill before a non-trivial office task selects integrations, workers, or publish paths.
 
 ## Rules
 
-- Start with `planner_envelope_plan(...)` and record the returned envelope before loading optional capabilities.
+- Start with `planner_envelope_plan(...)` and persist the returned `adaptive-execution-ledger-v1` before executing complex work.
+- Treat the ledger as the only task-control truth. Channel state, checkpoints and Todo are projections.
+- Use `execution_ledger_reconcile(...)` with `expectedRevision` after observations, results or user choices.
+- Use `execution_ledger_todo(...)` to expose progress, clarification questions and next-step choices.
+- Do not start steps whose dependencies are incomplete, and do not complete acceptance-bearing steps without result references or explicit acceptance evidence.
 - Keep `fixedWorkflow=false`: the planner chooses a scenario playbook, not a global meeting-only path.
 - Planner is one of the six runtime decision layers, alongside Model Router,
   Prompt Registry, Document Worker, QA Gate, and Policy Gate. Capability
@@ -26,4 +30,4 @@ Use this skill before a non-trivial office task selects integrations, workers, o
 
 ## Output
 
-Write `planner-envelope.json` with `planner_envelope_write(...)` for auditable runs. Record the same decision in runtime metrics with kind `planner` or `capabilitySelection` when metrics are active.
+Write `planner-envelope.json` with `planner_envelope_write(...)` for auditable and resumable runs. Record the same decision in runtime metrics with kind `planner` or `capabilitySelection` when metrics are active.

@@ -217,7 +217,7 @@ export default function (pi: ExtensionAPI) {
         Type.Literal("capabilitySelection"),
         Type.Literal("packageAudit"),
       ]),
-      payload: Type.Any(),
+      payload: Type.Unknown(),
       outputRoot: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params): Promise<any> {
@@ -251,7 +251,7 @@ export default function (pi: ExtensionAPI) {
         Type.Literal("blocked"),
         Type.Literal("failed"),
       ]),
-      qaGate: Type.Optional(Type.Any()),
+      qaGate: Type.Optional(Type.Unknown()),
       outputRoot: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params): Promise<any> {

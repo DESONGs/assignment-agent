@@ -1,5 +1,5 @@
 {
-  "version": "document-prompt-registry-v2",
+  "version": "document-prompt-registry-v3",
   "documents": [
     {
       "docType": "meeting-minutes",
@@ -18,7 +18,7 @@
       "parallelizable": true,
       "operationOverlays": { "document_revision": "document-revision-overlay.md" },
       "dependsOn": [],
-      "requiredSections": ["产品定位", "目标用户", "核心场景", "MVP 范围", "暂不做范围", "功能需求", "非功能需求", "验收标准", "待确认问题"]
+      "requiredSections": ["产品定位", "目标用户", "核心场景", "需求与假设分层", "MVP 范围", "暂不做范围", "功能需求", "非功能需求", "验收标准", "PRD 就绪度与客户澄清问题", "待确认问题"]
     },
     {
       "docType": "ops-plan",
@@ -45,7 +45,7 @@
       "operationOverlays": { "document_revision": "document-revision-overlay.md" },
       "dependsOn": ["prd", "tech-architecture"],
       "audience": "FDE",
-      "requiredSections": ["FDE 沟通使用方式", "已确认事实摘要", "PRD 待确认项", "技术架构待确认项", "现场部署与权限确认", "输入材料确认", "输出交付物确认", "验收标准确认", "风险与阻塞项", "下一次沟通问题清单"]
+      "requiredSections": ["FDE 沟通使用方式", "已确认事实摘要", "产品发现与需求缺口", "PRD 待确认项", "技术架构待确认项", "现场部署与权限确认", "输入材料确认", "输出交付物确认", "验收标准确认", "风险与阻塞项", "下一次沟通问题清单"]
     }
   ]
 }

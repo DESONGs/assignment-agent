@@ -1,0 +1,40 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "strict": false,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false
+  },
+  "files": [
+    "tools/asr_diarization_helpers.mjs",
+    "tools/asr_media_formats.mjs",
+    "tools/audio_normalize_helpers.mjs",
+    "tools/dashscope_asr_client.mjs",
+    "tools/feishu_agent_task_handler.mjs",
+    "tools/feishu_bot_event_gateway.mjs",
+    "tools/feishu_document_review_context_helpers.mjs",
+    "tools/feishu_event_runner.mjs",
+    "tools/feishu_publish_organize_cli.mjs",
+    "tools/feishu_publish_taxonomy.mjs",
+    "tools/feishu_wiki_publish_helpers.mjs",
+    "tools/im_file_context_helpers.mjs",
+    "tools/local_docker_document_worker.mjs",
+    "tools/local_docker_runtime_queue.mjs",
+    "tools/meeting_intelligence_helpers.mjs",
+    "tools/meeting_memory_helpers.mjs",
+    "tools/meeting_workflow_helpers.mjs",
+    "tools/pi_meeting_orchestration_helpers.mjs",
+    "tools/public_url_security.mjs",
+    "tools/public_url_source_cli.mjs",
+    "tools/public_url_source_helpers.mjs",
+    "tools/public_url_source_pack_helpers.mjs",
+    "tools/runtime_tool_cli.mjs",
+    "tools/single_mix_asr_helpers.mjs",
+    "tools/task_execution_runner.mjs",
+    "tools/task_router.mjs",
+    "tools/wechat_event_adapter.mjs"
+  ]
+}

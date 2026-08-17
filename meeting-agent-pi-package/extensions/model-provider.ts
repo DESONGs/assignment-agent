@@ -1,35 +1,35 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
-type ProviderRecord = {
-  provider: string;
-  protocol: "openai-chat-completions" | "mock";
-  apiKeyEnv: string | null;
-  baseUrlEnv: string | null;
-  defaultBaseUrl: string | null;
-  chatCompletionsPath: string | null;
-  requiredEnv: string[];
-  allowedModels?: string[];
-  supportsFileInput?: boolean;
-  supportsTextFallback?: boolean;
-};
+import {
+  assertModelGenerationResult,
+  isModelRouteSelection,
+  parseModelProviderRegistry,
+  type JsonObject,
+  type ModelGenerationBlocked,
+  type ModelGenerationResult,
+  type ModelProviderRecord,
+  type ModelUsage,
+} from "../dist/index.js";
 
 type GenerateTextParams = {
   provider: string;
   model: string;
   prompt: string;
-  systemPrompt?: string;
-  temperature?: number;
-  maxTokens?: number;
-  timeoutMs?: number;
-  mockResponse?: string;
-  stream?: boolean;
-  streamTracePath?: string;
-  streamTraceSummaryPath?: string;
-  streamTraceMeta?: Record<string, unknown>;
+  systemPrompt?: string | undefined;
+  temperature?: number | undefined;
+  maxTokens?: number | undefined;
+  thinkingMode?: "enabled" | "disabled" | undefined;
+  reasoningEffort?: "high" | "max" | undefined;
+  responseFormat?: "json_object" | undefined;
+  timeoutMs?: number | undefined;
+  mockResponse?: string | undefined;
+  stream?: boolean | undefined;
+  streamTracePath?: string | undefined;
+  streamTraceSummaryPath?: string | undefined;
+  streamTraceMeta?: Record<string, unknown> | undefined;
 };
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TIMEOUT_MS = 600_000;
 
 function loadProviders() {
-  return JSON.parse(readFileSync(providersPath, "utf8")) as { version: string; providers: ProviderRecord[] };
+  return parseModelProviderRegistry(JSON.parse(readFileSync(providersPath, "utf8")));
 }
 
 function providerRecord(provider: string) {
@@ -59,10 +59,32 @@ function containsSecretLikeValue(value: unknown) {
   return SECRET_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function routeMatchesProvider(route: any, provider: string, model: string) {
-  if (!route || typeof route !== "object") return false;
-  const selected = route.selected ?? route.modelRoute?.selected;
-  return route.status === "selected" && selected?.provider === provider && selected?.model === model;
+function routeMatchesProvider(route: unknown, provider: string, model: string) {
+  return isModelRouteSelection(route, provider, model);
+}
+
+function asObject(value: unknown): JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+function parseResponseObject(value: string): JsonObject | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as JsonObject : null;
+  } catch {
+    return null;
+  }
+}
+
+function responseChoice(value: JsonObject | null): JsonObject {
+  const choices = Array.isArray(value?.choices) ? value.choices : [];
+  return asObject(choices[0]);
+}
+
+function responseUsage(value: JsonObject | null): ModelUsage | null {
+  const usage = value?.usage;
+  return typeof usage === "object" && usage !== null && !Array.isArray(usage) ? usage as ModelUsage : null;
 }
 
 function redact(value: string) {
@@ -116,14 +138,14 @@ function effectiveTimeoutMs(value?: number) {
   return Math.min(Math.max(1, Math.floor(requested)), Math.floor(max));
 }
 
-function normalizeBaseUrl(record: ProviderRecord) {
+function normalizeBaseUrl(record: ModelProviderRecord) {
   const raw = record.baseUrlEnv ? process.env[record.baseUrlEnv]?.trim() : "";
   const value = raw || record.defaultBaseUrl || "";
   if (!value) return null;
   return value.replace(/\/+$/, "");
 }
 
-function providerStatus(record: ProviderRecord) {
+function providerStatus(record: ModelProviderRecord) {
   const missingEnv = record.requiredEnv.filter((name) => !process.env[name]?.trim());
   const configuredEnv = record.requiredEnv.filter((name) => process.env[name]?.trim());
   const baseUrl = normalizeBaseUrl(record);
@@ -150,7 +172,7 @@ function providerStatus(record: ProviderRecord) {
 function mockSections(prompt: string) {
   const marker = prompt.match(/## 目标章节[^\n]*\n\n([\s\S]*?)(?:\n\n## |$)/);
   if (!marker) return [];
-  return marker[1]
+  return (marker[1] ?? "")
     .split(/\r?\n/)
     .map((line) => line.match(/^\s*[-*]\s+(.+?)\s*$/)?.[1])
     .filter(Boolean) as string[];
@@ -173,7 +195,7 @@ function mockMarkdown(params: GenerateTextParams) {
   return `# Mock ${title}\n\n## 已确认事实\n\n- mock provider 已接收渲染后的正式 prompt 或 bounded context pack。\n\n## 推断\n\n- 这是并行 document worker 的 smoke 输出，不代表真实会议结论。\n\n## 待确认\n\n- 真实 provider 配置和 evidence 覆盖需要在生产运行时确认。\n`;
 }
 
-export async function generateText(params: GenerateTextParams) {
+export async function generateText(params: GenerateTextParams): Promise<ModelGenerationResult> {
   const tracePath = safeWorkspacePath(params.streamTracePath);
   const traceSummaryPath = safeWorkspacePath(params.streamTraceSummaryPath);
   const traceMeta = params.streamTraceMeta ?? {};
@@ -183,7 +205,7 @@ export async function generateText(params: GenerateTextParams) {
   let requestStartedAtMs = traceStartedAtMs;
   let firstByteAt: string | null = null;
   let streamChunkCount = 0;
-  const blocked = (reason: string, extra: Record<string, unknown> = {}) => {
+  const blocked = (reason: string, extra: JsonObject = {}): ModelGenerationBlocked => {
     const completedAt = new Date().toISOString();
     const result = {
       status: "blocked",
@@ -206,13 +228,12 @@ export async function generateText(params: GenerateTextParams) {
       chunkCount: streamChunkCount,
     };
     appendTrace(tracePath, {
-      schemaVersion: "model-stream-delta-v1",
-      event: "stream_blocked",
       ...summary,
+      event: "stream_blocked",
       at: completedAt,
     });
     writeTraceSummary(traceSummaryPath, tracePath, summary);
-    return result;
+    return assertModelGenerationResult(result) as ModelGenerationBlocked;
   };
   try {
     if (!params.prompt || typeof params.prompt !== "string") {
@@ -230,7 +251,7 @@ export async function generateText(params: GenerateTextParams) {
     }
     const status = providerStatus(record);
     if (record.protocol === "mock") {
-      return {
+      return assertModelGenerationResult({
         status: "completed",
         provider: record.provider,
         model: params.model,
@@ -239,7 +260,7 @@ export async function generateText(params: GenerateTextParams) {
         rawSecretsReturned: false,
         requestBodyReturned: false,
         mockProvider: true,
-      };
+      });
     }
     if (!status.ready) {
       return blocked("model_provider_unavailable", {
@@ -291,6 +312,15 @@ export async function generateText(params: GenerateTextParams) {
         ].filter(Boolean),
         temperature: params.temperature ?? 0.2,
         max_tokens: params.maxTokens ?? 4000,
+        ...(record.provider === "deepseek" && params.thinkingMode
+          ? { thinking: { type: params.thinkingMode } }
+          : {}),
+        ...(record.provider === "deepseek" && params.reasoningEffort
+          ? { reasoning_effort: params.reasoningEffort }
+          : {}),
+        ...(record.provider === "deepseek" && params.responseFormat === "json_object"
+          ? { response_format: { type: "json_object" } }
+          : {}),
         ...(params.stream === true ? { stream: true } : {}),
       }),
       signal: controller.signal,
@@ -313,19 +343,15 @@ export async function generateText(params: GenerateTextParams) {
       if (!response.ok) {
         clearTimeout(timeout);
         const responseText = await response.text();
-        let parsed: any = null;
-        try {
-          parsed = responseText ? JSON.parse(responseText) : null;
-        } catch {
-          parsed = null;
-        }
+        const parsed = parseResponseObject(responseText);
+        const error = asObject(parsed?.error).message;
         const blocked = {
           status: "blocked",
           reason: "model_provider_http_error",
           provider: record.provider,
           model: params.model,
           httpStatus: response.status,
-          error: redact(parsed?.error?.message ?? responseText),
+          error: redact(String(error ?? responseText)),
           rawSecretsReturned: false,
           requestBodyReturned: false,
         };
@@ -351,7 +377,7 @@ export async function generateText(params: GenerateTextParams) {
           firstByteAt,
           chunkCount: streamChunkCount,
         });
-        return blocked;
+        return assertModelGenerationResult(blocked);
       }
       if (!response.body) {
         clearTimeout(timeout);
@@ -377,7 +403,7 @@ export async function generateText(params: GenerateTextParams) {
       let content = "";
       let seq = 0;
       let finishReason: string | null = null;
-      let usage: any = null;
+      let usage: ModelUsage | null = null;
       let doneSeen = false;
       try {
         while (true) {
@@ -396,10 +422,8 @@ export async function generateText(params: GenerateTextParams) {
               doneSeen = true;
               continue;
             }
-            let parsed: any = null;
-            try {
-              parsed = JSON.parse(data);
-            } catch {
+            const parsed = parseResponseObject(data);
+            if (!parsed) {
               appendTrace(tracePath, {
                 schemaVersion: "model-stream-delta-v1",
                 event: "stream_parse_error",
@@ -414,10 +438,12 @@ export async function generateText(params: GenerateTextParams) {
               });
               continue;
             }
-            usage = parsed?.usage ?? usage;
-            const choice = parsed?.choices?.[0] ?? {};
-            finishReason = choice.finish_reason ?? finishReason;
-            const delta = choice.delta?.content ?? choice.text ?? choice.message?.content ?? "";
+            usage = responseUsage(parsed) ?? usage;
+            const choice = responseChoice(parsed);
+            const deltaObject = asObject(choice.delta);
+            const messageObject = asObject(choice.message);
+            finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : finishReason;
+            const delta = deltaObject.content ?? choice.text ?? messageObject.content ?? "";
             if (delta) {
               content += delta;
               appendTrace(tracePath, {
@@ -466,16 +492,16 @@ export async function generateText(params: GenerateTextParams) {
       writeTraceSummary(traceSummaryPath, tracePath, summary);
       appendTrace(tracePath, { event: "stream_completed", ...summary });
       if (!content) {
-        return {
+        return assertModelGenerationResult({
           status: "blocked",
           reason: "model_provider_empty_response",
           provider: record.provider,
           model: params.model,
           rawSecretsReturned: false,
           requestBodyReturned: false,
-        };
+        });
       }
-      return {
+      return assertModelGenerationResult({
         status: "completed",
         provider: record.provider,
         model: params.model,
@@ -486,39 +512,37 @@ export async function generateText(params: GenerateTextParams) {
         requestBodyReturned: false,
         streamTracePath: tracePath,
         streamTraceSummaryPath: traceSummaryPath ?? tracePath?.replace(/\.ndjson$/i, ".summary.json") ?? null,
-      };
+      });
     }
 
     const responseText = await response.text().finally(() => clearTimeout(timeout));
-    let parsed: any = null;
-    try {
-      parsed = responseText ? JSON.parse(responseText) : null;
-    } catch {
-      parsed = null;
-    }
+    const parsed = parseResponseObject(responseText);
     if (!response.ok) {
+      const error = asObject(parsed?.error).message;
       return blocked("model_provider_http_error", {
         provider: record.provider,
         httpStatus: response.status,
-        error: redact(parsed?.error?.message ?? responseText),
+        error: redact(String(error ?? responseText)),
       });
     }
-    const content = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.text ?? "";
+    const choice = responseChoice(parsed);
+    const message = asObject(choice.message);
+    const content = message.content ?? choice.text ?? "";
     if (!content) {
       return blocked("model_provider_empty_response", {
         provider: record.provider,
       });
     }
-    return {
+    return assertModelGenerationResult({
       status: "completed",
       provider: record.provider,
       model: params.model,
-      content,
-      usage: parsed?.usage ?? null,
-      finishReason: parsed?.choices?.[0]?.finish_reason ?? null,
+      content: String(content),
+      usage: responseUsage(parsed),
+      finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : null,
       rawSecretsReturned: false,
       requestBodyReturned: false,
-    };
+    });
   } catch (error) {
     const completedAt = new Date().toISOString();
     const reason = error instanceof Error && error.name === "AbortError" ? "model_provider_request_timeout" : "model_provider_request_failed";
@@ -540,13 +564,12 @@ export async function generateText(params: GenerateTextParams) {
       requestBodyReturned: false,
     };
     appendTrace(tracePath, {
-      schemaVersion: "model-stream-delta-v1",
-      event: "stream_blocked",
       ...summary,
+      event: "stream_blocked",
       at: completedAt,
     });
     writeTraceSummary(traceSummaryPath, tracePath, summary);
-    return {
+    return assertModelGenerationResult({
       status: "blocked",
       reason,
       provider: params.provider,
@@ -558,7 +581,7 @@ export async function generateText(params: GenerateTextParams) {
       chunkCount: streamChunkCount,
       rawSecretsReturned: false,
       requestBodyReturned: false,
-    };
+    });
   }
 }
 
@@ -599,20 +622,23 @@ export default function (pi: ExtensionAPI) {
       systemPrompt: Type.Optional(Type.String()),
       temperature: Type.Optional(Type.Number()),
       maxTokens: Type.Optional(Type.Number()),
+      thinkingMode: Type.Optional(Type.Union([Type.Literal("enabled"), Type.Literal("disabled")])),
+      reasoningEffort: Type.Optional(Type.Union([Type.Literal("high"), Type.Literal("max")])),
+      responseFormat: Type.Optional(Type.Literal("json_object")),
       timeoutMs: Type.Optional(Type.Number()),
       mockResponse: Type.Optional(Type.String()),
-      modelRoute: Type.Optional(Type.Any({ description: "Output from model_route_plan. Required for non-mock provider calls." })),
+      modelRoute: Type.Optional(Type.Unknown({ description: "Output from model_route_plan. Required for non-mock provider calls." })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<ModelGenerationResult>> {
       if (params.provider !== "mock" && !routeMatchesProvider(params.modelRoute, params.provider, params.model)) {
-        const blocked = {
+        const blocked = assertModelGenerationResult({
           status: "blocked",
           reason: "model_route_plan_required",
           provider: params.provider,
           model: params.model,
           rawSecretsReturned: false,
           requestBodyReturned: false,
-        };
+        });
         return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
       }
       const details = await generateText(params);

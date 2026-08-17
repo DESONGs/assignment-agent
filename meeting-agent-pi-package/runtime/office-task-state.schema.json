@@ -1,30 +1,26 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://meeting-agent.local/schemas/office-task-state.schema.json",
-  "title": "Office Task State Machine",
+  "title": "Office Task State Projection",
   "type": "object",
-  "required": ["schemaVersion", "taskId", "channel", "status", "steps", "rawSecretsReturned"],
+  "required": ["schemaVersion", "objective", "operation", "requestedDocuments", "completedWorkUnits", "openQuestions", "rawSecretsReturned"],
   "properties": {
-    "schemaVersion": { "const": "office-task-state-v1" },
-    "taskId": { "type": "string" },
-    "channel": { "enum": ["feishu", "wechat", "local"] },
-    "status": {
-      "enum": ["received", "accepted", "planning", "waiting_input", "processing", "qa_review", "publishing", "completed", "needs_fix", "unsupported", "failed", "cancelled", "blocked"]
-    },
-    "steps": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["name", "status", "at"],
-        "properties": {
-          "name": { "type": "string" },
-          "status": { "enum": ["pending", "running", "completed", "needs_fix", "blocked", "failed", "skipped"] },
-          "at": { "type": "string" }
-        },
-        "additionalProperties": true
-      }
-    },
-    "rawMediaExternalUpload": { "const": false },
+    "schemaVersion": { "const": "office-task-state-v2" },
+    "planId": { "type": ["string", "null"] },
+    "planRevision": { "type": ["integer", "null"] },
+    "objective": { "type": "string" },
+    "operation": { "type": "string" },
+    "requestedDocuments": { "type": "array", "items": { "type": "string" } },
+    "sourceCount": { "type": "integer", "minimum": 0 },
+    "segmentCount": { "type": "integer", "minimum": 0 },
+    "meetingState": { "type": ["object", "null"] },
+    "phase": { "enum": ["pending", "running", "completed", "blocked", "needs_fix", "failed"] },
+    "completedDocuments": { "type": "array", "items": { "type": "string" } },
+    "pendingDocuments": { "type": "array", "items": { "type": "string" } },
+    "completedWorkUnits": { "type": "array", "items": { "type": "object" } },
+    "openQuestions": { "type": "array", "items": { "type": "string" } },
+    "updatedAt": { "type": "string" },
+    "rawMediaExternalUpload": { "type": "boolean" },
     "rawSecretsReturned": { "const": false }
   },
   "additionalProperties": true

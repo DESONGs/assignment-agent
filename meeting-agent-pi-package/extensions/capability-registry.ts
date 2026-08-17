@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { accessSync, constants, readFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
@@ -29,6 +29,23 @@ type Capability = {
   candidatePackages?: string[];
   testCommand?: string;
   guardrails?: string[];
+};
+
+type CapabilityCheckToolDetails = ReturnType<typeof capabilityCheck> | {
+  status: string;
+  reason: string;
+  capabilityId: string;
+  availableCapabilityIds: string[];
+};
+
+type CapabilityEnableToolDetails = {
+  status: string;
+  reason: string;
+  capabilityId: string;
+  capability?: ReturnType<typeof capabilityCheck>;
+  mutationPerformed?: boolean;
+  packageInstallRequired?: string[];
+  nextSteps?: string[];
 };
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
@@ -246,7 +263,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       capabilityId: Type.String(),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<CapabilityCheckToolDetails>> {
       const registry = loadRegistry();
       const capability = registry.capabilities.find((item) => item.capabilityId === params.capabilityId);
       if (!capability) {
@@ -271,7 +288,7 @@ export default function (pi: ExtensionAPI) {
       capabilityId: Type.String(),
       reason: Type.String({ description: "Why this capability is needed for the current task." }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<CapabilityEnableToolDetails>> {
       const registry = loadRegistry();
       const capability = registry.capabilities.find((item) => item.capabilityId === params.capabilityId);
       if (!capability) {
@@ -283,6 +300,7 @@ export default function (pi: ExtensionAPI) {
       const details = {
         status: securityReviewRequired ? "needs_security_review" : check.ready ? "ready_to_enable" : "needs_setup",
         reason: params.reason,
+        capabilityId: params.capabilityId,
         capability: check,
         mutationPerformed: false,
         packageInstallRequired:
@@ -295,7 +313,7 @@ export default function (pi: ExtensionAPI) {
           capability.testCommand ? `Run smoke test: ${capability.testCommand}` : null,
           securityReviewRequired ? "Record package-audit artifact before install or enable." : null,
           securityReviewRequired ? "Keep defaultLoad=false until security review and smoke test pass." : null,
-        ].filter(Boolean),
+        ].filter((step): step is string => typeof step === "string"),
       };
       return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
     },

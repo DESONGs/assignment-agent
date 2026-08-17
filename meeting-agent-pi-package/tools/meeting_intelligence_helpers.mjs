@@ -299,6 +299,28 @@ export function buildFallbackMeetingAnalysis({ segments, participantMap, asrSumm
     },
     topicMap,
     evidenceMap: [],
+    productDiscovery: {
+      schemaVersion: "meeting-product-discovery-v1",
+      opportunitySignals: [],
+      userProblems: [],
+      targetUsers: [],
+      workflows: [],
+      desiredOutcomes: [],
+      constraints: [],
+      assumptions: [],
+      acceptanceSignals: [],
+      clarificationQuestions: topicMap.flatMap((topic) => topic.openQuestions.map((text) => ({
+        text,
+        question: text,
+        state: "unresolved",
+        priority: "medium",
+        why: "确定性 fallback 无法可靠归纳产品发现，需要模型或用户复核。",
+        blocks: ["prd"],
+        evidenceSegmentIds: topic.evidenceSegmentIds.slice(0, 8),
+      }))).slice(0, 12),
+      prdReadiness: { status: "insufficient", score: 0, coveredDimensions: 0, totalDimensions: 6, highPriorityGapCount: 0, blockingQuestions: [] },
+      nextStepOptions: ["review-customer-questions", "keep-meeting-minutes-only"],
+    },
     agentPlan: {
       meetingComplexity: topicMap.length > 3 ? "complex" : "simple",
       narrativeMode: topicMap.length > 3 ? "topic_driven" : "decision_driven",
@@ -306,6 +328,8 @@ export function buildFallbackMeetingAnalysis({ segments, participantMap, asrSumm
       reviewStrategy: "deterministic_and_human_review",
       suggestedFollowUpDocuments: [],
       focusAreas: ["确认核心议题", "确认决策与行动项"],
+      prdReadiness: { status: "insufficient", score: 0 },
+      nextStepOptions: ["review-customer-questions", "keep-meeting-minutes-only"],
     },
     participantResolution: participantMap,
   };
@@ -338,6 +362,24 @@ export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummar
       risks: [{ text: "string", evidenceSegmentIds: [] }],
       openQuestions: [{ text: "string", evidenceSegmentIds: [] }],
     }],
+    productDiscovery: {
+      opportunitySignals: [{ text: "潜在需求或价值机会", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      userProblems: [{ text: "用户问题/痛点", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      targetUsers: [{ text: "目标用户或角色", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      workflows: [{ text: "当前工作流、触发、输入与输出", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      desiredOutcomes: [{ text: "期望结果与价值时刻", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      constraints: [{ text: "范围、技术、数据、权限、预算或交付约束", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      assumptions: [{ text: "尚未验证的产品假设", state: "inferred|unresolved", evidenceSegmentIds: [] }],
+      acceptanceSignals: [{ text: "可观察的成功/验收信号", state: "confirmed|inferred|unresolved", evidenceSegmentIds: [] }],
+      clarificationQuestions: [{
+        question: "下一次最值得向客户确认的问题",
+        why: "为什么需要问",
+        priority: "high|medium|low",
+        blocks: ["prd|architecture|implementation|acceptance|delivery"],
+        evidenceSegmentIds: [],
+      }],
+      nextStepOptions: ["review-customer-questions|generate-prd|draft-prd-with-open-questions|generate-customer-requirement-checklist|keep-meeting-minutes-only"],
+    },
     agentPlan: {
       meetingComplexity: "simple|complex",
       narrativeMode: "decision_driven|topic_driven|chronological",
@@ -356,6 +398,9 @@ export function buildMeetingAnalysisPrompt({ segments, participantMap, asrSummar
       "参会人 alias 是稳定身份键。用户显式映射的姓名可直接使用；也允许根据自我介绍、他人称呼、上下文关系或已登记声纹匹配提出姓名候选，但必须写入 participantIdentityCandidates，包含依据、真实 segment id 与置信度。",
       "未知 speaker id/声纹聚类本身不能凭空推出姓名。未经确认的姓名候选不得成为 owner、承诺、权限或长期事实，且不能覆盖 participant map 的 displayName。",
       "必须区分提议、异议、讨论中判断、已达成共识、被否决方案和未决事项。",
+      "如果会议涉及客户访谈、产品开发、AI 能力、现有流程、痛点、范围或验收，必须同时建立 productDiscovery。它不是自动写 PRD，而是区分已确认需求、合理推断、假设与客户待确认问题。",
+      "clarificationQuestions 必须具体、可直接用于下一次客户沟通，并说明 why、priority、blocks 与证据。不要提已经由会议明确回答的问题。",
+      "根据 productDiscovery 的完整度决定 suggestedFollowUpDocuments：需求仍模糊时优先 customer-requirement-checklist；用户问题、场景和验收已较清楚时可以建议 prd；不要机械建议所有文档。",
       "quality=needs_review 的片段可以形成风险或待确认问题，但不得单独形成 agreed decision、明确 owner、日期、金额或承诺。",
       "议题数量和结构由会议内容决定，不要套固定行业关键词。每个重要判断必须引用实际 segment id。",
       "若证据不足，字段使用待确认或 unresolved，不要补充外部事实。",
@@ -426,6 +471,83 @@ function evidenceQuality(ids, byId) {
   if (evidence.every((segment) => segment.quality === "needs_review")) return "needs_review_only";
   if (evidence.some((segment) => segment.quality === "needs_review")) return "mixed";
   return "ready";
+}
+
+function normalizeDiscoveryItems(values, validIds, options = {}) {
+  const allowedStates = new Set(options.allowedStates ?? ["confirmed", "inferred", "unresolved"]);
+  return (Array.isArray(values) ? values : [])
+    .map((value) => typeof value === "string" ? { text: value } : value)
+    .map((value) => {
+      const text = String(value?.text ?? value?.title ?? value?.question ?? "").trim().slice(0, 800);
+      if (!text) return null;
+      const evidenceSegmentIds = normalizeEvidenceIds(value?.evidenceSegmentIds, validIds);
+      let state = allowedStates.has(String(value?.state)) ? String(value.state) : evidenceSegmentIds.length > 0 ? "inferred" : "unresolved";
+      if (state === "confirmed" && evidenceSegmentIds.length === 0) state = "unresolved";
+      return {
+        text,
+        state,
+        priority: ["high", "medium", "low"].includes(String(value?.priority)) ? String(value.priority) : "medium",
+        why: String(value?.why ?? value?.reason ?? "").trim().slice(0, 500),
+        blocks: uniqueStrings(value?.blocks, 12),
+        evidenceSegmentIds,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, options.limit ?? 30);
+}
+
+function normalizeProductDiscovery(parsed, validIds) {
+  const source = parsed?.productDiscovery ?? {};
+  const opportunitySignals = normalizeDiscoveryItems(source.opportunitySignals ?? source.potentialNeeds, validIds);
+  const userProblems = normalizeDiscoveryItems(source.userProblems ?? source.painPoints, validIds);
+  const targetUsers = normalizeDiscoveryItems(source.targetUsers, validIds);
+  const workflows = normalizeDiscoveryItems(source.workflows ?? source.coreScenarios, validIds);
+  const desiredOutcomes = normalizeDiscoveryItems(source.desiredOutcomes ?? source.successOutcomes, validIds);
+  const constraints = normalizeDiscoveryItems(source.constraints, validIds);
+  const assumptions = normalizeDiscoveryItems(source.assumptions, validIds, { allowedStates: ["inferred", "unresolved"] });
+  const acceptanceSignals = normalizeDiscoveryItems(source.acceptanceSignals ?? source.acceptanceCriteria, validIds);
+  const clarificationQuestions = normalizeDiscoveryItems(source.clarificationQuestions ?? source.questions, validIds).map((item) => ({
+    ...item,
+    question: item.text,
+  }));
+  const evidenceBackedSignals = [opportunitySignals, userProblems, targetUsers, workflows, desiredOutcomes, constraints, acceptanceSignals]
+    .flat()
+    .filter((item) => item.evidenceSegmentIds.length > 0).length;
+  const highPriorityGaps = clarificationQuestions.filter((item) => item.priority === "high").length;
+  const dimensions = [userProblems, targetUsers, workflows, desiredOutcomes, constraints, acceptanceSignals];
+  const coveredDimensions = dimensions.filter((items) => items.some((item) => item.state === "confirmed" || item.evidenceSegmentIds.length > 0)).length;
+  const readinessScore = Math.max(0, Math.min(100, Math.round((coveredDimensions / dimensions.length) * 85 - highPriorityGaps * 8 + Math.min(15, evidenceBackedSignals))));
+  const prdReadiness = {
+    status: readinessScore >= 75 && highPriorityGaps === 0 ? "ready" : readinessScore >= 45 ? "needs_clarification" : "insufficient",
+    score: readinessScore,
+    coveredDimensions,
+    totalDimensions: dimensions.length,
+    highPriorityGapCount: highPriorityGaps,
+    blockingQuestions: clarificationQuestions.filter((item) => item.priority === "high").map((item) => item.question),
+  };
+  const explicitNextSteps = uniqueStrings(source.nextStepOptions, 8);
+  const nextStepOptions = explicitNextSteps.length > 0
+    ? explicitNextSteps
+    : [
+        clarificationQuestions.length > 0 ? "review-customer-questions" : null,
+        prdReadiness.status === "ready" ? "generate-prd" : "draft-prd-with-open-questions",
+        "generate-customer-requirement-checklist",
+        "keep-meeting-minutes-only",
+      ].filter(Boolean);
+  return {
+    schemaVersion: "meeting-product-discovery-v1",
+    opportunitySignals,
+    userProblems,
+    targetUsers,
+    workflows,
+    desiredOutcomes,
+    constraints,
+    assumptions,
+    acceptanceSignals,
+    clarificationQuestions,
+    prdReadiness,
+    nextStepOptions,
+  };
 }
 
 function buildEvidenceMap(topicMap, byId) {
@@ -501,6 +623,7 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
   }).filter(Boolean).slice(0, 24);
   if (topicMap.length === 0) return null;
   const evidenceMap = buildEvidenceMap(topicMap, byId);
+  const productDiscovery = normalizeProductDiscovery(parsed, validIds);
   const plan = parsed.agentPlan ?? {};
   const suggestedDocs = uniqueStrings(plan.suggestedFollowUpDocuments, 8).filter((doc) => ["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"].includes(doc));
   const allowedTopics = uniqueStrings(parsed.allowedTopics?.length ? parsed.allowedTopics : topicMap.map((topic) => topic.title), 80);
@@ -543,6 +666,7 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
     },
     topicMap,
     evidenceMap,
+    productDiscovery,
     agentPlan: {
       meetingComplexity: plan.meetingComplexity === "simple" ? "simple" : "complex",
       narrativeMode: ["decision_driven", "topic_driven", "chronological"].includes(plan.narrativeMode) ? plan.narrativeMode : "topic_driven",
@@ -550,6 +674,8 @@ export function normalizeMeetingAnalysisResponse({ content, segments, participan
       reviewStrategy: ["deterministic", "independent_model", "human_confirmation"].includes(plan.reviewStrategy) ? plan.reviewStrategy : "independent_model",
       suggestedFollowUpDocuments: suggestedDocs,
       focusAreas: uniqueStrings(plan.focusAreas, 30),
+      prdReadiness: productDiscovery.prdReadiness,
+      nextStepOptions: productDiscovery.nextStepOptions,
     },
     participantResolution,
   };

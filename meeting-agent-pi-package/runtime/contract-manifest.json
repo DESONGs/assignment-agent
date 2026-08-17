@@ -1,0 +1,164 @@
+{
+  "schemaVersion": "assignment-agent-runtime-contracts-v1",
+  "generatedFrom": [
+    "src/contracts/task-contracts.ts",
+    "src/contracts/runtime-boundary-contracts.ts"
+  ],
+  "task": {
+    "taskTypes": [
+      "meeting_minutes",
+      "doc_writer",
+      "document_revision",
+      "feishu_bot",
+      "wechat_adapter",
+      "document_lifecycle",
+      "retrieval",
+      "calendar",
+      "task_management",
+      "research",
+      "knowledge_source",
+      "mixed"
+    ],
+    "executionProfiles": [
+      "unsupported",
+      "fast_answer",
+      "file_summary",
+      "audio_minutes",
+      "document_generation",
+      "document_revision",
+      "multi_source_synthesis",
+      "url_source_pack",
+      "publish_only"
+    ],
+    "reasoningDepths": [
+      "fast",
+      "deep"
+    ],
+    "runStatuses": [
+      "accepted",
+      "running",
+      "completed",
+      "needs_fix",
+      "blocked",
+      "failed"
+    ],
+    "runStepStatuses": [
+      "pending",
+      "running",
+      "completed",
+      "needs_fix",
+      "blocked",
+      "failed",
+      "skipped"
+    ],
+    "ledgerStatuses": [
+      "active",
+      "awaiting_user",
+      "blocked",
+      "completed",
+      "cancelled"
+    ],
+    "ledgerStepStatuses": [
+      "pending",
+      "ready",
+      "in_progress",
+      "completed",
+      "blocked",
+      "failed",
+      "cancelled",
+      "skipped"
+    ]
+  },
+  "modelProvider": {
+    "protocols": [
+      "openai-chat-completions",
+      "mock"
+    ],
+    "generationStatuses": [
+      "completed",
+      "blocked"
+    ],
+    "routeStatuses": [
+      "selected",
+      "blocked"
+    ]
+  },
+  "cloudAsr": {
+    "provider": "aliyun_dashscope_paraformer",
+    "summaryStatuses": [
+      "complete",
+      "needs_review"
+    ],
+    "inputModes": [
+      "file",
+      "realtime"
+    ]
+  },
+  "feishu": {
+    "eventSources": [
+      "lark-cli-event-consume",
+      "sdk-gateway",
+      "sdk-long-connection",
+      "fixture",
+      "stdin",
+      "handler-direct"
+    ],
+    "runStatuses": [
+      "accepted",
+      "running",
+      "completed",
+      "needs_fix",
+      "blocked",
+      "failed"
+    ],
+    "runStepStatuses": [
+      "pending",
+      "running",
+      "completed",
+      "needs_fix",
+      "blocked",
+      "failed",
+      "skipped"
+    ],
+    "executionProfiles": [
+      "unsupported",
+      "fast_answer",
+      "file_summary",
+      "audio_minutes",
+      "document_generation",
+      "document_revision",
+      "multi_source_synthesis",
+      "url_source_pack",
+      "publish_only"
+    ],
+    "reasoningDepths": [
+      "fast",
+      "deep"
+    ]
+  },
+  "runtimeStore": {
+    "schemaVersion": "runtime-store-v1",
+    "resultStatuses": [
+      "blocked",
+      "clean",
+      "completed",
+      "deleted",
+      "error",
+      "failed",
+      "found",
+      "indexed",
+      "initialized",
+      "kept_shared_cas_object",
+      "missing",
+      "moved",
+      "not_found",
+      "pinned",
+      "planned",
+      "polluted",
+      "quarantined",
+      "stored",
+      "unpinned",
+      "would_move"
+    ]
+  }
+}

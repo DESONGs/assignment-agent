@@ -9,8 +9,8 @@ Use this skill for Feishu bidirectional work:
 
 ```text
 Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_agent_task_handler
--> file-context -> task_execution_runner for audio minutes or PI document runtime for files
--> Planner Envelope -> Capability Registry -> Model Router -> local ASR/document runtime
+-> file-context / explicit public URL -> task_execution_runner for audio minutes, URL source pack, or PI document runtime
+-> Adaptive Execution Ledger -> Capability Registry -> Model Router -> ASR/document runtime
 -> QA Gate -> Policy Gate -> lark-cli publish/reply
 ```
 
@@ -28,7 +28,7 @@ Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_age
   file-context creation, PI task prompt creation, publish/reply execution,
   and state transitions.
 - Use `im-event-v1`, `im-attachment-v1`, `im-reply-v1`, `publish-target-v1`,
-  and `office-task-state-v1` as the cross-IM contract so future WeChat adapters
+  and `office-task-state-v2` as the cross-IM projection so future WeChat adapters
   do not duplicate the Feishu flow. WeChat is skeleton-only this round: schema
   mapping and capability boundaries only, with no live receive, attachment
   download, file send, group publish, or cloud-doc workflow commitment.
@@ -49,7 +49,12 @@ Feishu user/group -> lark-cli event consume -> feishu_event_runner -> feishu_age
 - Video transcription is supported for the provider's documented file containers;
   general image/video understanding remains unsupported and must reply exactly
   `目前暂不支持该功能`.
-- The PI Agent owns planning and generation. It must use Planner Envelope,
+- A user-supplied public YouTube, podcast/RSS, Xiaoyuzhou, or direct media URL
+  routes to `url_source_pack`. Prefer an official timestamped transcript; otherwise
+  use the bounded public-media download plus cloud file ASR path. Do not use cookies,
+  login state, paywall/DRM bypass, or meeting-minutes semantics, and do not publish the
+  resulting source pack into an external knowledge base.
+- The PI Agent owns planning and generation. It must use Adaptive Execution Ledger,
   Capability Registry, `document-prompt-registry`, section-batched document
   workers, QA Gate, and Policy Gate.
 - Existing Feishu document edits are `document_revision` tasks when the user

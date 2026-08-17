@@ -118,7 +118,8 @@ function runCommand(command, args, options = {}) {
     });
     child.on("error", (error) => {
       clearTimeout(timeout);
-      resolveCommand({ exitCode: error.code === "ENOENT" ? 127 : 1, stdout, stderr, timedOut, error: error.message });
+      const errorCode = typeof error === "object" && error !== null && "code" in error ? error.code : null;
+      resolveCommand({ exitCode: errorCode === "ENOENT" ? 127 : 1, stdout, stderr, timedOut, error: error.message });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timeout);
