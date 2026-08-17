@@ -23,6 +23,7 @@
 | [15-adaptive-execution-ledger-and-product-discovery.md](15-adaptive-execution-ledger-and-product-discovery.md) | 权威执行账本、Todo 投影与客户产品发现 |
 | [16-public-url-source-pack.md](16-public-url-source-pack.md) | 公开媒体 URL、官方文稿优先、云端 ASR fallback 与知识交接包 |
 | [17-public-url-live-validation.md](17-public-url-live-validation.md) | 小宇宙、YouTube、飞书真实环境验证、成本与脱敏证据 |
+| [18-typescript-contract-and-package-reliability.md](18-typescript-contract-and-package-reliability.md) | TypeScript 覆盖、跨语言合同、业务影响与 npm tarball 验证 |
 | [frontend/README.md](frontend/README.md) | 后续桌面/移动端会议侧边栏与 Todo 交互建议 |
 
 ## 历史证据

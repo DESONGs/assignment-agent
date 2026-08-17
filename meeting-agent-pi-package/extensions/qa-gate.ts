@@ -83,14 +83,14 @@ function addListIssue(issues: Issue[], options: {
   }
 }
 
-function normalizeArtifactPriority(docType: string, value: unknown): Issue["priority"] {
+function normalizeArtifactPriority(docType: string, value: unknown): NonNullable<Issue["priority"]> {
   if (value === "primary" || value === "follow_up" || value === "optional") {
     return value;
   }
   return docType === "meeting-minutes" ? "primary" : "follow_up";
 }
 
-function scopedDocumentIssue(docType: string, priority: Issue["priority"], issue: Issue): Issue {
+function scopedDocumentIssue(docType: string, priority: NonNullable<Issue["priority"]>, issue: Issue): Issue {
   return {
     ...issue,
     artifactType: docType,
@@ -599,7 +599,7 @@ export default function (pi: ExtensionAPI) {
     label: "QA Gate Evaluate",
     description: "Evaluate evidence, source-pack provenance/completeness, topic/action coverage, speaker attribution, entity safety, title sync, Feishu readiness, web access, security, and context budget checks.",
     parameters: Type.Object({
-      checks: Type.Any(),
+      checks: Type.Unknown(),
       publishIntent: Type.Optional(Type.Boolean({ description: "Whether this gate controls a customer-visible or Feishu publish action." })),
     }),
     async execute(_toolCallId, params) {
@@ -614,7 +614,7 @@ export default function (pi: ExtensionAPI) {
     description: "Write a machine-readable qa-gate.json artifact for a run.",
     parameters: Type.Object({
       runId: Type.String(),
-      gate: Type.Any(),
+      gate: Type.Unknown(),
       outputRoot: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {

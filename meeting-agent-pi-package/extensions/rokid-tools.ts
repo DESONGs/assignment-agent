@@ -17,7 +17,7 @@ function hashFile(path: string) {
   return new Promise<string>((resolveHash, rejectHash) => {
     const hash = createHash("sha256");
     const stream = createReadStream(path);
-    stream.on("data", (chunk: Buffer) => {
+    stream.on("data", (chunk: string | Buffer) => {
       hash.update(chunk);
     });
     stream.on("error", rejectHash);

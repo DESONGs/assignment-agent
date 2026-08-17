@@ -412,7 +412,8 @@ async function consumeLarkCli(options) {
   });
   return await new Promise((resolveRunner) => {
     child.on("error", (error) => {
-      resolveRunner({ status: "blocked", reason: error.code === "ENOENT" ? "lark_cli_not_found" : redactString(error.message), results });
+      const errorCode = "code" in error ? error.code : null;
+      resolveRunner({ status: "blocked", reason: errorCode === "ENOENT" ? "lark_cli_not_found" : redactString(error.message), results });
     });
     child.on("close", async (code, signal) => {
       await Promise.allSettled([...pending]);

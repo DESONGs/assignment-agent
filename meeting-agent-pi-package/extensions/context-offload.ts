@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -17,6 +17,34 @@ const SECRET_PATTERNS = [
 
 const MAX_PREVIEW_CHARS = 1200;
 const MAX_READ_CHARS = 8000;
+
+type OffloadPointer = {
+  artifactName: string;
+  artifactPath: string;
+  payloadType: "text" | "json";
+  sha256: string;
+  sizeBytes: number;
+  preview: string;
+  previewChars: number;
+  createdAt: string;
+  rawSecretsReturned: boolean;
+};
+
+type OffloadBlocked = {
+  status: string;
+  reason: string;
+  artifactName?: string;
+  artifactPath?: string;
+  rawSecretsReturned?: boolean;
+};
+
+type OffloadReadDetails = {
+  artifactPath: string;
+  sizeBytes: number;
+  returnedChars: number;
+  truncated: boolean;
+  content: string;
+} | OffloadBlocked;
 
 function defaultOutputRoot() {
   return join(workspaceDir, "runtime-runs");
@@ -154,12 +182,12 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       runId: Type.String(),
       artifactName: Type.String(),
-      payload: Type.Any(),
+      payload: Type.Unknown(),
       payloadType: Type.Optional(Type.Union([Type.Literal("json"), Type.Literal("text")])),
       outputRoot: Type.Optional(Type.String()),
       maxPreviewChars: Type.Optional(Type.Number()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<OffloadPointer | OffloadBlocked>> {
       try {
         const payloadType = params.payloadType ?? "json";
         const ext = payloadType === "text" ? ".txt" : ".json";
@@ -173,7 +201,7 @@ export default function (pi: ExtensionAPI) {
         const previewChars = boundedCount(params.maxPreviewChars, 800, MAX_PREVIEW_CHARS);
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, text + (text.endsWith("\n") ? "" : "\n"), "utf8");
-        const pointer = {
+        const pointer: OffloadPointer = {
           artifactName: basename(path),
           artifactPath: path,
           payloadType,
@@ -207,7 +235,7 @@ export default function (pi: ExtensionAPI) {
       outputRoot: Type.Optional(Type.String()),
       maxChars: Type.Optional(Type.Number()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<OffloadReadDetails>> {
       try {
         const path = assertInsideRuntime(params.artifactPath, params.outputRoot);
         const text = readFileSync(path, "utf8");

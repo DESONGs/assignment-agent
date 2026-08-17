@@ -119,6 +119,11 @@ struct RunListView: View {
               .foregroundStyle(.red)
               .lineLimit(2)
           }
+          if !run.contractWarnings.isEmpty {
+            Text("合同异常 \(run.contractWarnings.count)")
+              .font(.caption2)
+              .foregroundStyle(.orange)
+          }
         }
         .padding(.vertical, 4)
       }
@@ -351,6 +356,15 @@ struct SafetyStatusView: View {
         } else {
           ForEach(run.failureReasons) { reason in
             Text(reason.rawValue).foregroundStyle(.red)
+          }
+        }
+      }
+      Section("Runtime Contract") {
+        if run.contractWarnings.isEmpty {
+          Text("Task, state and status values match the current runtime contract.")
+        } else {
+          ForEach(run.contractWarnings, id: \.self) { warning in
+            Text(warning).foregroundStyle(.orange)
           }
         }
       }

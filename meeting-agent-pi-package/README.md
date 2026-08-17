@@ -21,6 +21,21 @@ npm test
 
 `.pi/settings.json` 位于仓库根，其 package path 相对 `.pi/` 解析，因此必须使用 `../meeting-agent-pi-package`。
 
+## 类型与本地发包验证
+
+`src/contracts/task-contracts.ts` 与 `src/contracts/runtime-boundary-contracts.ts` 是 Task/Ledger/Todo、Provider、ASR、飞书和 runtime store 状态的权威 TypeScript 来源；构建产物位于 `dist/`，包含 ESM、准确的 `.d.ts`、declaration map 和 source map。构建同时生成语言中立的 `runtime/contract-manifest.json`，供 Node、Python runtime store 和 Swift Workbench 共用；`contracts:check` 再核对 JSON Schema。
+
+20 个直接编写的 TypeScript extension 已全部进入 strict、`noUncheckedIndexedAccess` 和 `exactOptionalPropertyTypes`；27 个 `.mjs` runtime/tool、10 个 `.mjs` 测试和 7 个 `.mjs` 构建/发布脚本全部进入 `checkJs`。JavaScript 层仍是非 strict 迁移层，不因检查通过而冒充完整强类型实现。详细事实与业务影响见 [TypeScript、运行合同与 npm 包可靠性](../wiki/18-typescript-contract-and-package-reliability.md)。
+
+```bash
+npm run typecheck
+npm run publint
+npm run pack:dry-run
+npm run release:local
+```
+
+`release:local` 会创建临时 tgz consumer，执行真实 `npm install`、NodeNext strict 类型消费和 ESM runtime import，不发布到 registry。Pi、sub-agent、Dynamic Workflow 和 TypeBox 使用受控 peer range；仓库仍以当前锁定版本做开发与回归，不在此流程中自动升级。
+
 ## 目录职责
 
 | 目录 | 职责 |
@@ -30,7 +45,7 @@ npm test
 | `prompts/` | 会议纪要、PRD、架构、运营、Checklist 和 revision overlay |
 | `runtime/` | capability registry、execution profile、provider、model route、schema、package audit |
 | `tools/` | 飞书 handler/runner、ASR clients、Meeting Intelligence、Pi delegation、Docker/store helper |
-| `tests/` | Node test 与 Agentic typecheck |
+| `tests/` | Node 回归、边界合同与 checkJs |
 
 ## Agent 运行
 

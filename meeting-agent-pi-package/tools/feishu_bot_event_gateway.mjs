@@ -8,6 +8,8 @@
  * Feishu SDK long connection open so bot messages can trigger replies.
  */
 
+import { assertFeishuEvent } from "../dist/index.js";
+
 const REQUIRED_ENV = ["FEISHU_APP_ID", "FEISHU_APP_SECRET"];
 const DIAGNOSTIC_REPLY = "已收到消息。";
 const HANDLER_EMPTY_REPLY =
@@ -260,7 +262,7 @@ function normalizeEvent(data) {
   const messageId = message.message_id;
   const chatId = message.chat_id;
   const text = parseText(message.content);
-  return {
+  return assertFeishuEvent({
     schemaVersion: "feishu-event-v1",
     eventId: messageId,
     eventType: "im.message.receive_v1",
@@ -297,7 +299,7 @@ function normalizeEvent(data) {
     threadId: message.thread_id ?? message.threadId ?? null,
     senderType: sender.sender_type,
     senderId: sender.sender_id,
-  };
+  });
 }
 
 function summarizeHandlerBody(body) {

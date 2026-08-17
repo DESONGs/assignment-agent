@@ -2,29 +2,19 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Type } from "typebox";
+import {
+  TERMINAL_TODO_STATUSES,
+  type TodoProjection,
+} from "../dist/index.js";
 
-type TodoItem = {
-  itemId: string;
-  kind: string;
-  label: string;
-  description?: string;
-  status: string;
-  priority?: string;
-  interactive?: boolean;
-  options?: string[];
-};
-
-type Projection = {
-  planId?: string | null;
-  revision?: number;
-  completed?: number;
-  total?: number;
-  awaitingUser?: boolean;
-  items?: TodoItem[];
-};
+const TERMINAL_TODO_STATUS_SET = new Set<string>(TERMINAL_TODO_STATUSES);
+// Preserve the existing permissive tool input while giving the implementation
+// the canonical projection type. Ledger creation/reconciliation owns runtime
+// validation; the UI remains a non-blocking projection consumer.
+const TODO_PROJECTION_SCHEMA = Type.Unsafe<TodoProjection>(Type.Unknown());
 
 export default function executionTodoUi(pi: ExtensionAPI): void {
-  let projection: Projection | null = null;
+  let projection: TodoProjection | null = null;
 
   function optionLabel(option: string) {
     return ({
@@ -60,7 +50,7 @@ export default function executionTodoUi(pi: ExtensionAPI): void {
       if (!existsSync(path)) continue;
       try {
         const ledger = JSON.parse(readFileSync(path, "utf8"));
-        if (ledger?.userTodoProjection) return ledger.userTodoProjection as Projection;
+        if (ledger?.userTodoProjection) return ledger.userTodoProjection as TodoProjection;
       } catch {
         // Keep the last valid projection; UI failure must not affect task execution.
       }
@@ -75,7 +65,7 @@ export default function executionTodoUi(pi: ExtensionAPI): void {
       return;
     }
     const items = projection.items;
-    const unfinished = items.filter((item) => !["completed", "answered", "dismissed", "skipped", "cancelled"].includes(item.status));
+    const unfinished = items.filter((item) => !TERMINAL_TODO_STATUS_SET.has(item.status));
     const lines = [
       ctx.ui.theme.fg("accent", `Office Agent · ${projection.completed ?? 0}/${projection.total ?? 0}${projection.awaitingUser ? " · 等待选择" : ""}`),
       ...unfinished.slice(0, 6).map((item) => {
@@ -100,9 +90,9 @@ export default function executionTodoUi(pi: ExtensionAPI): void {
     name: "execution_todo_present",
     label: "Execution Todo Present",
     description: "Present an Execution Ledger Todo projection in the Pi widget without creating a second task state.",
-    parameters: Type.Object({ projection: Type.Any() }),
+    parameters: Type.Object({ projection: TODO_PROJECTION_SCHEMA }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      projection = params.projection as Projection;
+      projection = params.projection;
       render(ctx);
       const details = { status: "presented", projection, rawSecretsReturned: false };
       return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };

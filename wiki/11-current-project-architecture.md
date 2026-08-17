@@ -35,6 +35,12 @@ flowchart LR
 
 这是一组可组合能力，不是所有任务都执行的固定 DAG。`fast_answer`、`file_summary`、`url_source_pack`、`audio_minutes`、`document_generation`、`document_revision`、`multi_source_synthesis` 和 `publish_only` 由 `runtime/execution-profiles.json` 决定最小所需阶段。
 
+### TypeScript 与运行合同边界
+
+任务控制字面量不再分别散落在 Router、Runner、Planner、Todo UI 和飞书后续选择中：`src/contracts/task-contracts.ts` 与 `runtime-boundary-contracts.ts` 生成 `dist/` 公开入口及语言中立 `runtime/contract-manifest.json`，运行代码、Python store 和 Swift Workbench 共用同一状态集合；`contracts:check` 将其与 Planner、飞书、Provider 和 Execution Profile schema 做集合一致性检查。
+
+迁移按“状态/合同/Agent Runtime → Provider/HTTP/飞书/持久化 → Workbench/测试/发布”完成：20 个直接编写 TS extension 全部 strict；27 个 `.mjs` runtime/tool、10 个 `.mjs` 测试和 7 个 `.mjs` 构建/发布脚本全部 checkJs；Python store 与 Swift Workbench 消费同一 manifest。`.mjs` 仍是非 strict 层，不为提高 TypeScript 百分比机械改后缀。细节见 [TypeScript、运行合同与 npm 包可靠性](18-typescript-contract-and-package-reliability.md)。
+
 ## 2. 仓库分层
 
 | 路径 | 当前职责 |
@@ -47,6 +53,8 @@ flowchart LR
 | `meeting-agent-pi-package/prompts/` | 正式文档 prompt 与修订 overlay |
 | `meeting-agent-pi-package/runtime/` | registry、schema、provider、profile、model route、package audit |
 | `meeting-agent-pi-package/tools/` | ASR、飞书、runner、runtime store、Docker 与 helper 实现 |
+| `meeting-agent-pi-package/src/contracts/` | 任务类型、Execution Profile、Ledger/Todo 状态与 npm 公开类型的权威 TypeScript 合同 |
+| `meeting-agent-pi-package/dist/` | 由 `tsc` 生成并供 runtime/npm consumer 使用的 ESM、`.d.ts` 与 source map；不是手写源码 |
 | `AgentWorkbench/` | macOS 只读运行观测 |
 | `wiki/` | 当前规范与历史证据 |
 | `runtime-runs/` | 已忽略的真实运行产物、cache 和服务状态 |

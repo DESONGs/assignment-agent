@@ -255,7 +255,7 @@ export default function (pi: ExtensionAPI) {
     description: "Write a policy-gate.json artifact inside the workspace runtime-runs directory.",
     parameters: Type.Object({
       runId: Type.String(),
-      decision: Type.Any(),
+      decision: Type.Unknown(),
       outputRoot: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params): Promise<any> {

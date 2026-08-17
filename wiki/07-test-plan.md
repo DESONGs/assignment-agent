@@ -26,6 +26,8 @@ git diff --check
 | Document | prompt registry、section ordering、model route、QA gate |
 | Channel | 飞书 event/task/file context/publish contract 与 secret scan |
 | Runtime | Host-owned store、cache/CAS/retention、Docker job boundary |
+| Type/Contract | 全部 TS extension strict、全部直接编写 MJS checkJs、Execution Profile/Ledger/Todo/Provider/飞书与跨语言 manifest 一致性 |
+| npm Package | ESM exports、生成 `.d.ts`/source map、files allowlist、publint、pack dry-run 与临时 NodeNext consumer |
 
 ## 2. ASR 验收
 
@@ -119,10 +121,21 @@ docker compose -f docker-compose.local-runtime.yml up -d runtime-queue pi-docume
 发布前集中执行一次：
 
 1. workspace validator。
-2. Node test + agentic typecheck。
+2. Node test + 全部 extension/runtime/test/release script typecheck。
 3. local CI check。
 4. `npm audit --omit=dev`。
 5. Markdown 链接、Mermaid fence、`git diff --check`。
 6. 至少一次与本次变化同层的真实 smoke；若外部凭证或 provider 不可用，明确记录未验证项。
+
+若变化触及 TypeScript 合同或 npm 包边界，还要运行：
+
+```bash
+cd meeting-agent-pi-package
+npm run publint
+npm run pack:dry-run
+npm run release:local
+```
+
+`release:local` 必须从 tgz 在临时目录执行真实 npm 安装，再以 NodeNext strict consumer 编译并执行 ESM import。源码 checkout 测试通过不能代替该验证。所有 TS extension 必须保持 strict；所有直接编写 MJS 必须保持 checkJs。不得用 TypeScript 文件比例代替覆盖证据，也不得把非 strict JavaScript 描述为完整强类型。
 
 `qa-runs/` 是 legacy `qa-runs/`，只保留 non-production fixture 指针；`qa-runs/**/*.json|jsonl|txt|wav` 不得作为当前生产成功证据提交。

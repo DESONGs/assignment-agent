@@ -303,7 +303,7 @@ const rssParser = new XMLParser({
   trimValues: true,
   parseTagValue: false,
   processEntities: false,
-  isArray: (_name, path) => /(?:\.item|\.transcript|\.enclosure)$/.test(path),
+  isArray: (_name, path) => /(?:\.item|\.transcript|\.enclosure)$/.test(String(path)),
 });
 
 function textValue(value) {
@@ -791,6 +791,7 @@ export async function resolvePublicMediaSource(url, options = {}) {
   const merged = {
     ...DEFAULT_PUBLIC_URL_LIMITS,
     ...options,
+    resolveOnly: options.resolveOnly === true,
     inputDir: options.inputDir ? resolve(options.inputDir) : null,
   };
   if (!merged.resolveOnly && !merged.inputDir) return { status: "blocked", reason: "public_url_input_dir_required" };

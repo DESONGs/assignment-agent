@@ -56,13 +56,29 @@ func runSmoke() throws {
   let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("agent-workbench-fixture-\(UUID().uuidString)")
   let syntheticRun = tempRoot.appendingPathComponent("runs/synthetic")
   try FileManager.default.createDirectory(at: syntheticRun, withIntermediateDirectories: true)
-  try writeJSON(["runId": "synthetic", "taskIntent": ["taskType": "meeting_minutes"], "requestedAt": "2026-05-24T00:00:00Z"], to: syntheticRun.appendingPathComponent("task.json"))
-  try writeJSON(["runId": "synthetic", "status": "failed", "steps": [["name": "asr", "status": "blocked", "reason": "local_asr_service_not_running"]]], to: syntheticRun.appendingPathComponent("state.json"))
+  try writeJSON(["schemaVersion": "feishu-task-v1", "runId": "synthetic", "status": "running", "taskIntent": ["taskType": "meeting_minutes", "executionProfile": "audio_minutes", "reasoningDepth": "deep"], "requestedAt": "2026-05-24T00:00:00Z"], to: syntheticRun.appendingPathComponent("task.json"))
+  try writeJSON([
+    "schemaVersion": "feishu-run-state-v1",
+    "runId": "synthetic",
+    "status": "failed",
+    "updatedAt": "2026-05-24T00:01:00Z",
+    "steps": [["name": "asr", "status": "blocked", "at": "2026-05-24T00:00:30Z", "reason": "local_asr_service_not_running"]]
+  ], to: syntheticRun.appendingPathComponent("state.json"))
   try writeJSON(["runId": "synthetic", "toolCalls": [["name": "local_asr", "status": "blocked"]], "qaGate": ["status": "qa_blocked"]], to: syntheticRun.appendingPathComponent("run.metrics.json"))
   try writeJSON(["status": "failed", "summary": "document_worker_deadline_exhausted context_gate_failed"], to: syntheticRun.appendingPathComponent("agent-output.json"))
   try writeJSON(["status": "failed", "reason": "publish_failed"], to: syntheticRun.appendingPathComponent("publish.json"))
   let synthetic = try WorkbenchRunLoader(runsRoot: tempRoot.appendingPathComponent("runs")).listRuns()
   try expect(synthetic.first?.failureReasons.map(\.rawValue).sorted() == FailureReason.allCases.map(\.rawValue).sorted(), "failure classification incomplete")
+  try expect(synthetic.first?.contractWarnings.isEmpty == true, "valid synthetic run failed runtime contract validation")
+
+  let contract = RuntimeContract.load(runsRoot: root)
+  try expect(contract.available, "runtime contract manifest was not loaded")
+  let driftWarnings = contract.validate(
+    task: ["schemaVersion": "feishu-task-v1", "status": "running", "taskIntent": ["taskType": "meeting_minutes", "executionProfile": "direct_answer", "reasoningDepth": "shallow"]],
+    state: ["schemaVersion": "feishu-run-state-v1", "status": "mystery", "steps": [["name": "asr", "status": "done"]]]
+  )
+  try expect(driftWarnings.contains("execution_profile_unknown:direct_answer"), "execution profile drift was not detected")
+  try expect(driftWarnings.contains("run_status_unknown:mystery"), "run status drift was not detected")
 
   print("AgentWorkbenchSmokeTest passed: runs=\(runs.count), selected=\(loaded.id), streams=\(loaded.streamEvents.count), tools=\(loaded.toolCalls.count), contextPacks=\(loaded.sourceContext.contextPacks.count)")
 }

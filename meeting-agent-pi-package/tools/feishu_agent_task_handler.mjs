@@ -33,6 +33,13 @@ import {
   classifyTaskIntent,
   cleanUserPrompt,
 } from "./task_router.mjs";
+import {
+  FAST_ANSWER_EXECUTION_PROFILE,
+  FAST_REASONING_DEPTH,
+  assertFeishuEvent,
+  assertFeishuRunState,
+  assertFeishuTask,
+} from "../dist/index.js";
 
 const toolDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(toolDir);
@@ -278,7 +285,7 @@ function parseText(content) {
 }
 
 function normalizeDirectEvent(input) {
-  if (input?.schemaVersion === "feishu-event-v1") return sanitize(input);
+  if (input?.schemaVersion === "feishu-event-v1") return assertFeishuEvent(sanitize(input));
   const envelope = input?.event ?? input?.data?.event ?? input?.data ?? input;
   const message = envelope?.message ?? input?.message ?? {};
   const sender = envelope?.sender ?? input?.sender ?? {};
@@ -290,7 +297,7 @@ function normalizeDirectEvent(input) {
   if (fileKey) attachments.push({ resourceType: "file", fileKey: String(fileKey), name: String(parsed.file_name ?? parsed.name ?? fileKey) });
   if (imageKey) attachments.push({ resourceType: "image", fileKey: String(imageKey), name: String(parsed.file_name ?? parsed.name ?? imageKey) });
   const eventId = String(input?.eventId ?? input?.event_id ?? message?.message_id ?? hashJson(input).slice(0, 24));
-  return {
+  return assertFeishuEvent({
     schemaVersion: "feishu-event-v1",
     eventId,
     eventType: input?.eventType ?? input?.event_type ?? "im.message.receive_v1",
@@ -316,7 +323,7 @@ function normalizeDirectEvent(input) {
     rawEventStored: true,
     rawEventPath: null,
     rawSecretsReturned: false,
-  };
+  });
 }
 
 function runIdFor(event) {
@@ -353,13 +360,14 @@ function runPaths(root, runId) {
 }
 
 function addStep(state, name, status, details = {}) {
-  state.steps.push({ name, status, at: nowIso(), ...details });
+  const { name: _detailName, status: _detailStatus, at: _detailAt, ...safeDetails } = details;
+  state.steps.push({ ...safeDetails, name, status, at: nowIso() });
   state.status = status === "failed" ? "failed" : status === "blocked" ? "blocked" : status === "needs_fix" ? "needs_fix" : state.status;
   state.updatedAt = nowIso();
 }
 
 function writeState(paths, state) {
-  writeJson(paths.statePath, state);
+  writeJson(paths.statePath, assertFeishuRunState(state));
 }
 
 function hasExplicitFeishuFileReferences(text) {
@@ -462,7 +470,8 @@ function runCommand(command, args, options = {}) {
     });
     child.on("error", (error) => {
       clearTimeout(timeout);
-      resolveCommand({ exitCode: error.code === "ENOENT" ? 127 : 1, signal: null, stdout, stderr, error: error.message, timedOut });
+      const errorCode = "code" in error ? error.code : null;
+      resolveCommand({ exitCode: errorCode === "ENOENT" ? 127 : 1, signal: null, stdout, stderr, error: error.message, timedOut });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timeout);
@@ -3029,24 +3038,24 @@ export async function handleEvent(input, options) {
       .slice(0, 10);
     taskIntent.taskType = "task_management";
     taskIntent.responseMode = "direct_answer";
-    taskIntent.executionProfile = "direct_answer";
-    taskIntent.reasoningDepth = "shallow";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = questions.length > 0
       ? ["建议下一轮优先向客户确认：", ...questions.map((item, index) => `${index + 1}. ${item.label}${item.description ? `（${safeShortText(item.description, 160)}）` : ""}`)].join("\n")
       : "当前 Execution Ledger 没有尚待确认的客户问题。";
   } else if (ledgerSelection?.selectedOption === "keep-meeting-minutes-only") {
     taskIntent.taskType = "task_management";
     taskIntent.responseMode = "direct_answer";
-    taskIntent.executionProfile = "direct_answer";
-    taskIntent.reasoningDepth = "shallow";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = "已记录：本轮仅保留会议纪要，不继续生成 PRD、技术架构或客户需求确认表。";
   } else if (ledgerSelection?.selectedOption === "review-source-pack") {
     const sourcePackPath = join(dirname(previousThreadLedger.path), "artifacts", "public-source", "source-pack", "source-pack.readable.md");
     const sourcePackPreview = existsSync(sourcePackPath) ? readFileSync(sourcePackPath, "utf8").slice(0, 2600).trim() : "";
     taskIntent.taskType = "task_management";
     taskIntent.responseMode = "direct_answer";
-    taskIntent.executionProfile = "direct_answer";
-    taskIntent.reasoningDepth = "shallow";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = sourcePackPreview
       ? [`以下是 source pack 的有界预览：`, sourcePackPreview, `本地交接包：${workspaceRelative(sourcePackPath)}`].join("\n\n")
       : "未找到上一轮 source pack 的本地文件，请重新处理原 URL。";
@@ -3054,8 +3063,8 @@ export async function handleEvent(input, options) {
     const sourcePackPath = join(dirname(previousThreadLedger.path), "artifacts", "public-source", "source-pack", "source-pack.readable.md");
     taskIntent.taskType = "task_management";
     taskIntent.responseMode = "direct_answer";
-    taskIntent.executionProfile = "direct_answer";
-    taskIntent.reasoningDepth = "shallow";
+    taskIntent.executionProfile = FAST_ANSWER_EXECUTION_PROFILE;
+    taskIntent.reasoningDepth = FAST_REASONING_DEPTH;
     taskIntent.immediateResponse = `已记录：本轮仅保留本地 source pack，不执行外部知识库写入。交接路径：${workspaceRelative(sourcePackPath)}`;
   }
   const task = {
@@ -3079,7 +3088,7 @@ export async function handleEvent(input, options) {
     rawSecretsReturned: false,
     rawMediaExternalUpload: false,
   };
-  writeJson(paths.taskPath, task);
+  writeJson(paths.taskPath, assertFeishuTask(task));
   addStep(state, "task_created", "completed", { artifact: paths.taskPath });
   metrics.taskType = taskIntent.taskType ?? "feishu_agent";
   appendMetric(metrics, "planner", {
@@ -3395,7 +3404,7 @@ async function main() {
   startServer(options, host, port);
 }
 
-export { normalizeDirectEvent, optionsFromArgs };
+export { addStep, normalizeDirectEvent, optionsFromArgs };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {

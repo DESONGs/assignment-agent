@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import { createReadStream, mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -24,6 +24,37 @@ type CommandResult = {
   timedOut: boolean;
 };
 
+type LocalAsrToolDetails = {
+  provider: string;
+  mode: string;
+  status?: string;
+  reason?: string;
+  error?: string | null;
+  serviceUrl?: string;
+  authHeaderSent?: boolean;
+  httpStatus?: number;
+  response?: unknown;
+  responseTail?: string;
+  nextStep?: string;
+  rawAudioUploaded: boolean;
+  externalAudioUpload: boolean;
+};
+
+type EvidenceSegmentInput = {
+  id?: unknown;
+  segmentId?: unknown;
+  evidenceId?: unknown;
+  startSec?: unknown;
+  endSec?: unknown;
+  source?: unknown;
+  sourceFile?: unknown;
+  basename?: unknown;
+};
+
+function evidenceSegmentInput(value: unknown): EvidenceSegmentInput {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
@@ -32,7 +63,7 @@ function sha256(path: string) {
   return new Promise<string>((resolveHash, rejectHash) => {
     const hash = createHash("sha256");
     const stream = createReadStream(path);
-    stream.on("data", (chunk: Buffer) => {
+    stream.on("data", (chunk: string | Buffer) => {
       hash.update(chunk);
     });
     stream.on("error", rejectHash);
@@ -256,7 +287,7 @@ export default function (pi: ExtensionAPI) {
       timeoutMs: Type.Optional(Type.Number({ description: "Execution timeout in milliseconds. Defaults to 7200000." })),
       limitChunks: Type.Optional(Type.Number({ description: "Optional debug limit per file." })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<LocalAsrToolDetails>> {
       const resolvedPaths = params.paths.map((path) => resolve(path));
       const outputDir = resolve(params.outputDir);
       const modelDir = resolve(params.modelDir ?? defaultModelDir());
@@ -410,17 +441,20 @@ export default function (pi: ExtensionAPI) {
       "Normalize transcript segments, file metadata, and context references into an evidence index.",
     parameters: Type.Object({
       meetingTitle: Type.String(),
-      sources: Type.Array(Type.Any()),
-      transcriptSegments: Type.Optional(Type.Array(Type.Any())),
+      sources: Type.Array(Type.Unknown()),
+      transcriptSegments: Type.Optional(Type.Array(Type.Unknown())),
     }),
     async execute(_toolCallId, params) {
       const transcriptSegments = params.transcriptSegments ?? [];
-      const segmentRefs = transcriptSegments.slice(0, 200).map((segment, index) => ({
-        id: segment?.id ?? segment?.segmentId ?? segment?.evidenceId ?? `segment_${index}`,
-        startSec: segment?.startSec ?? null,
-        endSec: segment?.endSec ?? null,
-        source: segment?.source ?? segment?.sourceFile ?? segment?.basename ?? null,
-      }));
+      const segmentRefs = transcriptSegments.slice(0, 200).map((value, index) => {
+        const segment = evidenceSegmentInput(value);
+        return {
+          id: segment.id ?? segment.segmentId ?? segment.evidenceId ?? `segment_${index}`,
+          startSec: segment.startSec ?? null,
+          endSec: segment.endSec ?? null,
+          source: segment.source ?? segment.sourceFile ?? segment.basename ?? null,
+        };
+      });
       const evidence = {
         meetingTitle: params.meetingTitle,
         builtAt: new Date().toISOString(),

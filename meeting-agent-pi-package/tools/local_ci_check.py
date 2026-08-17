@@ -104,11 +104,6 @@ def run_command(label: str, command: list[str], *, cwd: Path = ROOT, timeout: fl
         completed = subprocess.run(command, cwd=str(cwd), text=True, capture_output=True, timeout=timeout)
         status = "passed" if completed.returncode == 0 else "failed"
         reason = None
-        if label == "swift-test-agent-workbench" and completed.returncode != 0:
-            combined = f"{completed.stdout}\n{completed.stderr}"
-            if "SDK is not supported by the compiler" in combined or "Please select a toolchain which matches the SDK" in combined:
-                status = "blocked"
-                reason = "swift_toolchain_sdk_mismatch"
         return {
             "label": label,
             "status": status,
@@ -198,6 +193,8 @@ def checks() -> list[dict[str, Any]]:
     for target in TS_CHECK_TARGETS:
         results.append(run_command(f"ts-strip-check:{target}", ["node", "--experimental-strip-types", "--check", target], timeout=120.0))
     results.append(run_command("npm-test-meeting-agent", ["npm", "test"], cwd=ROOT / "meeting-agent-pi-package", timeout=300.0))
+    results.append(run_command("npm-package-invariants", ["npm", "run", "package:check"], cwd=ROOT / "meeting-agent-pi-package", timeout=120.0))
+    results.append(run_command("npm-publint", ["npm", "run", "publint"], cwd=ROOT / "meeting-agent-pi-package", timeout=180.0))
     results.append(parse_json_files())
     docker = docker_cli()
     if docker:
@@ -212,9 +209,15 @@ def checks() -> list[dict[str, Any]]:
             },
         )
     if (ROOT / "AgentWorkbench" / "Package.swift").exists():
-        results.append(run_command("swift-test-agent-workbench", ["swift", "test"], cwd=ROOT / "AgentWorkbench", timeout=240.0))
+        results.append(
+            run_command(
+                "swift-contract-smoke-agent-workbench",
+                ["bash", "AgentWorkbench/scripts/validate_contract_smoke.sh"],
+                timeout=240.0,
+            )
+        )
     else:
-        results.append({"label": "swift-test-agent-workbench", "status": "skipped", "reason": "AgentWorkbench missing"})
+        results.append({"label": "swift-contract-smoke-agent-workbench", "status": "skipped", "reason": "AgentWorkbench missing"})
     return results
 
 
@@ -246,7 +249,7 @@ def main() -> int:
         "suggestions": [
             "Use meeting-agent-pi-package/tools/local_runtime_ctl.py doctor for runtime health issues.",
             "Use Docker.app fallback when PATH does not expose docker.",
-            "If swift-test-agent-workbench is blocked, run xcode-select/toolchain repair before treating Swift UI smoke as production-gated.",
+            "Set ASSIGNMENT_AGENT_SWIFT_SDK only when the automatic compatible SDK selection cannot compile AgentWorkbench.",
         ],
         "rawSecretsReturned": False,
         "rawMediaExternalUpload": False,

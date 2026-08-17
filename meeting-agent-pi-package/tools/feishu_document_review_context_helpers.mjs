@@ -388,6 +388,7 @@ export function buildReviewSources(task, contexts) {
 }
 
 export async function fetchFeishuDocumentReviewContext({ task, contexts, runCommand, options = {} }) {
+  const reviewOptions = /** @type {{ dryRun?: boolean, timeoutMs?: number }} */ (options);
   const sources = buildReviewSources(task, contexts);
   const eligibleSources = sources.filter((source) => source.apiEligible);
   const sourceResults = new Map(sources.map((source) => [source.sourceId, createSourceResult(source)]));
@@ -428,8 +429,8 @@ export async function fetchFeishuDocumentReviewContext({ task, contexts, runComm
       identityTried.push(identity);
       sourceResult.identityTried.push(identity);
       const listed = await listCommentsWithCli(source, identity, runCommand, {
-        dryRun: options.dryRun,
-        timeoutMs: options.timeoutMs,
+        dryRun: reviewOptions.dryRun,
+        timeoutMs: reviewOptions.timeoutMs,
       });
       plannedCommands.push(listed.command);
       sourceResult.plannedCommands.push(listed.command);
@@ -476,16 +477,16 @@ export async function fetchFeishuDocumentReviewContext({ task, contexts, runComm
       method = "cli";
       apiStatus = "success";
       const batchItems = await batchQueryCommentsWithCli(source, listed.items, identity, runCommand, {
-        dryRun: options.dryRun,
-        timeoutMs: options.timeoutMs,
+        dryRun: reviewOptions.dryRun,
+        timeoutMs: reviewOptions.timeoutMs,
       });
       const items = batchItems?.length ? batchItems : listed.items;
       const sourceComments = [];
       for (const item of items) {
         const needsReplyFetch = item?.has_more === true || item?.reply_list?.has_more === true;
         const extraReplies = needsReplyFetch ? await listRepliesWithCli(source, item, identity, runCommand, {
-          dryRun: options.dryRun,
-          timeoutMs: options.timeoutMs,
+          dryRun: reviewOptions.dryRun,
+          timeoutMs: reviewOptions.timeoutMs,
         }) : [];
         if (extraReplies.length > 0) {
           item.reply_list = {

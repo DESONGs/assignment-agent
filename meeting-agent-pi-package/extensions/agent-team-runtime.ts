@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Worker } from "node:worker_threads";
 
@@ -11,6 +11,30 @@ type AgentTeamTask = {
 type IndexedAgentTeamTask = AgentTeamTask & {
   taskIndex: number;
 };
+
+type AgentTeamRunDetails =
+  | {
+      status: string;
+      reason: string;
+      limits: typeof AGENT_TEAM_LIMITS;
+    }
+  | {
+      status: string;
+      reason: null;
+      implementation: string;
+      trueParallelWorkers: boolean;
+      startedAt: string;
+      finishedAt: string;
+      taskCount: number;
+      payloadBytes: number;
+      requestedMaxWorkers: number;
+      maxWorkers: number;
+      requestedTimeoutMs: number;
+      timeoutMs: number;
+      capped: { maxWorkers: boolean; timeoutMs: boolean };
+      limits: typeof AGENT_TEAM_LIMITS;
+      results: unknown[];
+    };
 
 const DEFAULT_MAX_WORKERS = 3;
 const MAX_TASKS = 24;
@@ -466,12 +490,12 @@ export default function (pi: ExtensionAPI) {
       tasks: Type.Array(Type.Object({
         taskId: Type.Optional(Type.String()),
         componentId: Type.String(),
-        input: Type.Optional(Type.Any()),
+        input: Type.Optional(Type.Unknown()),
       })),
       maxWorkers: Type.Optional(Type.Number({ description: "Maximum concurrent workers. Defaults to 3." })),
       timeoutMs: Type.Optional(Type.Number({ description: "Per-worker timeout. Defaults to 30000." })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<AgentTeamRunDetails>> {
       const known = new Set(COMPONENTS.map((component) => component.componentId));
       const rawTasks = Array.isArray(params.tasks) ? params.tasks : [];
       if (!Array.isArray(params.tasks)) {
@@ -552,6 +576,7 @@ export default function (pi: ExtensionAPI) {
       const results = await runPool(indexedTasks, effectiveMaxWorkers, effectiveTimeoutMs);
       const details = {
         status: results.some((result: any) => result.status === "failed") ? "needs_review" : "completed",
+        reason: null,
         implementation: "node_worker_threads",
         trueParallelWorkers: true,
         startedAt,

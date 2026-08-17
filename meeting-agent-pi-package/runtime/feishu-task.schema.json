@@ -46,6 +46,7 @@
             "document_generation",
             "document_revision",
             "multi_source_synthesis",
+            "url_source_pack",
             "publish_only"
           ]
         },

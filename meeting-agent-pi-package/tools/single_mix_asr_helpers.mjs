@@ -225,6 +225,18 @@ export function normalizeSingleMixMode(value) {
   return "robust";
 }
 
+/**
+ * @param {{
+ *   primarySegments?: any[],
+ *   reviewSegments?: any[],
+ *   primaryModel?: string,
+ *   reviewModel?: string,
+ *   reviewStatus?: string,
+ *   sourceFile?: string | null,
+ *   textConflictThreshold?: number,
+ *   alignmentToleranceSeconds?: number,
+ * }} [options]
+ */
 export function buildSingleMixAnalysis({
   primarySegments = [],
   reviewSegments = [],

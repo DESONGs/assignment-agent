@@ -1,109 +1,92 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  ACTION_INTENTS,
+  INTERACTION_KINDS,
+  INTERACTION_PRIORITIES,
+  INTERACTION_STATUSES,
+  LEDGER_STEP_STATUSES,
+  TASK_TYPES,
+  type ActionIntent,
+  type AdaptiveExecutionLedger,
+  type CapabilityNeed,
+  type InteractionItem,
+  type LedgerStep,
+  type PolicyRisk,
+  type TaskType,
+  type TodoProjection,
+  type ToolPlanItem,
+  isAdaptiveExecutionLedger,
+  isInteractionKind,
+  isInteractionPriority,
+  isInteractionStatus,
+} from "../dist/index.js";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(extensionDir);
 const workspaceDir = dirname(packageDir);
 
-const TASK_TYPE = Type.Union([
-  Type.Literal("meeting_minutes"),
-  Type.Literal("doc_writer"),
-  Type.Literal("document_revision"),
-  Type.Literal("feishu_bot"),
-  Type.Literal("wechat_adapter"),
-  Type.Literal("document_lifecycle"),
-  Type.Literal("retrieval"),
-  Type.Literal("calendar"),
-  Type.Literal("task_management"),
-  Type.Literal("research"),
-  Type.Literal("knowledge_source"),
-  Type.Literal("mixed"),
-]);
+const TASK_TYPE = Type.Enum(TASK_TYPES);
+const ACTION_INTENT = Type.Enum(ACTION_INTENTS);
+const STEP_STATUS = Type.Enum(LEDGER_STEP_STATUSES);
+const INTERACTION_KIND = Type.Enum(INTERACTION_KINDS);
+const INTERACTION_STATUS = Type.Enum(INTERACTION_STATUSES);
+const INTERACTION_PRIORITY = Type.Enum(INTERACTION_PRIORITIES);
 
-const ACTION_INTENT = Type.Union([
-  Type.Literal("read"),
-  Type.Literal("draft"),
-  Type.Literal("interact"),
-  Type.Literal("review"),
-  Type.Literal("write_private"),
-  Type.Literal("publish_customer_visible"),
-  Type.Literal("notify_people"),
-  Type.Literal("mutate_calendar"),
-  Type.Literal("assign_task"),
-  Type.Literal("external_web"),
-  Type.Literal("install_dependency"),
-]);
+type UnknownObject = { [key: string]: unknown };
 
-const STEP_STATUS = Type.Union([
-  Type.Literal("pending"),
-  Type.Literal("ready"),
-  Type.Literal("in_progress"),
-  Type.Literal("completed"),
-  Type.Literal("blocked"),
-  Type.Literal("failed"),
-  Type.Literal("cancelled"),
-  Type.Literal("skipped"),
-]);
-
-const INTERACTION_KIND = Type.Union([
-  Type.Literal("progress"),
-  Type.Literal("decision"),
-  Type.Literal("question"),
-  Type.Literal("suggestion"),
-]);
-
-type TaskType =
-  | "meeting_minutes"
-  | "doc_writer"
-  | "document_revision"
-  | "feishu_bot"
-  | "wechat_adapter"
-  | "document_lifecycle"
-  | "retrieval"
-  | "calendar"
-  | "task_management"
-  | "research"
-  | "knowledge_source"
-  | "mixed";
-type ActionIntent =
-  | "read"
-  | "draft"
-  | "interact"
-  | "review"
-  | "write_private"
-  | "publish_customer_visible"
-  | "notify_people"
-  | "mutate_calendar"
-  | "assign_task"
-  | "external_web"
-  | "install_dependency";
-
-type CapabilityNeed = {
-  capabilityId: string;
-  reason: string;
-  loadMode: "always_on" | "lazy";
-  contextCost: "low" | "medium" | "high";
+type PlannerInput = {
+  runId?: string;
+  planId?: string;
+  goal: string;
+  taskType?: TaskType;
+  taskDescription?: string;
+  successCriteria?: string[];
+  constraints?: string[];
+  requestedOutputs?: string[];
+  availableArtifacts?: string[];
+  meetingAnalysis?: unknown;
+  interactionItems?: unknown[];
 };
 
-type LedgerStep = {
+type StepUpdate = {
   stepId: string;
-  title: string;
-  description: string;
-  status: "pending" | "ready" | "in_progress" | "completed" | "blocked" | "failed" | "cancelled" | "skipped";
-  dependsOn: string[];
-  owner: string;
-  capabilityId: string | null;
-  acceptance: string[];
-  inputRefs: string[];
-  resultRefs: string[];
-  attempts: number;
-  blockedReason: string | null;
-  completedAt?: string | null;
+  status?: LedgerStep["status"];
+  resultRefs?: string[];
+  acceptancePassed?: boolean;
+  blockedReason?: string;
 };
+
+type InteractionUpdate = {
+  itemId: string;
+  status?: InteractionItem["status"];
+  answer?: string;
+  priority?: InteractionItem["priority"];
+  order?: number;
+};
+
+type ReconcileParams = {
+  expectedRevision?: number;
+  operationId?: string;
+  actor?: string;
+  stepUpdates?: StepUpdate[];
+  interactionUpdates?: InteractionUpdate[];
+  interactionAdditions?: unknown[];
+};
+
+type LedgerWithProjection = Pick<AdaptiveExecutionLedger, "planId" | "revision" | "steps" | "interactionItems">;
+
+function asObject(value: unknown): UnknownObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as UnknownObject : {};
+}
+
+function asObjectArray(value: unknown): UnknownObject[] {
+  return (Array.isArray(value) ? value : []).map(asObject);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -164,7 +147,7 @@ function addCapability(capabilities: CapabilityNeed[], capability: CapabilityNee
   if (!capabilities.some((item) => item.capabilityId === capability.capabilityId)) capabilities.push(capability);
 }
 
-function addToolPlan(toolPlan: any[], toolIntent: ActionIntent, toolName: string, reason: string, policyCheckRequired?: boolean) {
+function addToolPlan(toolPlan: ToolPlanItem[], toolIntent: ActionIntent, toolName: string, reason: string, policyCheckRequired?: boolean) {
   if (toolPlan.some((item) => item.toolIntent === toolIntent && item.toolName === toolName)) return;
   toolPlan.push({
     toolIntent,
@@ -213,7 +196,7 @@ function documentDependencies(docType: string, requested: Set<string>) {
   return [];
 }
 
-function buildSteps(params: any, taskType: TaskType, availableArtifacts: string[]): LedgerStep[] {
+function buildSteps(params: PlannerInput, taskType: TaskType, availableArtifacts: string[]): LedgerStep[] {
   const requestedOutputs = uniqueStrings(params.requestedOutputs, 20);
   const requested = new Set(requestedOutputs);
   const steps: LedgerStep[] = [];
@@ -323,26 +306,29 @@ function buildSteps(params: any, taskType: TaskType, availableArtifacts: string[
   return steps;
 }
 
-function normalizeInteractionItems(values: unknown, validEvidence = new Set<string>()) {
-  return (Array.isArray(values) ? values : []).map((value: any, index) => {
-    const label = String(value?.label ?? value?.title ?? value?.question ?? value?.text ?? "").trim().slice(0, 240);
+function normalizeInteractionItems(values: unknown, validEvidence = new Set<string>()): InteractionItem[] {
+  return (Array.isArray(values) ? values : []).map((rawValue, index): InteractionItem | null => {
+    const value = asObject(rawValue);
+    const label = String(value.label ?? value.title ?? value.question ?? value.text ?? "").trim().slice(0, 240);
     if (!label) return null;
-    const kind = ["progress", "decision", "question", "suggestion"].includes(String(value?.kind)) ? String(value.kind) : "question";
-    const evidenceSegmentIds = uniqueStrings(value?.evidenceSegmentIds, 30).filter((id) => validEvidence.size === 0 || validEvidence.has(id));
+    const kind = isInteractionKind(value.kind) ? value.kind : "question";
+    const status = isInteractionStatus(value.status) ? value.status : "pending";
+    const priority = isInteractionPriority(value.priority) ? value.priority : "medium";
+    const evidenceSegmentIds = uniqueStrings(value.evidenceSegmentIds, 30).filter((id) => validEvidence.size === 0 || validEvidence.has(id));
     return {
-      itemId: String(value?.itemId ?? stableId("interaction", `${index}:${label}`)),
+      itemId: String(value.itemId ?? stableId("interaction", `${index}:${label}`)),
       kind,
       label,
-      description: String(value?.description ?? value?.why ?? "").trim().slice(0, 500),
-      status: ["pending", "answered", "dismissed"].includes(String(value?.status)) ? String(value.status) : "pending",
-      priority: ["high", "medium", "low"].includes(String(value?.priority)) ? String(value.priority) : "medium",
-      order: Number.isInteger(value?.order) ? Number(value.order) : index,
-      options: uniqueStrings(value?.options, 8),
-      blocks: uniqueStrings(value?.blocks, 12),
+      description: String(value.description ?? value.why ?? "").trim().slice(0, 500),
+      status,
+      priority,
+      order: Number.isInteger(value.order) ? Number(value.order) : index,
+      options: uniqueStrings(value.options, 8),
+      blocks: uniqueStrings(value.blocks, 12),
       evidenceSegmentIds,
-      suggestedDocuments: uniqueStrings(value?.suggestedDocuments, 8),
+      suggestedDocuments: uniqueStrings(value.suggestedDocuments, 8),
     };
-  }).filter(Boolean).slice(0, 30);
+  }).filter((item): item is NonNullable<typeof item> => item !== null).slice(0, 30);
 }
 
 function canonicalNextStepOptions(values: unknown) {
@@ -356,12 +342,13 @@ function canonicalNextStepOptions(values: unknown) {
   return uniqueStrings(values, 12).map((value) => aliases.get(value) ?? value);
 }
 
-function deriveInteractionItems(params: any) {
+function deriveInteractionItems(params: PlannerInput): InteractionItem[] {
   const explicit = normalizeInteractionItems(params.interactionItems);
   if (explicit.length > 0) return explicit;
-  const discovery = params.meetingAnalysis?.productDiscovery ?? params.meetingAnalysis?.productDiscoverySummary;
-  const values: any[] = [];
-  for (const question of discovery?.clarificationQuestions ?? []) {
+  const meetingAnalysis = asObject(params.meetingAnalysis);
+  const discovery = asObject(meetingAnalysis.productDiscovery ?? meetingAnalysis.productDiscoverySummary);
+  const values: unknown[] = [];
+  for (const question of asObjectArray(discovery.clarificationQuestions)) {
     values.push({
       kind: "question",
       label: question.question ?? question.text,
@@ -371,13 +358,13 @@ function deriveInteractionItems(params: any) {
       evidenceSegmentIds: question.evidenceSegmentIds,
     });
   }
-  const docs = canonicalNextStepOptions(params.meetingAnalysis?.suggestedFollowUpDocuments);
+  const docs = canonicalNextStepOptions(meetingAnalysis.suggestedFollowUpDocuments);
   const discoveryOptions = canonicalNextStepOptions([
-    ...(discovery?.nextStepOptions ?? []),
-    ...(params.meetingAnalysis?.nextStepOptions ?? []),
+    ...(Array.isArray(discovery.nextStepOptions) ? discovery.nextStepOptions : []),
+    ...(Array.isArray(meetingAnalysis.nextStepOptions) ? meetingAnalysis.nextStepOptions : []),
   ]);
   const nextStepOptions = uniqueStrings([
-    ...(values.some((item) => item.kind === "question") ? ["review-customer-questions"] : []),
+    ...(values.some((item) => asObject(item).kind === "question") ? ["review-customer-questions"] : []),
     ...discoveryOptions,
     ...docs,
     ...(params.meetingAnalysis ? ["keep-meeting-minutes-only"] : []),
@@ -395,7 +382,7 @@ function deriveInteractionItems(params: any) {
   return normalizeInteractionItems(values);
 }
 
-function buildEnvelope(params: any) {
+function buildEnvelope(params: PlannerInput): AdaptiveExecutionLedger {
   const availableArtifacts = uniqueStrings(params.availableArtifacts, 200);
   const text = normalized([
     params.goal ?? "",
@@ -412,8 +399,8 @@ function buildEnvelope(params: any) {
     { capabilityId: "capability-registry", reason: "Resolve capabilities lazily from ledger steps.", loadMode: "always_on", contextCost: "low" },
     { capabilityId: "qa-safety-review", reason: "Verify acceptance before completion.", loadMode: "always_on", contextCost: "low" },
   ];
-  const toolPlan: any[] = [];
-  const policyRisks: any[] = [];
+  const toolPlan: ToolPlanItem[] = [];
+  const policyRisks: PolicyRisk[] = [];
   const requiredArtifacts = ["planner-envelope.json"];
   const constraints = [
     "The execution ledger is the only task-control source of truth; channel state, checkpoints and todos are projections.",
@@ -433,7 +420,6 @@ function buildEnvelope(params: any) {
   addToolPlan(toolPlan, "draft", "local_model", "Create private working results before external actions.", false);
   addToolPlan(toolPlan, "interact", "execution_ledger_todo", "Show progress, unresolved questions and next-step choices to the user.", false);
 
-  const meetingOrchestrationMode = String(params.meetingAnalysis?.orchestrationMode ?? "direct");
   if (taskType === "meeting_minutes") {
     addCapability(capabilities, { capabilityId: "meeting-intelligence", reason: "Build meeting and product-discovery semantic state.", loadMode: "lazy", contextCost: "medium" });
     addCapability(capabilities, { capabilityId: "meeting-minutes", reason: "Generate evidence-grounded meeting minutes.", loadMode: "lazy", contextCost: "medium" });
@@ -487,7 +473,7 @@ function buildEnvelope(params: any) {
     writeScope: step.resultRefs.length > 0 ? step.resultRefs.join(", ") : `result envelope for ${step.stepId}`,
   }));
 
-  const envelope: any = {
+  const envelopeBase: Omit<AdaptiveExecutionLedger, "userTodoProjection"> = {
     schemaVersion: "adaptive-execution-ledger-v1",
     planId,
     runId: params.runId ? safeRunId(params.runId) : null,
@@ -503,14 +489,13 @@ function buildEnvelope(params: any) {
     currentStepIds: steps.filter((step) => step.status === "in_progress").map((step) => step.stepId),
     nextStepIds: steps.filter((step) => step.status === "ready").map((step) => step.stepId),
     interactionItems,
-    userTodoProjection: null,
     parallelizableWorkers,
     policyRisks,
     requiredArtifacts: uniqueStrings(requiredArtifacts, 80),
     stopConditions: uniqueStrings(stopConditions, 40),
     artifactIndex: Object.fromEntries(availableArtifacts.map((path, index) => [`artifact-${index + 1}`, path])),
     checkpointRefs: [],
-    openQuestions: interactionItems.filter((item: any) => item.kind === "question" && item.status === "pending").map((item: any) => item.itemId),
+    openQuestions: interactionItems.filter((item) => item.kind === "question" && item.status === "pending").map((item) => item.itemId),
     events: [{ eventId: stableId("event", `${planId}:created`), type: "plan_created", at: createdAt, actor: "parent" }],
     fixedWorkflow: false,
     plannerMode: "adaptive_execution_ledger",
@@ -519,24 +504,24 @@ function buildEnvelope(params: any) {
     rawSecretsReturned: false,
     meetingContentAccess: "allowed",
   };
-  envelope.userTodoProjection = buildTodoProjection(envelope);
-  return envelope;
+  return { ...envelopeBase, userTodoProjection: buildTodoProjection(envelopeBase) };
 }
 
-function buildTodoProjection(ledger: any) {
-  const steps = Array.isArray(ledger?.steps) ? ledger.steps : [];
-  const interactions = Array.isArray(ledger?.interactionItems) ? ledger.interactionItems : [];
-  const items = [
-    ...steps.map((step: any) => ({
+function buildTodoProjection(ledger: LedgerWithProjection): TodoProjection {
+  const steps = ledger.steps;
+  const interactions = ledger.interactionItems;
+  const stepItems: TodoProjection["items"] = steps.map((step) => ({
       itemId: step.stepId,
       kind: "progress",
       label: step.title,
       status: step.status,
       interactive: false,
       options: [],
-      blocks: step.dependsOn ?? [],
-    })),
-    ...[...interactions].sort((left: any, right: any) => Number(left.order ?? 0) - Number(right.order ?? 0)).map((item: any) => ({
+      blocks: step.dependsOn,
+    }));
+  const interactionItems: TodoProjection["items"] = [...interactions]
+    .sort((left, right) => left.order - right.order)
+    .map((item) => ({
       itemId: item.itemId,
       kind: item.kind,
       label: item.label,
@@ -546,16 +531,15 @@ function buildTodoProjection(ledger: any) {
       interactive: item.status === "pending" && ["decision", "question", "suggestion"].includes(item.kind),
       options: item.options ?? [],
       blocks: item.blocks ?? [],
-    })),
-  ];
+    }));
   return {
     schemaVersion: "execution-todo-projection-v1",
     planId: ledger?.planId ?? null,
     revision: Number(ledger?.revision ?? 1),
-    completed: steps.filter((step: any) => ["completed", "skipped", "cancelled"].includes(step.status)).length,
+    completed: steps.filter((step) => ["completed", "skipped", "cancelled"].includes(step.status)).length,
     total: steps.length,
-    awaitingUser: interactions.some((item: any) => item.status === "pending" && ["decision", "question"].includes(item.kind)),
-    items,
+    awaitingUser: interactions.some((item) => item.status === "pending" && ["decision", "question"].includes(item.kind)),
+    items: [...stepItems, ...interactionItems],
   };
 }
 
@@ -577,9 +561,8 @@ function assertNoDependencyCycle(steps: LedgerStep[]) {
   for (const step of steps) visit(step.stepId);
 }
 
-function reconcileLedger(current: any, params: any) {
-  if (!current || current.schemaVersion !== "adaptive-execution-ledger-v1") throw new Error("execution_ledger_invalid");
-  if (params.operationId && (current.events ?? []).some((event: any) => event.operationId === params.operationId)) {
+function reconcileLedger(current: AdaptiveExecutionLedger, params: ReconcileParams) {
+  if (params.operationId && current.events.some((event) => event.operationId === params.operationId)) {
     return { ...current, userTodoProjection: buildTodoProjection(current), noOp: true, idempotentReplay: true };
   }
   if (params.expectedRevision !== undefined && Number(params.expectedRevision) !== Number(current.revision)) {
@@ -587,12 +570,12 @@ function reconcileLedger(current: any, params: any) {
   }
   const now = nowIso();
   let changed = false;
-  const patches = Array.isArray(params.stepUpdates) ? params.stepUpdates : [];
-  const steps: LedgerStep[] = current.steps.map((step: LedgerStep) => {
-    const patch = patches.find((item: any) => String(item.stepId) === step.stepId);
+  const patches = params.stepUpdates ?? [];
+  const steps: LedgerStep[] = current.steps.map((step) => {
+    const patch = patches.find((item) => item.stepId === step.stepId);
     if (!patch) return step;
     const nextStatus = patch.status ?? step.status;
-    const completedDependencies = new Set(current.steps.filter((item: LedgerStep) => ["completed", "skipped"].includes(item.status)).map((item: LedgerStep) => item.stepId));
+    const completedDependencies = new Set(current.steps.filter((item) => ["completed", "skipped"].includes(item.status)).map((item) => item.stepId));
     const alreadyInProgress = step.status === "in_progress";
     if (nextStatus === "in_progress" && !step.dependsOn.every((dependency) => completedDependencies.has(dependency))) {
       throw new Error(`execution_ledger_dependency_not_ready:${step.stepId}`);
@@ -622,9 +605,9 @@ function reconcileLedger(current: any, params: any) {
       changed = true;
     }
   }
-  const interactionUpdates = Array.isArray(params.interactionUpdates) ? params.interactionUpdates : [];
-  let interactionItems = (current.interactionItems ?? []).map((item: any) => {
-    const patch = interactionUpdates.find((value: any) => String(value.itemId) === item.itemId);
+  const interactionUpdates = params.interactionUpdates ?? [];
+  let interactionItems: InteractionItem[] = current.interactionItems.map((item) => {
+    const patch = interactionUpdates.find((value) => value.itemId === item.itemId);
     if (!patch) return item;
     changed = true;
     return {
@@ -637,26 +620,26 @@ function reconcileLedger(current: any, params: any) {
   });
   const additions = normalizeInteractionItems(params.interactionAdditions);
   for (const addition of additions) {
-    if (interactionItems.some((item: any) => item.itemId === addition.itemId)) continue;
+    if (interactionItems.some((item) => item.itemId === addition.itemId)) continue;
     interactionItems.push(addition);
     changed = true;
   }
-  interactionItems = interactionItems.sort((left: any, right: any) => Number(left.order ?? 0) - Number(right.order ?? 0));
+  interactionItems = interactionItems.sort((left, right) => left.order - right.order);
   if (!changed) return { ...current, userTodoProjection: buildTodoProjection(current), noOp: true };
   const revision = Number(current.revision ?? 1) + 1;
-  const next = {
+  const next: AdaptiveExecutionLedger = {
     ...current,
     revision,
     steps,
     interactionItems,
     currentStepIds: steps.filter((step) => step.status === "in_progress").map((step) => step.stepId),
     nextStepIds: steps.filter((step) => step.status === "ready").map((step) => step.stepId),
-    openQuestions: interactionItems.filter((item: any) => item.kind === "question" && item.status === "pending").map((item: any) => item.itemId),
+    openQuestions: interactionItems.filter((item) => item.kind === "question" && item.status === "pending").map((item) => item.itemId),
     status: steps.some((step) => ["blocked", "failed"].includes(step.status))
       ? "blocked"
       : steps.every((step) => ["completed", "skipped", "cancelled"].includes(step.status))
         ? "completed"
-        : interactionItems.some((item: any) => item.status === "pending" && ["decision", "question"].includes(item.kind))
+        : interactionItems.some((item) => item.status === "pending" && ["decision", "question"].includes(item.kind))
           ? "awaiting_user"
           : "active",
     updatedAt: now,
@@ -679,7 +662,9 @@ function writePlannerEnvelope(runId: string, envelope: unknown, outputRoot?: str
 function readPlannerEnvelope(runId: string, outputRoot?: string) {
   const path = plannerPath(runId, outputRoot);
   if (!existsSync(path)) throw new Error("execution_ledger_not_found");
-  return { path, ledger: JSON.parse(readFileSync(path, "utf8")) };
+  const ledger: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!isAdaptiveExecutionLedger(ledger)) throw new Error("execution_ledger_invalid");
+  return { path, ledger };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -697,10 +682,10 @@ export default function (pi: ExtensionAPI) {
       constraints: Type.Optional(Type.Array(Type.String())),
       requestedOutputs: Type.Optional(Type.Array(Type.String())),
       availableArtifacts: Type.Optional(Type.Array(Type.String())),
-      meetingAnalysis: Type.Optional(Type.Any()),
-      interactionItems: Type.Optional(Type.Array(Type.Any())),
+      meetingAnalysis: Type.Optional(Type.Unknown()),
+      interactionItems: Type.Optional(Type.Array(Type.Unknown())),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const details = buildEnvelope(params);
         assertNoDependencyCycle(details.steps);
@@ -716,8 +701,8 @@ export default function (pi: ExtensionAPI) {
     name: "planner_envelope_write",
     label: "Adaptive Execution Ledger Write",
     description: "Persist the authoritative execution ledger inside the workspace run directory.",
-    parameters: Type.Object({ runId: Type.String(), envelope: Type.Any(), outputRoot: Type.Optional(Type.String()) }),
-    async execute(_toolCallId, params): Promise<any> {
+    parameters: Type.Object({ runId: Type.String(), envelope: Type.Unknown(), outputRoot: Type.Optional(Type.String()) }),
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const path = writePlannerEnvelope(params.runId, params.envelope, params.outputRoot);
         const details = { ok: true, runId: safeRunId(params.runId), plannerEnvelopePath: path, rawSecretsReturned: false };
@@ -748,14 +733,14 @@ export default function (pi: ExtensionAPI) {
       }))),
       interactionUpdates: Type.Optional(Type.Array(Type.Object({
         itemId: Type.String(),
-        status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("answered"), Type.Literal("dismissed")])),
+        status: Type.Optional(INTERACTION_STATUS),
         answer: Type.Optional(Type.String()),
-        priority: Type.Optional(Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")])),
+        priority: Type.Optional(INTERACTION_PRIORITY),
         order: Type.Optional(Type.Number()),
       }))),
-      interactionAdditions: Type.Optional(Type.Array(Type.Any())),
+      interactionAdditions: Type.Optional(Type.Array(Type.Unknown())),
     }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const { path, ledger } = readPlannerEnvelope(params.runId, params.outputRoot);
         const details = reconcileLedger(ledger, params);
@@ -773,11 +758,11 @@ export default function (pi: ExtensionAPI) {
     label: "Execution Todo Projection",
     description: "Read the user-facing progress, clarification and next-step projection from the execution ledger.",
     parameters: Type.Object({ runId: Type.String(), outputRoot: Type.Optional(Type.String()), kind: Type.Optional(INTERACTION_KIND) }),
-    async execute(_toolCallId, params): Promise<any> {
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
       try {
         const { ledger } = readPlannerEnvelope(params.runId, params.outputRoot);
         const projection = buildTodoProjection(ledger);
-        const items = params.kind ? projection.items.filter((item: any) => item.kind === params.kind) : projection.items;
+        const items = params.kind ? projection.items.filter((item) => item.kind === params.kind) : projection.items;
         const details = { ...projection, items, rawSecretsReturned: false };
         return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
       } catch (error) {

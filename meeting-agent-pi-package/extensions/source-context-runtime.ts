@@ -264,13 +264,13 @@ function cleanHtmlTableCell(value: unknown) {
 
 function htmlTableToMarkdown(tableHtml: string) {
   const rows = [...String(tableHtml ?? "").matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
-    .map((rowMatch) => [...rowMatch[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)]
+    .map((rowMatch) => [...(rowMatch[1] ?? "").matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)]
       .map((cellMatch) => cleanHtmlTableCell(cellMatch[1])))
     .filter((cells) => cells.length > 0);
   if (rows.length === 0) return tableHtml;
   const columnCount = Math.max(...rows.map((row) => row.length));
   const normalizedRows = rows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] ?? ""));
-  const header = normalizedRows[0];
+  const header = normalizedRows[0] ?? [];
   const separator = Array.from({ length: columnCount }, () => "---");
   const body = normalizedRows.slice(1);
   return [header, separator, ...body].map((row) => `| ${row.join(" | ")} |`).join("\n");
@@ -338,8 +338,10 @@ function projectTitleFromDocumentTitle(title: unknown) {
   const raw = String(title ?? "").trim();
   if (!raw || looksLikeGenericUploadName(raw)) return "";
   const parts = raw.split(/[｜|]/).map((part) => cleanTitlePart(part, "")).filter(Boolean);
-  if (parts.length >= 2 && /^(PRD|技术架构|运营方案|客户需求确认表|会议纪要)$/i.test(parts[0])) {
-    return looksLikeGenericUploadName(parts[1]) ? "" : parts[1];
+  const firstPart = parts[0] ?? "";
+  const secondPart = parts[1] ?? "";
+  if (parts.length >= 2 && /^(PRD|技术架构|运营方案|客户需求确认表|会议纪要)$/i.test(firstPart)) {
+    return looksLikeGenericUploadName(secondPart) ? "" : secondPart;
   }
   const withoutDocType = raw
     .replace(/^(PRD|技术架构|运营方案|客户需求确认表|会议纪要)[：:\s｜|-]*/i, "")
@@ -489,7 +491,7 @@ function splitParagraphs(text: string) {
     .filter(Boolean);
 }
 
-function segmentText(record: SourceRecord, text: string) {
+function segmentText(record: SourceRecord, text: string): SourceSegment[] {
   const clean = normalizeText(text);
   if (!clean) return [] as SourceSegment[];
   const paragraphs = splitParagraphs(clean);
@@ -568,8 +570,8 @@ function extractHeadingBlocks(record: SourceRecord, text: string, segments: Sour
   const blocks: SourceBlock[] = [];
   const headingPath: string[] = [];
   for (const match of normalizeText(text).matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)) {
-    const level = match[1].length;
-    const heading = cleanTitlePart(match[2], "");
+    const level = (match[1] ?? "").length;
+    const heading = cleanTitlePart(match[2] ?? "", "");
     if (!heading) continue;
     headingPath.splice(level - 1);
     headingPath[level - 1] = heading;
@@ -618,7 +620,7 @@ function extractMarkdownTableBlocks(record: SourceRecord, rawText: string, segme
   const blocks: SourceBlock[] = [];
   const tablePattern = /((?:^\s*\|.*\|\s*$\n?){2,})/gm;
   for (const match of normalized.matchAll(tablePattern)) {
-    const markdown = match[1].trim();
+    const markdown = (match[1] ?? "").trim();
     if (!/^\s*\|.+\|\s*\n\s*\|[\s:-]+\|/m.test(markdown)) continue;
     const parsed = parseMarkdownTable(markdown);
     blocks.push({
@@ -858,7 +860,7 @@ function buildDocumentIdentity(params: {
   };
 }
 
-function sourceRecordsFromFileContexts(fileContexts: any) {
+function sourceRecordsFromFileContexts(fileContexts: any): SourceRecord[] {
   const contexts = Array.isArray(fileContexts?.contexts) ? fileContexts.contexts : [];
   return contexts.map((context: any, index: number): SourceRecord => {
     const sourceId = `file-${String(index + 1).padStart(2, "0")}`;
@@ -1714,13 +1716,13 @@ export default function (pi: ExtensionAPI) {
       outputRoot: Type.Optional(Type.String()),
       taskPrompt: Type.Optional(Type.String()),
       requestedDocuments: Type.Optional(Type.Array(Type.String())),
-      sourcePreparation: Type.Optional(Type.Any()),
-      fileContexts: Type.Optional(Type.Any()),
+      sourcePreparation: Type.Optional(Type.Unknown()),
+      fileContexts: Type.Optional(Type.Unknown()),
       transcriptPath: Type.Optional(Type.String()),
       evidenceIndexPath: Type.Optional(Type.String()),
       asrSummaryPath: Type.Optional(Type.String()),
-      reviewContext: Type.Optional(Type.Any()),
-      meetingAnalysis: Type.Optional(Type.Any()),
+      reviewContext: Type.Optional(Type.Unknown()),
+      meetingAnalysis: Type.Optional(Type.Unknown()),
       operation: Type.Optional(Type.String()),
       sectionsPerUnit: Type.Optional(Type.Number()),
     }),
@@ -1773,7 +1775,7 @@ export default function (pi: ExtensionAPI) {
       taskPrompt: Type.Optional(Type.String()),
       docType: Type.String(),
       sections: Type.Array(Type.String()),
-      segments: Type.Array(Type.Any()),
+      segments: Type.Array(Type.Unknown()),
       operation: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {
@@ -1799,7 +1801,7 @@ export default function (pi: ExtensionAPI) {
       taskPrompt: Type.Optional(Type.String()),
       docType: Type.String(),
       sections: Type.Array(Type.String()),
-      selectedSegments: Type.Array(Type.Any()),
+      selectedSegments: Type.Array(Type.Unknown()),
       operation: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {
@@ -1836,7 +1838,7 @@ export default function (pi: ExtensionAPI) {
           taskPrompt: params.taskPrompt ?? "",
           selectedSegments: params.selectedSegments as SourceSegment[],
           retrievalReasons,
-          operation: params.operation,
+          ...(params.operation === undefined ? {} : { operation: params.operation }),
           taskState: {
             schemaVersion: "office-task-state-v2",
             objective: params.taskPrompt ?? "",
@@ -1862,7 +1864,7 @@ export default function (pi: ExtensionAPI) {
     description: "Evaluate source/context coverage before document generation starts.",
     parameters: Type.Object({
       manifestPath: Type.Optional(Type.String()),
-      manifest: Type.Optional(Type.Any()),
+      manifest: Type.Optional(Type.Unknown()),
     }),
     async execute(_toolCallId, params) {
       try {

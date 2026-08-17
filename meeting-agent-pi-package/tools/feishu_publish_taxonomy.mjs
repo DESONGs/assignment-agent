@@ -203,6 +203,7 @@ export function buildPublishTaxonomy({
   legacySessionKey = "",
   writeFile = true,
 }) {
+  const taxonomyOptions = /** @type {{ projectWikiRootTitle?: string, folderToken?: string }} */ (options);
   const titlePlan = loadJsonIfExists(documentTitlePlanPath(paths));
   const contextManifest = loadJsonIfExists(contextManifestPath(paths));
   const docs = Array.isArray(documents) ? documents : [];
@@ -246,7 +247,7 @@ export function buildPublishTaxonomy({
       date,
     },
     wiki: {
-      rootTitle: options.projectWikiRootTitle ?? PROJECT_WIKI_ROOT_TITLE,
+      rootTitle: taxonomyOptions.projectWikiRootTitle ?? PROJECT_WIKI_ROOT_TITLE,
       rootReuseKey: "root:pi-agent-project-knowledge-base",
       projectTitle: `项目｜${projectTitle}`,
       projectReuseKey: projectKey,
@@ -257,7 +258,7 @@ export function buildPublishTaxonomy({
       folderName: `项目｜${projectTitle}`,
       projectReuseKey: projectKey,
       fallbackPolicy: "project_named_drive_folder",
-      parentFolderConfigured: Boolean(options.folderToken),
+      parentFolderConfigured: Boolean(taxonomyOptions.folderToken),
     },
     documents: documentPlans,
     rawSecretsReturned: false,

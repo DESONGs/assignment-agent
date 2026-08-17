@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -43,6 +43,43 @@ const DESTRUCTIVE_ACTIONS = new Set(["delete", "clear", "remove", "destroy"]);
 const SECRET_KEY_PATTERN = /authorization|cookie|secret|token|session/i;
 const SECRET_VALUE_PATTERN =
   /(app_secret|client_secret|refresh_token|access_token|authorization|cookie|session)\s*[:=]\s*["']?[^"',\s]+|bearer\s+[A-Za-z0-9._-]+/gi;
+
+type OfficeBlockedDetails = {
+  ok: boolean;
+  status: string;
+  reason: string;
+  rawSecretsReturned: boolean;
+};
+
+type DocumentLifecycleWriteDetails = OfficeBlockedDetails | {
+  ok: boolean;
+  status: string;
+  documentLifecyclePath: string;
+  rawSecretsReturned: boolean;
+  rawMediaExternalUpload: boolean;
+};
+
+type OfficeObjectWriteDetails = OfficeBlockedDetails | {
+  ok: boolean;
+  officeObjectPath: string;
+  objectId: string;
+  rawSecretsReturned: boolean;
+};
+
+type RetrievalIndexWriteDetails = OfficeBlockedDetails | {
+  ok: boolean;
+  retrievalIndexPath: string;
+  entryCount: number;
+  pointerOnly: boolean;
+  rawSecretsReturned: boolean;
+};
+
+type RetrievalIndexSearchDetails = OfficeBlockedDetails | {
+  ok: boolean;
+  results: unknown[];
+  rawSecretsReturned: boolean;
+  rawMediaExternalUpload: boolean;
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -306,7 +343,7 @@ export default function (pi: ExtensionAPI) {
     description: "Write a document-lifecycle.json artifact with sourceRun and version metadata.",
     parameters: Type.Object({
       runId: Type.String(),
-      plan: Type.Optional(Type.Any()),
+      plan: Type.Optional(Type.Unknown()),
       action: Type.Optional(DOCUMENT_ACTION),
       channel: Type.Optional(CHANNEL),
       documentId: Type.Optional(Type.String()),
@@ -317,13 +354,13 @@ export default function (pi: ExtensionAPI) {
       targetArtifactPointer: Type.Optional(Type.String()),
       generatedInCurrentConversation: Type.Optional(Type.Boolean()),
       contextId: Type.Optional(Type.String()),
-      actor: Type.Optional(Type.Any()),
-      conversation: Type.Optional(Type.Any()),
-      workspace: Type.Optional(Type.Any()),
+      actor: Type.Optional(Type.Unknown()),
+      conversation: Type.Optional(Type.Unknown()),
+      workspace: Type.Optional(Type.Unknown()),
       sourceRunId: Type.Optional(Type.String()),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<DocumentLifecycleWriteDetails>> {
       try {
         const risk = containsSecretRisk(params);
         if (risk) throw new Error(`office_runtime_secret_payload_blocked:${risk}`);
@@ -355,13 +392,13 @@ export default function (pi: ExtensionAPI) {
       metadataPointer: Type.Optional(Type.String()),
       sourcePointer: Type.Optional(Type.String()),
       contextId: Type.Optional(Type.String()),
-      actor: Type.Optional(Type.Any()),
-      conversation: Type.Optional(Type.Any()),
-      workspace: Type.Optional(Type.Any()),
+      actor: Type.Optional(Type.Unknown()),
+      conversation: Type.Optional(Type.Unknown()),
+      workspace: Type.Optional(Type.Unknown()),
       sourceRunId: Type.Optional(Type.String()),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<OfficeObjectWriteDetails>> {
       try {
         const risk = containsSecretRisk(params);
         if (risk) throw new Error(`office_runtime_secret_payload_blocked:${risk}`);
@@ -403,15 +440,15 @@ export default function (pi: ExtensionAPI) {
       indexId: Type.Optional(Type.String()),
       channel: Type.Optional(CHANNEL),
       contextId: Type.Optional(Type.String()),
-      actor: Type.Optional(Type.Any()),
-      conversation: Type.Optional(Type.Any()),
-      workspace: Type.Optional(Type.Any()),
+      actor: Type.Optional(Type.Unknown()),
+      conversation: Type.Optional(Type.Unknown()),
+      workspace: Type.Optional(Type.Unknown()),
       sourceRunId: Type.Optional(Type.String()),
       sourceArtifactPointer: Type.Optional(Type.String()),
-      entries: Type.Array(Type.Any()),
+      entries: Type.Array(Type.Unknown()),
       outputRoot: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<RetrievalIndexWriteDetails>> {
       try {
         const risk = containsSecretRisk(params);
         if (risk) throw new Error(`retrieval_index_secret_payload_blocked:${risk}`);
@@ -450,7 +487,7 @@ export default function (pi: ExtensionAPI) {
       query: Type.String(),
       limit: Type.Optional(Type.Number()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<RetrievalIndexSearchDetails>> {
       try {
         const path = resolve(params.indexPath);
         if (!isInside(workspaceDir, path)) throw new Error("retrieval_index_path_outside_workspace_blocked");

@@ -176,7 +176,7 @@ async function openPublicResponse(value, options = {}, redirectCount = 0) {
   const maxRedirects = Number(options.maxRedirects ?? DEFAULT_PUBLIC_URL_LIMITS.maxRedirects);
   const validated = await validatePublicUrl(value, options);
   if (validated.status !== "ready") throw Object.assign(new Error(validated.reason), { diagnostic: validated });
-  const url = validated.url;
+  const url = validated.url instanceof URL ? validated.url : new URL(String(validated.url));
   const requestImpl = url.protocol === "https:" ? httpsRequest : httpRequest;
   const response = await new Promise((resolveRequest, rejectRequest) => {
     const req = requestImpl(url, {
@@ -199,6 +199,7 @@ async function openPublicResponse(value, options = {}, redirectCount = 0) {
     if (redirectCount >= maxRedirects) throw new Error("public_url_redirect_limit_exceeded");
     const redirect = await validatePublicRedirect(url, response.headers.location, options);
     if (redirect.status !== "ready") throw Object.assign(new Error(redirect.reason), { diagnostic: redirect });
+    if (!("url" in redirect) || !(redirect.url instanceof URL)) throw new Error("public_url_redirect_target_invalid");
     return openPublicResponse(redirect.url, options, redirectCount + 1);
   }
   return { response, finalUrl: url, redirectCount, statusCode };
@@ -318,7 +319,7 @@ export async function downloadPublicResource(value, destination, options = {}) {
       });
       response.on("error", fail);
       output.on("error", fail);
-      output.on("finish", resolveWrite);
+      output.on("finish", () => resolveWrite());
       response.pipe(output);
     });
     renameSync(partial, destination);

@@ -5,6 +5,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeF
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
+import { assertCloudAsrSummary } from "../dist/index.js";
 import {
   DASHSCOPE_FILE_EXTENSIONS,
   DASHSCOPE_REALTIME_FORMATS,
@@ -236,12 +237,13 @@ async function uploadSourceToOss(source, config, eventPath) {
   });
   let response;
   try {
-    response = await fetch(objectUrl, {
+    const uploadRequest = {
       method: "PUT",
       headers,
-      body: createReadStream(source.path),
+      body: /** @type {BodyInit} */ (/** @type {unknown} */ (createReadStream(source.path))),
       duplex: "half",
-    });
+    };
+    response = await fetch(objectUrl, /** @type {RequestInit} */ (/** @type {unknown} */ (uploadRequest)));
   } catch (error) {
     return blocked("cloud_asr_file_upload_failed", { error: redact(error instanceof Error ? error.message : String(error)) });
   }
@@ -807,7 +809,7 @@ async function transcribeFileRecording(params, source, eventPath, config, provid
   if (!fileUrl) {
     if (!config.configured) return blocked("cloud_asr_file_transport_unavailable");
     const upload = await uploadSourceToOss(uploadSource, config, eventPath);
-    if (upload.status !== "completed") return upload;
+    if (upload.status !== "completed" || !("objectUri" in upload) || !("objectKey" in upload)) return upload;
     objectUri = upload.objectUri;
     fileUrl = signedOssGetUrl(
       config,
@@ -1233,8 +1235,9 @@ function buildOutputs(params, outputDir, sources, fileRuns) {
       },
     });
   }
-  writeJson(join(outputDir, "summary.json"), summary);
-  return summary;
+  const validatedSummary = assertCloudAsrSummary(summary);
+  writeJson(join(outputDir, "summary.json"), validatedSummary);
+  return validatedSummary;
 }
 
 export async function transcribeDashScopeAsr(params) {

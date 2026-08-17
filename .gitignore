@@ -8,6 +8,15 @@ node_modules/
 .build/
 **/.build/
 
+# TypeScript emits belong in meeting-agent-pi-package/dist only. Keep accidental
+# adjacent compiler output out of authored extensions and source contracts.
+meeting-agent-pi-package/extensions/*.js
+meeting-agent-pi-package/extensions/*.js.map
+meeting-agent-pi-package/src/**/*.js
+meeting-agent-pi-package/src/**/*.js.map
+meeting-agent-pi-package/src/**/*.d.ts
+meeting-agent-pi-package/src/**/*.d.ts.map
+
 # Local runtime state and dependency/model caches. Keep the reviewed Pi project
 # contract and meeting subagent definitions versioned; generated Pi state stays
 # ignored.

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -8,44 +8,51 @@ import { planRoute, recordRouteArtifact } from "./model-routing.ts";
 
 type DocumentWorkItem = {
   docType: string;
-  promptFile?: string;
-  promptPath?: string;
-  promptInstructions?: string;
-  promptInstructionChars?: number;
+  promptFile?: string | undefined;
+  promptPath?: string | undefined;
+  promptInstructions?: string | undefined;
+  promptInstructionChars?: number | undefined;
   contextPlane?: {
-    enabled?: boolean;
-    contextEnvelopeRef?: string;
-    workUnitCount?: number;
-    promptMode?: string;
-    fullContentAvailableByArtifact?: boolean;
+    enabled?: boolean | undefined;
+    contextEnvelopeRef?: string | undefined;
+    workUnitCount?: number | undefined;
+    promptMode?: string | undefined;
+    fullContentAvailableByArtifact?: boolean | undefined;
   } | null;
   workUnits?: Array<{
     workUnitId: string;
     docType: string;
     sections: string[];
     contextPackRef: string;
-    contextPackId?: string;
-    contextPackHash?: string;
-    sourceSegmentIds?: string[];
-    sourceBlockIds?: string[];
-    tableBlockCount?: number;
-    promptBudgetChars?: number;
-    evidenceBudgetChars?: number;
-    retrievalReasons?: string[];
-    outputContractVersion?: string;
-    documentIdentityConfidence?: "high" | "medium" | "low";
-    taskStateRef?: string;
-    sourceRecordsRef?: string;
-    sourceSegmentsRef?: string;
-    sourceStructureRef?: string;
-  }>;
-  upstreamDependencyContext?: unknown;
-  requiredSections?: string[];
-  dependsOn?: string[];
-  audience?: string | null;
-  upstreamDocumentsUsed?: string[];
-  missingUpstreamDocuments?: string[];
-  absentUpstreamDocuments?: string[];
+    contextPackId?: string | undefined;
+    contextPackHash?: string | undefined;
+    sourceSegmentIds?: string[] | undefined;
+    sourceBlockIds?: string[] | undefined;
+    tableBlockCount?: number | undefined;
+    promptBudgetChars?: number | undefined;
+    evidenceBudgetChars?: number | undefined;
+    retrievalReasons?: string[] | undefined;
+    outputContractVersion?: string | undefined;
+    documentIdentityConfidence?: "high" | "medium" | "low" | undefined;
+    taskStateRef?: string | undefined;
+    sourceRecordsRef?: string | undefined;
+    sourceSegmentsRef?: string | undefined;
+    sourceStructureRef?: string | undefined;
+  }> | undefined;
+  upstreamDependencyContext?: unknown | undefined;
+  requiredSections?: string[] | undefined;
+  dependsOn?: string[] | undefined;
+  audience?: string | null | undefined;
+  upstreamDocumentsUsed?: string[] | undefined;
+  missingUpstreamDocuments?: string[] | undefined;
+  absentUpstreamDocuments?: string[] | undefined;
+};
+
+type DocumentWorkersRunDetails = {
+  status: string;
+  reason: string | null;
+  runId?: string | undefined;
+  rawSecretsReturned?: boolean | undefined;
 };
 
 type SectionBatch = {
@@ -137,7 +144,7 @@ type RetryPolicy = {
 };
 
 type WorkflowContext = {
-  runId?: string;
+  runId?: string | undefined;
   root: string | null;
   checkpointPath: string | null;
   retryLedgerPath: string | null;
@@ -211,7 +218,7 @@ function deadlineBlockedResult(params: {
   repairAttempts: any[];
   markdownParts: string[];
   traceRoot: string | null;
-  deadline?: DeadlineContext | null;
+  deadline?: DeadlineContext | null | undefined;
   stage: string;
 }) {
   const markdown = mergeMarkdown(params.markdownParts);
@@ -418,13 +425,13 @@ function normalizeRetryPolicy(value: any): RetryPolicy {
 }
 
 function workflowContext(params: {
-  runId?: string;
-  outputRoot?: string;
-  qualityMode?: unknown;
-  workflowStrategy?: unknown;
-  resumeFromCheckpoint?: unknown;
-  publishPartial?: unknown;
-  retryPolicy?: unknown;
+  runId?: string | undefined;
+  outputRoot?: string | undefined;
+  qualityMode?: unknown | undefined;
+  workflowStrategy?: unknown | undefined;
+  resumeFromCheckpoint?: unknown | undefined;
+  publishPartial?: unknown | undefined;
+  retryPolicy?: unknown | undefined;
 }): WorkflowContext {
   const root = workflowRootFor(params.runId, params.outputRoot);
   const checkpointPath = root ? join(root, "checkpoint.json") : null;
@@ -503,6 +510,7 @@ function docCheckpoint(workflow: WorkflowContext | null | undefined, item: Docum
     repairs: existing.repairs && typeof existing.repairs === "object" ? existing.repairs : {},
     assembly: existing.assembly ?? null,
     review: existing.review ?? null,
+    reason: existing.reason ?? null,
     completedSections: Array.isArray(existing.completedSections) ? existing.completedSections : [],
     missingSections: Array.isArray(existing.missingSections) ? existing.missingSections : [],
   };
@@ -561,19 +569,19 @@ async function generateWithRetry(params: {
   unitId: string;
   stage: string;
   docType: string;
-  sections?: string[];
-  workflow?: WorkflowContext | null;
+  sections?: string[] | undefined;
+  workflow?: WorkflowContext | null | undefined;
   prompt: string;
   initialRoute: any;
   candidates: any[];
-  mockResponse?: string;
-  temperature?: number;
-  maxTokens?: number;
-  modelTimeoutMs?: number;
-  captureModelStream?: boolean;
-  traceRoot?: string | null;
-  traceMeta?: Record<string, unknown>;
-  deadline?: DeadlineContext | null;
+  mockResponse?: string | undefined;
+  temperature?: number | undefined;
+  maxTokens?: number | undefined;
+  modelTimeoutMs?: number | undefined;
+  captureModelStream?: boolean | undefined;
+  traceRoot?: string | null | undefined;
+  traceMeta?: Record<string, unknown> | undefined;
+  deadline?: DeadlineContext | null | undefined;
 }) {
   const workflow = params.workflow;
   const maxAttempts = workflow?.workflowStrategy === "checkpointed" ? workflow.retryPolicy.maxAttemptsPerUnit : 1;
@@ -666,6 +674,7 @@ async function generateWithRetry(params: {
         },
       };
     }
+    if (!workflow) throw new Error("document_workflow_context_missing_for_retry");
     workflow.checkpoint.retry.unitsUsed = retryBudgetUsed + 1;
     writeCheckpoint(workflow);
   }
@@ -689,6 +698,7 @@ function dependencyWaves(items: DocumentWorkItem[]) {
     const ready: number[] = [];
     for (const index of unresolved) {
       const item = items[index];
+      if (!item) throw new Error("document_work_item_index_out_of_range");
       const requiredPresentDeps = uniqueStrings(item.dependsOn ?? []).filter((dep) => presentDocTypes.has(dep));
       if (requiredPresentDeps.every((dep) => resolvedDocTypes.has(dep))) {
         ready.push(index);
@@ -703,7 +713,9 @@ function dependencyWaves(items: DocumentWorkItem[]) {
     waves.push({ waveIndex: waves.length, taskIndexes: ready.sort((a, b) => a - b) });
     for (const index of ready) {
       unresolved.delete(index);
-      resolvedDocTypes.add(items[index].docType);
+      const item = items[index];
+      if (!item) throw new Error("document_work_item_index_out_of_range");
+      resolvedDocTypes.add(item.docType);
     }
   }
 
@@ -1042,17 +1054,17 @@ function isFallbackEligible(generation: any) {
 
 async function generateWithCandidates(params: {
   prompt: string;
-  systemPrompt?: string;
+  systemPrompt?: string | undefined;
   initialRoute: any;
   candidates: any[];
-  mockResponse?: string;
-  temperature?: number;
-  maxTokens?: number;
-  modelTimeoutMs?: number;
-  captureModelStream?: boolean;
-  traceRoot?: string | null;
-  traceMeta?: Record<string, unknown>;
-  deadline?: DeadlineContext | null;
+  mockResponse?: string | undefined;
+  temperature?: number | undefined;
+  maxTokens?: number | undefined;
+  modelTimeoutMs?: number | undefined;
+  captureModelStream?: boolean | undefined;
+  traceRoot?: string | null | undefined;
+  traceMeta?: Record<string, unknown> | undefined;
+  deadline?: DeadlineContext | null | undefined;
 }) {
   const attempts: any[] = [];
   for (const [candidateIndex, candidate] of params.candidates.entries()) {
@@ -1127,8 +1139,8 @@ async function generateWithCandidates(params: {
       ...traceMeta,
       completedAt,
       status: generation.status,
-      reason: generation.reason ?? null,
-      httpStatus: generation.httpStatus ?? null,
+      reason: "reason" in generation ? generation.reason ?? null : null,
+      httpStatus: "httpStatus" in generation ? generation.httpStatus ?? null : null,
       streamTracePath: generation.streamTracePath ?? streamTracePath ?? null,
       streamTraceSummaryPath: generation.streamTraceSummaryPath ?? streamTraceSummaryPath ?? null,
       contentChars: generation.content ? String(generation.content).length : 0,
@@ -1227,21 +1239,21 @@ async function generateOne(params: {
   taskIndex: number;
   unavailableProviders: string[];
   mockProvider: boolean;
-  mockResponse?: string;
-  temperature?: number;
-  maxTokens?: number;
-  reasoningDepth?: "fast" | "deep";
-  userRequestedDeepThinking?: boolean;
-  estimatedComplexity?: "low" | "medium" | "high";
+  mockResponse?: string | undefined;
+  temperature?: number | undefined;
+  maxTokens?: number | undefined;
+  reasoningDepth?: "fast" | "deep" | undefined;
+  userRequestedDeepThinking?: boolean | undefined;
+  estimatedComplexity?: "low" | "medium" | "high" | undefined;
   sectionBatching: boolean;
   sectionsPerBatch: number;
   maxRepairAttempts: number;
-  runId?: string;
-  outputRoot?: string;
-  modelTimeoutMs?: number;
-  captureModelStream?: boolean;
-  deadline?: DeadlineContext | null;
-  workflow?: WorkflowContext | null;
+  runId?: string | undefined;
+  outputRoot?: string | undefined;
+  modelTimeoutMs?: number | undefined;
+  captureModelStream?: boolean | undefined;
+  deadline?: DeadlineContext | null | undefined;
+  workflow?: WorkflowContext | null | undefined;
 }) {
   const { item, taskIndex } = params;
   const contextIssue = contextPlaneIssue(item);
@@ -1260,8 +1272,9 @@ async function generateOne(params: {
 
   const initialRoute = params.mockProvider
     ? {
-        status: "selected",
-        taskType: routeTaskTypeFor(item, params),
+      status: "selected",
+      reason: null,
+      taskType: routeTaskTypeFor(item, params),
         resolvedTaskType: routeTaskTypeFor(item, params),
         selected: { provider: "mock", model: "mock-document-worker", strength: "test" },
         candidates: [{ provider: "mock", model: "mock-document-worker", strength: "test" }],
@@ -1350,6 +1363,7 @@ async function generateOne(params: {
 
   let resumedNeedsFixAssembly = false;
   if (
+    checkpointRecord &&
     params.workflow?.resumeFromCheckpoint &&
     previousCheckpointDocStatus !== "completed" &&
     checkpointRecord.doc.assembly?.artifactPath &&
@@ -1930,9 +1944,9 @@ async function generateOne(params: {
 }
 
 function routeTaskTypeFor(item: DocumentWorkItem, params: {
-  reasoningDepth?: "fast" | "deep";
-  userRequestedDeepThinking?: boolean;
-  estimatedComplexity?: "low" | "medium" | "high";
+  reasoningDepth?: "fast" | "deep" | undefined;
+  userRequestedDeepThinking?: boolean | undefined;
+  estimatedComplexity?: "low" | "medium" | "high" | undefined;
 }) {
   if (item.docType === "meeting-minutes") return "meeting_minutes";
   const deepDocs = new Set(["prd", "tech-architecture", "ops-plan", "customer-requirement-checklist"]);
@@ -1954,7 +1968,9 @@ async function runLimited<T>(items: T[], maxWorkers: number, worker: (item: T, i
     while (next < items.length) {
       const index = next;
       next += 1;
-      results[index] = await worker(items[index], index);
+      const item = items[index];
+      if (item === undefined) throw new Error("document_work_item_index_out_of_range");
+      results[index] = await worker(item, index);
     }
   }
   await Promise.all(Array.from({ length: Math.min(maxWorkers, items.length) }, () => loop()));
@@ -2109,7 +2125,7 @@ export default function (pi: ExtensionAPI) {
     label: "Document Workers Plan",
     description: "Plan bounded context-pack document work units from prompt registry outputs.",
     parameters: Type.Object({
-      documentWorkItems: Type.Array(Type.Any()),
+      documentWorkItems: Type.Array(Type.Unknown()),
       maxWorkers: Type.Optional(Type.Number()),
       sectionBatching: Type.Optional(Type.Boolean()),
       sectionsPerBatch: Type.Optional(Type.Number()),
@@ -2169,7 +2185,7 @@ export default function (pi: ExtensionAPI) {
     description: "Run bounded document work units through model providers in parallel and return per-document Markdown plus QA input.",
     parameters: Type.Object({
       runId: Type.String(),
-      documentWorkItems: Type.Array(Type.Any()),
+      documentWorkItems: Type.Array(Type.Unknown()),
       maxWorkers: Type.Optional(Type.Number()),
       unavailableProviders: Type.Optional(Type.Array(Type.String())),
       mockProvider: Type.Optional(Type.Boolean()),
@@ -2192,9 +2208,9 @@ export default function (pi: ExtensionAPI) {
       workflowStrategy: Type.Optional(Type.Union([Type.Literal("checkpointed"), Type.Literal("single_pass")])),
       resumeFromCheckpoint: Type.Optional(Type.Boolean()),
       publishPartial: Type.Optional(Type.Boolean()),
-      retryPolicy: Type.Optional(Type.Any()),
+      retryPolicy: Type.Optional(Type.Unknown()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params): Promise<AgentToolResult<DocumentWorkersRunDetails>> {
       try {
         const documentWorkItems = normalizeDocumentWorkItems(params.documentWorkItems);
         if (documentWorkItems.length === 0) {
@@ -2202,12 +2218,12 @@ export default function (pi: ExtensionAPI) {
           return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
         }
         if (documentWorkItems.length > MAX_DOCUMENT_WORK_ITEMS) {
-          const blocked = { status: "blocked", reason: "too_many_document_work_items", maxDocumentWorkItems: MAX_DOCUMENT_WORK_ITEMS };
+          const blocked = { status: "blocked", reason: "too_many_document_work_items", maxDocumentWorkItems: MAX_DOCUMENT_WORK_ITEMS, rawSecretsReturned: false };
           return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
         }
         const blockingIssues = documentWorkItems.map((item, taskIndex) => ({ taskIndex, reason: contextPlaneIssue(item) })).filter((item) => item.reason);
         if (blockingIssues.length > 0) {
-          const blocked = { status: "blocked", reason: blockingIssues[0].reason === "context_pack_missing" ? "context_pack_missing" : "context_plane_required", blockingIssues, rawSecretsReturned: false };
+          const blocked = { status: "blocked", reason: blockingIssues[0]?.reason === "context_pack_missing" ? "context_pack_missing" : "context_plane_required", blockingIssues, rawSecretsReturned: false };
           return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
         }
         const maxWorkers = effectiveMaxWorkers(params.maxWorkers);
@@ -2243,7 +2259,11 @@ export default function (pi: ExtensionAPI) {
         const results: any[] = new Array(documentWorkItems.length);
         updateDocumentTaskState(documentWorkItems, [], "running");
         for (const wave of dependencyPlan.waves) {
-          const waveTasks = wave.taskIndexes.map((taskIndex) => ({ taskIndex, item: documentWorkItems[taskIndex] }));
+          const waveTasks = wave.taskIndexes.map((taskIndex) => {
+            const item = documentWorkItems[taskIndex];
+            if (!item) throw new Error("document_work_item_index_out_of_range");
+            return { taskIndex, item };
+          });
           const waveResults = await runLimited(waveTasks, maxWorkers, (task) =>
             generateOne({
               item: injectUpstreamDocuments(task.item, completedByDocType, dependencyPlan.presentDocTypes),

@@ -44,6 +44,10 @@ import {
   renderKnowledgeSourcePack,
   writeOfficialTranscriptArtifacts,
 } from "./public_url_source_pack_helpers.mjs";
+import {
+  FULL_DOCUMENT_EXECUTION_PROFILES as FULL_DOCUMENT_EXECUTION_PROFILE_VALUES,
+  RUNNER_EXECUTION_PROFILES as RUNNER_EXECUTION_PROFILE_VALUES,
+} from "../dist/index.js";
 
 /**
  * Thin task execution runner.
@@ -74,21 +78,10 @@ const DEFAULT_MEETING_AGENTIC_DELEGATION_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEETING_AGENTIC_EVENT_MAX_CHARS = 25_000_000;
 const DEFAULT_MEETING_MEMORY_TIMEOUT_MS = 900_000;
 
-const RUNNER_EXECUTION_PROFILES = new Set([
-  "fast_answer",
-  "file_summary",
-  "audio_minutes",
-  "document_generation",
-  "document_revision",
-  "multi_source_synthesis",
-  "url_source_pack",
-]);
-const FULL_DOCUMENT_EXECUTION_PROFILES = new Set([
-  "audio_minutes",
-  "document_generation",
-  "document_revision",
-  "multi_source_synthesis",
-]);
+/** @type {Set<string>} */
+const RUNNER_EXECUTION_PROFILES = new Set(RUNNER_EXECUTION_PROFILE_VALUES);
+/** @type {Set<string>} */
+const FULL_DOCUMENT_EXECUTION_PROFILES = new Set(FULL_DOCUMENT_EXECUTION_PROFILE_VALUES);
 const DEFAULT_FILE_SUMMARY_CONTEXT_POLICY = {
   maxSources: 6,
   previewCharsPerSource: 4000,
@@ -269,7 +262,8 @@ function runCommand(command, args, options = {}) {
     });
     child.on("error", (error) => {
       clearTimeout(timeout);
-      resolveCommand({ exitCode: error.code === "ENOENT" ? 127 : 1, stdout, stderr, timedOut, error: error.message });
+      const errorCode = "code" in error ? error.code : null;
+      resolveCommand({ exitCode: errorCode === "ENOENT" ? 127 : 1, stdout, stderr, timedOut, error: error.message });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timeout);
@@ -308,7 +302,7 @@ function documentWorkerDeadlineParams(options = {}) {
   };
 }
 
-function listFilesRecursive(root, predicate = () => true, limit = 200) {
+function listFilesRecursive(root, predicate = (_path) => true, limit = 200) {
   if (!existsSync(root) || limit <= 0) return [];
   const files = [];
   function visit(dir) {
@@ -485,6 +479,7 @@ async function callRuntimeTool(tool, params, paths, options, profile = "", callO
 
 export function shouldUseTaskExecutionRunner(task) {
   if (["unsupported", "needs_file", "ack_file_cached"].includes(task?.taskIntent?.responseMode)) return false;
+  if (typeof task?.taskIntent?.immediateResponse === "string" && task.taskIntent.immediateResponse.trim()) return false;
   const profile = executionProfileForTask(task);
   if (!profile) return false;
   if (!RUNNER_EXECUTION_PROFILES.has(profile.id)) return false;
@@ -1036,14 +1031,15 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   try {
     serviceUrl = normalizeAsrServiceUrl(options.localAsrServiceUrl);
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     const blocked = localAsrServiceNotRunning(null, {
       healthStatus: "invalid_service_url",
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
     }, options);
     await hooks.onStep?.("local_asr_preflight", "blocked", {
       reason: blocked.reason,
-      healthStatus: blocked.healthStatus,
-      error: blocked.error,
+      healthStatus: "invalid_service_url",
+      error: errorMessage,
       rawMediaExternalUpload: false,
     });
     return blocked;
@@ -1083,10 +1079,12 @@ async function ensureLocalAsr(task, paths, options, hooks) {
   });
   writeAudioNormalizeArtifact(paths, normalized);
   if (normalized.status !== "completed") {
-    await hooks.progressReply?.(normalized.userMessage ?? "目前音频格式暂不支持自动转码。", "audio_normalized");
+    const userMessage = "userMessage" in normalized ? normalized.userMessage : null;
+    const reason = "reason" in normalized ? normalized.reason : null;
+    await hooks.progressReply?.(userMessage ?? "目前音频格式暂不支持自动转码。", "audio_normalized");
     await hooks.onStep?.("audio_normalized", "blocked", {
       artifact: audioNormalizePath(paths.artifactsDir),
-      reason: normalized.reason ?? "audio_normalize_failed",
+      reason: reason ?? "audio_normalize_failed",
       rawMediaExternalUpload: false,
     });
     return { ...normalized, rawMediaExternalUpload: false };
@@ -1096,7 +1094,7 @@ async function ensureLocalAsr(task, paths, options, hooks) {
     artifact: audioNormalizePath(paths.artifactsDir),
     audioCount: normalizedPaths.length,
     targetSpec: TARGET_AUDIO_SPEC,
-    transcoder: normalized.transcoder?.tool ?? null,
+    transcoder: "transcoder" in normalized ? normalized.transcoder?.tool ?? null : null,
     rawMediaExternalUpload: false,
   });
 
@@ -1357,12 +1355,17 @@ async function ensureCloudAsr(task, paths, options, hooks, audios, providerConfi
     ...normalized,
     provider: providerConfig.provider,
     rawMediaExternalUpload: true,
-    reason: normalized.status === "completed" ? "cloud_asr_format_retry_normalized" : normalized.reason,
+    reason: normalized.status === "completed"
+      ? "cloud_asr_format_retry_normalized"
+      : "reason" in normalized
+        ? normalized.reason
+        : "audio_normalize_failed",
   });
   if (normalized.status !== "completed") {
+    const reason = "reason" in normalized ? normalized.reason : null;
     await hooks.onStep?.("audio_normalized", "blocked", {
       artifact: audioNormalizePath(paths.artifactsDir),
-      reason: normalized.reason ?? "audio_normalize_failed",
+      reason: reason ?? "audio_normalize_failed",
       rawMediaExternalUpload: true,
     });
     return { ...normalized, rawMediaExternalUpload: true };
@@ -1420,13 +1423,14 @@ async function ensureAsrTranscription(task, paths, options, hooks) {
   const cloud = await ensureCloudAsr(task, paths, options, hooks, audios, providerConfig);
   if (cloud.status === "completed") return cloud;
 
-  const fallbackAllowed = providerConfig.fallbackProvider === "local_qwen3" && !["cloud_asr_api_key_missing", "cloud_asr_auth_failed"].includes(cloud.reason);
+  const cloudReason = "reason" in cloud ? cloud.reason : null;
+  const fallbackAllowed = providerConfig.fallbackProvider === "local_qwen3" && !["cloud_asr_api_key_missing", "cloud_asr_auth_failed"].includes(String(cloudReason ?? ""));
   if (!fallbackAllowed) return cloud;
 
   await hooks.onStep?.("asr_provider_fallback_used", "running", {
     from: providerConfig.provider,
     to: "local_qwen3",
-    primaryReason: cloud.reason,
+    primaryReason: cloudReason,
     rawMediaExternalUpload: false,
   });
   const local = await ensureLocalAsr(task, paths, options, hooks);
@@ -1938,7 +1942,7 @@ async function buildReviewContext(task, paths, sources, contexts, options = {}) 
       rawMediaExternalUpload: false,
       },
       rawSecretsReturned: false,
-      rawMediaExternalUpload: Boolean(asr.rawMediaExternalUpload),
+      rawMediaExternalUpload: false,
     };
   writeJson(reviewContextPath(paths.artifactsDir), reviewContext);
   return reviewContext;
@@ -2094,20 +2098,20 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
     }
   }
   writeText(agenticOrchestrationEventsPath(paths.artifactsDir), eventStreams.filter(Boolean).join("\n"));
-  const finalAttempt = completedAttempt ?? attempts.at(-1) ?? {};
+  const finalAttempt = completedAttempt ?? attempts.at(-1);
   const status = completedAttempt ? "completed" : "blocked";
   const result = {
     schemaVersion: "meeting-agentic-orchestration-result-v1",
     status,
-    reason: status === "completed" ? null : finalAttempt.reason ?? "pi_meeting_agentic_delegation_failed",
+    reason: status === "completed" ? null : finalAttempt?.reason ?? "pi_meeting_agentic_delegation_failed",
     mode: plan.mode,
     expectedTool: plan.executor.tool,
-    provider: finalAttempt.provider ?? null,
-    model: finalAttempt.model ?? null,
+    provider: finalAttempt?.provider ?? null,
+    model: finalAttempt?.model ?? null,
     authorizationSource: decision.reason,
     durationMs: Date.now() - startedAt,
-    exitCode: finalAttempt.exitCode ?? null,
-    timedOut: finalAttempt.timedOut ?? false,
+    exitCode: finalAttempt?.exitCode ?? null,
+    timedOut: finalAttempt?.timedOut ?? false,
     loadedEnvKeys: envConfig.loadedKeys,
     attempts: attempts.map((attempt) => ({
       provider: attempt.provider,
@@ -2121,13 +2125,13 @@ async function executeMeetingAgenticOrchestration(plan, task, paths, options, ho
       errorMessages: attempt.errorMessages,
       eventCount: attempt.eventCount,
     })),
-    observedTools: finalAttempt.observedTools ?? [],
-    assistantSummary: finalAttempt.assistantSummary ?? "",
-    result: finalAttempt.result ?? null,
+    observedTools: finalAttempt?.observedTools ?? [],
+    assistantSummary: finalAttempt?.assistantSummary ?? "",
+    result: finalAttempt?.result ?? null,
     eventCount: attempts.reduce((total, attempt) => total + Number(attempt.eventCount ?? 0), 0),
     parseErrors: attempts.flatMap((attempt) => attempt.parseErrors ?? []),
     eventsArtifact: workspaceRelative(agenticOrchestrationEventsPath(paths.artifactsDir)),
-    stderrTail: finalAttempt.stderrTail ?? "",
+    stderrTail: finalAttempt?.stderrTail ?? "",
     rawSecretsReturned: false,
   };
   writeJson(agenticOrchestrationResultPath(paths.artifactsDir), result);
@@ -2250,17 +2254,17 @@ async function runMeetingMemoryCuration({ task, paths, options, hooks, meetingAn
     }
   }
   writeText(meetingMemoryEventsPath(paths.artifactsDir), eventStreams.filter(Boolean).join("\n"));
-  const finalAttempt = completedAttempt ?? attempts.at(-1) ?? {};
+  const finalAttempt = completedAttempt ?? attempts.at(-1);
   if (!completedAttempt) {
     const result = {
       schemaVersion: "meeting-memory-curation-result-v1",
       status: "blocked",
-      reason: finalAttempt.reason ?? "meeting_memory_subagent_failed",
+      reason: finalAttempt?.reason ?? "meeting_memory_subagent_failed",
       durationMs: Date.now() - startedAt,
       attempts: attempts.map(({ payload, stderrTail, parseErrors, ...attempt }) => attempt),
       persistedCount: 0,
       eventsArtifact: workspaceRelative(meetingMemoryEventsPath(paths.artifactsDir)),
-      stderrTail: finalAttempt.stderrTail ?? "",
+      stderrTail: finalAttempt?.stderrTail ?? "",
       rawSecretsReturned: false,
     };
     writeJson(meetingMemoryResultPath(paths.artifactsDir), result);
@@ -2457,7 +2461,7 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     ...delegatedReview,
     reconciliation: delegationReconciliation,
   });
-  analysis.delegatedReview = {
+  Object.assign(analysis, { delegatedReview: {
     status: delegationReconciliation.status,
     toolRunStatus: delegatedReview.status,
     reason: delegatedReview.reason,
@@ -2471,7 +2475,7 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
     assistantSummary: delegationReconciliation.evidenceScopeSatisfied ? delegatedReview.assistantSummary ?? "" : "",
     result: delegationReconciliation.result,
     artifact: workspaceRelative(agenticOrchestrationResultPath(paths.artifactsDir)),
-  };
+  } });
   analysis.agentPlan = {
     ...analysis.agentPlan,
     delegationStatus: delegationReconciliation.status,
@@ -3155,7 +3159,10 @@ async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig
         asrProvider: "aliyun_dashscope_paraformer",
         asrFallbackProvider: "none",
       }, hooks);
-      if (asr.status !== "completed") return await finishBlocked(userMessageForAsrFailure(asr), asr.reason ?? "public_source_cloud_asr_failed", "transcribe-source-media", asr);
+      if (asr.status !== "completed") {
+        const reason = "reason" in asr ? asr.reason : null;
+        return await finishBlocked(userMessageForAsrFailure(asr), reason ?? "public_source_cloud_asr_failed", "transcribe-source-media", asr);
+      }
       const fullTranscript = loadJson(transcriptPath(paths.artifactsDir));
       transcriptMethod = "aliyun_dashscope_paraformer";
       normalizedSegments = normalizeSourceSegments(fullTranscript, {
@@ -3534,11 +3541,11 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       ? task.taskIntent.requestedDocuments
       : ["meeting-minutes"];
     const requiresLocalAsr = task.taskIntent?.requiresAsr === true || task.taskIntent?.requiresLocalAsr === true;
-    let asr = { status: "skipped", reason: "no_audio_sources" };
     if (requiresLocalAsr) {
-      asr = await ensureAsrTranscription(task, paths, options, hooks);
+      const asr = await ensureAsrTranscription(task, paths, options, hooks);
       if (asr.status !== "completed") {
-        const output = blockedOutput(asr.userMessage ?? userMessageForAsrFailure(asr), asr);
+        const userMessage = "userMessage" in asr ? asr.userMessage : null;
+        const output = blockedOutput(userMessage ?? userMessageForAsrFailure(asr), asr);
         writeJson(paths.agentOutputPath, output);
         return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
       }

@@ -139,4 +139,15 @@ python3 meeting-agent-pi-package/tools/local_ci_check.py
 cd meeting-agent-pi-package && npm audit --omit=dev
 ```
 
+涉及任务合同、TypeScript 或 npm 包边界时，再在 package 目录运行：
+
+```bash
+npm run typecheck
+npm run release:local
+```
+
+后者只生成并安装本地 tgz，校验 ESM、`.d.ts`、source map、exports/files 和临时 NodeNext consumer，不会执行 npm publish。
+
+当前类型与跨语言合同覆盖、实际修复及其业务影响见 [TypeScript、运行合同与 npm 包可靠性](wiki/18-typescript-contract-and-package-reliability.md)。
+
 当前自动测试覆盖公开 URL 分类与真实入口、SSRF/重定向/大小边界、官方文稿优先、云端 ASR fallback、source pack provenance，以及 ASR 文件/实时边界、Meeting Intelligence、Agentic 委派、文档、Todo 和长期记忆治理。

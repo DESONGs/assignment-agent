@@ -3,10 +3,12 @@ import Foundation
 public final class WorkbenchRunLoader: @unchecked Sendable {
   public let runsRoot: URL
   private let fileManager: FileManager
+  private let runtimeContract: RuntimeContract
 
-  public init(runsRoot: URL, fileManager: FileManager = .default) {
+  public init(runsRoot: URL, fileManager: FileManager = .default, runtimeContract: RuntimeContract? = nil) {
     self.runsRoot = runsRoot
     self.fileManager = fileManager
+    self.runtimeContract = runtimeContract ?? RuntimeContract.load(runsRoot: runsRoot, fileManager: fileManager)
   }
 
   public static func defaultRunsRoot(from base: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) -> URL {
@@ -64,6 +66,7 @@ public final class WorkbenchRunLoader: @unchecked Sendable {
       policyStatus: policyStatus(metrics: metrics, agentOutput: agentOutput, publish: publish),
       publishStatus: JSONHelpers.string(publish, "status") ?? "missing",
       failureReasons: failures,
+      contractWarnings: runtimeContract.validate(task: task, state: state),
       safetyNotes: [
         "Read-only observability layer: no retry, publish, delete, move, Feishu write, Docker write, or ASR lifecycle actions.",
         "Artifact previews are bounded and redacted; raw media, full transcript, full document markdown, cookies, tokens, and API keys are not rendered."
@@ -106,7 +109,8 @@ public final class WorkbenchRunLoader: @unchecked Sendable {
       qaStatus: qaStatus(metrics: metrics, agentOutput: agentOutput),
       policyStatus: policyStatus(metrics: metrics, agentOutput: agentOutput, publish: publish),
       publishStatus: JSONHelpers.string(publish, "status") ?? "missing",
-      failureReasons: failures
+      failureReasons: failures,
+      contractWarnings: runtimeContract.validate(task: task, state: state)
     )
   }
 

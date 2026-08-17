@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { attachmentKind } from "./im_file_context_helpers.mjs";
 import { extractPublicUrls } from "./public_url_security.mjs";
+import {
+  DEEP_REASONING_EXECUTION_PROFILES,
+  FAST_REASONING_DEPTH,
+  TASK_EXECUTION_PROFILES,
+} from "../dist/index.js";
 
 export const TASK_INTENT_SCHEMA_VERSION = "task-intent-v1";
 export const UNSUPPORTED_FEATURE_REPLY = "目前暂不支持该功能";
@@ -15,17 +20,8 @@ const UNSUPPORTED_REQUEST_PATTERN = /日历|calendar|创建任务|分配任务|a
 const DOCUMENT_REVISION_REQUEST_PATTERN = /批注|评论|修改内容|修订|修正|重新优化|优化下|优化一下|根据.*(修改|批注|评论|建议)|review|comment|suggestion|revision|redline/i;
 const DOCUMENT_PIPELINE_STAGES = ["evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish", "reply"];
 const NON_DOCUMENT_STAGES = ["audio_normalize", "asr_provider_resolved", "asr_transcribe", "local_asr", "cloud_asr", "evidence_pack", "planner_envelope", "prompt_registry", "document_workers", "qa_gate", "policy_gate", "publish"];
-const KNOWN_EXECUTION_PROFILES = [
-  "fast_answer",
-  "file_summary",
-  "audio_minutes",
-  "document_generation",
-  "document_revision",
-  "multi_source_synthesis",
-  "url_source_pack",
-  "publish_only",
-  "unsupported",
-];
+export const KNOWN_EXECUTION_PROFILES = [...TASK_EXECUTION_PROFILES];
+const DEEP_REASONING_EXECUTION_PROFILE_SET = new Set(DEEP_REASONING_EXECUTION_PROFILES);
 
 export function cleanUserPrompt(text) {
   return String(text ?? "")
@@ -132,7 +128,7 @@ function executionProfileForIntent(intent) {
 }
 
 function reasoningDepthForProfile(profile) {
-  return ["audio_minutes", "document_generation", "document_revision", "url_source_pack"].includes(profile) ? "deep" : "fast";
+  return DEEP_REASONING_EXECUTION_PROFILE_SET.has(profile) ? "deep" : FAST_REASONING_DEPTH;
 }
 
 function dedupeStages(stages) {
