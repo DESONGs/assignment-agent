@@ -1,6 +1,6 @@
 # Skill、Extension 与 Tool 设计
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
 
 本项目使用 Pi package 组织能力。Skill 说明“何时和怎样使用”，extension 注册可调用工具，tool 实现外部或本地执行，runtime JSON 定义 schema、registry 和 execution profile。父 Agent 根据任务惰性选择，不把所有能力预加载成固定 workflow。
 
@@ -20,7 +20,7 @@ flowchart LR
 
 | 能力 | 当前职责 | 默认加载 |
 | --- | --- | --- |
-| `planner-runtime` | 建立 Planner Envelope 和解释能力选择 | 是 |
+| `planner-runtime` | 建立并 reconcile Adaptive Execution Ledger，派生 Todo 和解释能力选择 | 是 |
 | `capability-registry` | 提供 planner-selectable capability descriptions 与 readiness | 是 |
 | `policy-gate` | 判断凭证、发布、通知、删除、日历、任务和安装动作 | 是 |
 | `qa-safety-review` | 判断证据覆盖、实体隔离、标题和发布阻断 | 是 |
@@ -35,6 +35,7 @@ flowchart LR
 | `feishu-agent-bridge` / `feishu-workflow` | 飞书上下文、文档与发布闭环 | 按需 |
 | `rokid-lingzhu-workflow` | Rokid 素材导入和标准化 | 按需 |
 | `context-offload` | 长上下文 artifact 化和按需读取 | 按需 |
+| `public-url-source` | 解析显式公开媒体 URL，官方文稿优先，必要时云端 ASR，并输出 provenance-backed source pack | 按需 |
 | `agent-team-runtime` | 旧本地 worker 兼容 fallback | 不作为主路径 |
 
 ## 3. ASR 能力
@@ -50,6 +51,18 @@ flowchart LR
 - 本地 Qwen3-ASR 是显式 provider/fallback，不再定义产品可上传格式。
 
 ASR 失败不得静默伪装成功；partial transcript 不能进入完整纪要。
+
+### 公开 URL 来源
+
+`public-url-source` skill 调用 `public_url_source_ingest`，其稳定底层入口是 `tools/public_url_source_cli.mjs`。来源适配、网络安全和 source pack 分别由 `public_url_source_helpers.mjs`、`public_url_security.mjs` 与 `public_url_source_pack_helpers.mjs` 负责；真实飞书入口复用 Task Router 与 execution runner。
+
+- 支持 YouTube、播客/RSS、小宇宙单集和直接公开音视频 URL。
+- 官方带时间戳文稿优先；没有可靠文稿时只走云端文件 ASR，不静默使用本地 ASR。
+- YouTube 媒体适配复用 `yt-dlp`；RSS 使用标准 enclosure 与 Podcasting 2.0 transcript 元数据。
+- 完整来源按章节建立有界模型 work unit，并校验每个 claim 的 segment id。
+- `url_source_pack` 不加载 Meeting Intelligence、会议纪要、Document Workers 或发布器，也不写外部知识库。
+- 外部 URL 获取前调用 Policy Gate，source pack 交付前调用 QA Gate；runner 只执行并记录结果，不拥有 Gate 判断。
+- SSRF、重定向、公网 DNS、大小、时长、Cookie/凭证脱敏和 partial completion 是强制边界。
 
 ## 4. Agentic 编排能力
 

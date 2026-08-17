@@ -95,6 +95,21 @@
       "localAsr": "when_required",
       "rawMediaExternalUpload": false
     },
+    "url_source_pack": {
+      "runnerEligible": true,
+      "pipeline": "url_source_pack",
+      "routeTaskType": "document_shard",
+      "reasoningDepth": "deep",
+      "requiredStages": ["policy_gate", "public_url_resolve", "official_transcript_or_media", "cloud_asr_if_needed", "chapter_analysis", "source_pack", "provenance", "qa_gate", "reply"],
+      "skipStages": ["meeting_intelligence", "meeting_minutes", "document_workers", "publish"],
+      "publishDocuments": false,
+      "qaGate": true,
+      "policyGate": true,
+      "documentWorkers": false,
+      "localAsr": "never",
+      "asrProvider": "aliyun_dashscope_paraformer",
+      "rawMediaExternalUpload": true
+    },
     "publish_only": {
       "runnerEligible": false,
       "pipeline": "immediate",

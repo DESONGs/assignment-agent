@@ -15,7 +15,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs && npm run typecheck:agentic",
-    "typecheck:agentic": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --allowJs false --types node extensions/meeting-agentic-orchestrator.ts extensions/planner-runtime.ts extensions/source-context-runtime.ts extensions/policy-gate.ts extensions/runtime-observability.ts"
+    "typecheck:agentic": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --allowJs false --types node extensions/meeting-agentic-orchestrator.ts extensions/planner-runtime.ts extensions/execution-todo-ui.ts extensions/public-url-source.ts extensions/source-context-runtime.ts extensions/policy-gate.ts extensions/runtime-observability.ts"
   },
   "pi": {
     "extensions": [
@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "@quintinshaw/pi-dynamic-workflows": "3.5.1",
+    "fast-xml-parser": "5.7.3",
     "pi-subagents": "0.46.0",
     "protobufjs": "7.6.5",
     "ws": "8.21.3"

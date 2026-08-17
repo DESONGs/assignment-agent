@@ -1,6 +1,6 @@
-# Meeting Agent Wiki
+# Office Agent Wiki
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
 
 本目录分为“当前规范”和“历史证据”。阅读当前项目时只以根层专题文档为准；日期化目录用于解释过去为什么做出某项选择，不代表当前行为。
 
@@ -20,6 +20,9 @@
 | [12-feishu-agent-bidirectional-integration-plan.md](12-feishu-agent-bidirectional-integration-plan.md) | 当前飞书双向集成规范 |
 | [13-office-agent-product-technical-review.md](13-office-agent-product-technical-review.md) | Office Agent 扩展边界与技术取舍 |
 | [14-local-data-storage-cache-backend.md](14-local-data-storage-cache-backend.md) | runtime store、项目长期记忆、cache、CAS、retention 和 Docker 边界 |
+| [15-adaptive-execution-ledger-and-product-discovery.md](15-adaptive-execution-ledger-and-product-discovery.md) | 权威执行账本、Todo 投影与客户产品发现 |
+| [16-public-url-source-pack.md](16-public-url-source-pack.md) | 公开媒体 URL、官方文稿优先、云端 ASR fallback 与知识交接包 |
+| [frontend/README.md](frontend/README.md) | 后续桌面/移动端会议侧边栏与 Todo 交互建议 |
 
 ## 历史证据
 
@@ -32,7 +35,7 @@
 
 每个历史子目录都有自己的 `README.md`。进入日期化文档前先读该目录说明；旧状态、命令和约束不会被当前校验器当作产品事实。
 
-历史文档中可能出现本地 ASR 优先、pointer-only 隐私门、旧 Hermes sidecar、旧固定 worker、旧 provider 状态等描述。它们只表示当时状态，不能覆盖 2026-08-12 当前规范。
+历史文档中可能出现本地 ASR 优先、pointer-only 隐私门、旧 Hermes sidecar、旧固定 worker、旧 provider 状态等描述。它们只表示当时状态，不能覆盖 2026-08-17 当前规范。
 
 ## 真相源优先级
 

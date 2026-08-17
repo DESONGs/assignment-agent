@@ -753,6 +753,22 @@ function compactMeetingAnalysis(analysis: any, selectedSegmentIds: string[] = []
       evidenceDensity: topic.evidenceDensity ?? null,
     })),
     evidenceMap: relevantClaims,
+    productDiscovery: analysis.productDiscovery
+      ? {
+          schemaVersion: analysis.productDiscovery.schemaVersion,
+          opportunitySignals: (analysis.productDiscovery.opportunitySignals ?? []).slice(0, 12),
+          userProblems: (analysis.productDiscovery.userProblems ?? []).slice(0, 12),
+          targetUsers: (analysis.productDiscovery.targetUsers ?? []).slice(0, 12),
+          workflows: (analysis.productDiscovery.workflows ?? []).slice(0, 12),
+          desiredOutcomes: (analysis.productDiscovery.desiredOutcomes ?? []).slice(0, 12),
+          constraints: (analysis.productDiscovery.constraints ?? []).slice(0, 12),
+          assumptions: (analysis.productDiscovery.assumptions ?? []).slice(0, 12),
+          acceptanceSignals: (analysis.productDiscovery.acceptanceSignals ?? []).slice(0, 12),
+          clarificationQuestions: (analysis.productDiscovery.clarificationQuestions ?? []).slice(0, 20),
+          prdReadiness: analysis.productDiscovery.prdReadiness ?? null,
+          nextStepOptions: (analysis.productDiscovery.nextStepOptions ?? []).slice(0, 8),
+        }
+      : null,
     agentPlan: analysis.agentPlan,
     delegatedReview: analysis.delegatedReview ?? null,
     participantResolution: analysis.participantResolution,
@@ -1155,6 +1171,7 @@ function buildModelContext(params: {
           meetingProfile: params.meetingAnalysis.meetingProfile,
           topicMap: params.meetingAnalysis.topicMap,
           evidenceMap: params.meetingAnalysis.evidenceMap,
+          productDiscovery: params.meetingAnalysis.productDiscovery,
           agentPlan: params.meetingAnalysis.agentPlan,
           delegatedReview: params.meetingAnalysis.delegatedReview,
           participantResolution: params.meetingAnalysis.participantResolution,
@@ -1282,6 +1299,8 @@ function buildContextPlane(params: any) {
   writeJson(sourceStructurePath, sourceStructure);
   const taskState = {
     schemaVersion: "office-task-state-v2",
+    planId: null,
+    planRevision: null,
     objective: taskPrompt || "生成办公文档",
     operation,
     requestedDocuments,
@@ -1296,8 +1315,14 @@ function buildContextPlane(params: any) {
           identityCandidateCount: meetingAnalysis.participantResolution?.candidateCount ?? 0,
         }
       : null,
+    phase: "pending",
+    completedDocuments: [],
+    pendingDocuments: requestedDocuments,
     completedWorkUnits: [],
     openQuestions: [],
+    updatedAt: nowIso(),
+    rawSecretsReturned: false,
+    rawMediaExternalUpload: false,
   };
   writeJson(taskStatePath, taskState);
   const artifactIndex = {
@@ -1795,9 +1820,12 @@ export default function (pi: ExtensionAPI) {
         taskState: {
           schemaVersion: "office-task-state-v2",
           objective: params.taskPrompt ?? "",
+          operation: params.operation ?? "create_document",
           requestedDocuments: [params.docType],
           completedWorkUnits: [],
           openQuestions: [],
+          rawSecretsReturned: false,
+          rawMediaExternalUpload: false,
         },
         artifactIndex: {},
         modelContext: buildModelContext({
@@ -1812,9 +1840,12 @@ export default function (pi: ExtensionAPI) {
           taskState: {
             schemaVersion: "office-task-state-v2",
             objective: params.taskPrompt ?? "",
+            operation: params.operation ?? "create_document",
             requestedDocuments: [params.docType],
             completedWorkUnits: [],
             openQuestions: [],
+            rawSecretsReturned: false,
+            rawMediaExternalUpload: false,
           },
           artifactIndex: {},
         }),

@@ -16,6 +16,9 @@ test("parent system prompt positions Pi as a general Office Agent with hierarchi
   assert.match(system, /控制面 \+ 数据面/);
   assert.match(system, /Dynamic Workflow/);
   assert.match(system, /姓名候选/);
+  assert.match(system, /Adaptive Execution Ledger/);
+  assert.match(system, /productDiscovery/);
+  assert.match(system, /Todo 是执行账本的用户交互投影/);
   assert.doesNotMatch(system, /你是会议终结与文档撰写 Agent/);
 });
 
@@ -38,6 +41,15 @@ test("runtime uses context-pack-v2 task state and artifact indexes", async () =>
   assert.match(worker, /Work Unit Contract/);
   assert.match(worker, /updateDocumentTaskState/);
   assert.match(worker, /completedWorkUnits/);
+});
+
+test("product prompts consume discovery state and expose PRD readiness", async () => {
+  const prd = await text("meeting-agent-pi-package/prompts/prd.md");
+  const checklist = await text("meeting-agent-pi-package/prompts/customer-requirement-checklist.md");
+  assert.match(prd, /productDiscovery/);
+  assert.match(prd, /PRD 就绪度与客户澄清问题/);
+  assert.match(checklist, /产品发现与需求缺口/);
+  assert.match(checklist, /下一次沟通问题清单/);
 });
 
 test("legacy optional approval extension is removed", async () => {

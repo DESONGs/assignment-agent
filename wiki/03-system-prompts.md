@@ -27,7 +27,8 @@ flowchart TD
 | 层 | 真相源 | 职责 |
 | --- | --- | --- |
 | Parent System | `.pi/SYSTEM.md` | 通用办公身份、Agentic 循环、委派与最终责任 |
-| Task Control | `task-state.json` / Planner Envelope | 目标、成功标准、依赖、完成状态、开放问题和下一步 |
+| Task Control | `planner-envelope.json` / Adaptive Execution Ledger | 唯一任务真相源：目标、成功标准、步骤、依赖、验收、结果引用、开放问题和用户选择 |
+| User Projection | Todo / 飞书回复 / channel state | 从 Ledger 派生的进度、客户问题和下一步选择；不独立决定完成 |
 | Artifact | source records/segments、完整 transcript、结构化分析 | 保存可按需读取的完整数据，不占据每个模型调用 |
 | Domain State | Meeting Intelligence 等 | 为特定场景提供结构化语义；不取代父 Agent |
 | Work Unit | `context-pack-v2` | 给一个 worker/child 的任务契约、相关证据、artifact index 和输出契约 |
@@ -41,7 +42,8 @@ flowchart TD
 
 - 先建立目标、交付物、成功标准、来源、约束和开放问题，再选择能力。
 - 普通问答、单文件总结和局部修订直接处理；Meeting Intelligence 只在会议场景启用。
-- 按“理解 → 计划 → 执行 → 观察 → 更新状态 → 验收”循环推进，新证据可改变计划。
+- 按“理解 → 计划 → 执行 → 观察 → 更新状态 → 验收”循环推进，新证据可改变计划；依赖和验收由 Adaptive Execution Ledger 强制表达。
+- Todo 只投影 Ledger 中的进度、问题和下一步选择。用户修改 Todo 后由父 Agent reconcile 回 Ledger，不建立第二套任务状态。
 - 一个独立工作轴使用 fresh sub-agent；多个输入输出可隔离的轴才使用 Dynamic Workflow。
 - 父 Agent 保留跨任务状态、冲突裁决、最终质量和外部动作责任。
 - 显式用户请求与明确目标构成授权；只有高影响、不可逆或目标不明时才询问。

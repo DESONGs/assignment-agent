@@ -1,6 +1,8 @@
 # Meeting Agent Pi Package
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
+
+当前 Planner 使用 `adaptive-execution-ledger-v1`：它是复杂任务的唯一任务控制真相源，并派生 Pi `/todos`、飞书下一步选择、channel state 和 document checkpoint。Meeting Intelligence 同时输出 `productDiscovery`，用于把客户会议转换为潜在需求、产品假设、PRD 就绪度和下一次沟通问题。显式公开媒体 URL 使用独立 `url_source_pack` profile，不套用会议语义。
 
 本目录是 Meeting Agent 的活动执行平面，包含 Pi extensions、skills、prompts、runtime contracts 和真实入口工具。完整产品说明见仓库根 [README](../README.md)，Agent 关系与流程见 [Agent 专项架构](../wiki/02-agent-architecture.md)。
 
@@ -23,7 +25,7 @@ npm test
 
 | 目录 | 职责 |
 | --- | --- |
-| `extensions/` | 注册 Planner、Policy、ASR、Agentic、文档、飞书和可观测工具 |
+| `extensions/` | 注册 Planner、Policy、ASR、公开 URL、Agentic、文档、飞书和可观测工具 |
 | `skills/` | 能力触发与操作协议 |
 | `prompts/` | 会议纪要、PRD、架构、运营、Checklist 和 revision overlay |
 | `runtime/` | capability registry、execution profile、provider、model route、schema、package audit |
@@ -43,6 +45,17 @@ npm test
 会议短期上下文使用 Pi 原生 Compaction。完整音频会议通过 QA 后，runtime 再按需唤醒一个 fresh、只读的 `meeting-memory-curator`，由它提出长期记忆候选；父 Agent 根据 Meeting Intelligence `sourceClaimIds` 与当前 transcript `evidenceSegmentIds` 做二次校验、去重与冲突隔离，再写入项目级 `.pi/agent-memory/meeting-memory/`。该阶段失败不会阻塞会议文档交付，也不会调用 Dynamic Workflow。
 
 第三方 package 已通过 package audit/install mechanism，记录在 `runtime/package-audits/`。Capability Registry 中的记录是 planner-selectable capability descriptions；Metrics 记录 `plannerDecisions`、`policyDecisions`、`workerDecisions`、`capabilitySelections` 和 `packageAudits`。
+
+## 公开 URL Source Pack
+
+飞书和本地 Agent 的真实 router 会识别用户明确提供的 YouTube、播客/RSS、小宇宙单集和直接公开音视频 URL。解析器优先采用发布方提供的带时间戳文稿；只有没有可靠文稿时，才取得受大小与时长限制的公开媒体并强制进入 DashScope 文件 ASR，不静默切换本地 ASR。
+
+```bash
+node tools/public_url_source_cli.mjs --url "https://example.com/public-media"
+node tools/public_url_source_cli.mjs --url "https://example.com/public-media" --resolve-only
+```
+
+完整运行返回 `sourcePackPath`，并在 `runtime-runs/public-url/runs/{runId}/artifacts/` 保存来源元数据、结构化/可读转录、章节分析、source pack 和 provenance。外部获取前运行 Policy Gate，交付前运行 QA Gate；长文稿按有界章节进入模型。播客不会误进 Meeting Intelligence 或会议纪要，也不会直接写外部 Obsidian/business-wiki。YouTube fallback 复用 `yt-dlp`，禁用 Cookie、playlist、live 与访问控制绕过。
 
 ## ASR
 

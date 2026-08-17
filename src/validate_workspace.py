@@ -34,6 +34,7 @@ REQUIRED_SKILLS = [
     "policy-gate",
     "agent-team-runtime",
     "context-offload",
+    "public-url-source",
 ]
 
 REQUIRED_AGENT_ROLES = [
@@ -65,6 +66,7 @@ REQUIRED_EXTENSIONS = [
     "runtime-observability.ts",
     "capability-registry.ts",
     "planner-runtime.ts",
+    "execution-todo-ui.ts",
     "policy-gate.ts",
     "document-generation.ts",
     "document-worker-runtime.ts",
@@ -73,6 +75,7 @@ REQUIRED_EXTENSIONS = [
     "source-context-runtime.ts",
     "office-runtime.ts",
     "meeting-agentic-orchestrator.ts",
+    "public-url-source.ts",
 ]
 
 REQUIRED_RUNTIME_FILES = [
@@ -118,6 +121,7 @@ REQUIRED_EXECUTION_PROFILES = [
     "document_generation",
     "document_revision",
     "multi_source_synthesis",
+    "url_source_pack",
     "publish_only",
     "unsupported",
 ]
@@ -139,6 +143,15 @@ PROFILE_REQUIRED_MARKER_ALIASES = {
     "document_generation": {
         "prompt_registry": ("prompt_registry", "prompt registry", "document-prompt-registry", "document_prompt_render_batch"),
         "document_workers": ("document_workers", "document worker", "document-worker", "document_workers_run"),
+    },
+    "url_source_pack": {
+        "public_url_resolve": ("public_url_resolve", "public url resolve", "public-url-source"),
+        "official_transcript_or_media": ("official_transcript_or_media", "official transcript", "official subtitle"),
+        "cloud_asr_if_needed": ("cloud_asr_if_needed", "aliyun_dashscope_paraformer", "cloud asr"),
+        "source_pack": ("source_pack", "source pack", "source-pack"),
+        "provenance": ("provenance", "evidence index"),
+        "qa_gate": ("qa_gate", "qa gate", "qa-gate"),
+        "policy_gate": ("policy_gate", "policy gate", "policy-gate"),
     },
 }
 
@@ -397,6 +410,10 @@ def capability_trace_markers(capability_id: str) -> set[str]:
         markers.update({"calendar_task", "calendar", "mutate_calendar"})
     if capability_id == "rokid-import":
         markers.update({"rokid-tools", "Rokid", "Lingzhu"})
+    if capability_id == "pi-subagents":
+        markers.update({"pi-subagents", "pi-subagents@0.46.0", "fresh sub-agent"})
+    if capability_id == "pi-dynamic-workflows":
+        markers.update({"pi-dynamic-workflows", "@quintinshaw/pi-dynamic-workflows", "Dynamic Workflow"})
     return {normalized_marker(marker) for marker in markers if marker}
 
 
@@ -494,6 +511,8 @@ def validate_package() -> None:
         fail("meeting-agent-pi-package must pin audited pi-subagents@0.46.0")
     if dependencies.get("@quintinshaw/pi-dynamic-workflows") != "3.5.1":
         fail("meeting-agent-pi-package must pin audited pi-dynamic-workflows@3.5.1")
+    if dependencies.get("fast-xml-parser") != "5.7.3":
+        fail("meeting-agent-pi-package must pin audited fast-xml-parser@5.7.3")
     if package.get("devDependencies", {}).get("@earendil-works/pi-coding-agent") != "0.84.1":
         fail("meeting-agent-pi-package must pin the tested Pi 0.84.1 development runtime")
     if (ROOT / ".nvmrc").read_text(encoding="utf-8").strip() != "22.23.1":
@@ -525,6 +544,10 @@ def validate_package() -> None:
         audit = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "package-audits" / audit_name)
         if audit.get("decision") != "passed_smoke_lazy_enable":
             fail(f"package audit must record passed smoke decision: {audit_name}")
+
+    xml_audit = load_json(ROOT / "meeting-agent-pi-package" / "runtime" / "package-audits" / "fast-xml-parser-5.7.3.json")
+    if xml_audit.get("decision") not in {"passed", "passed_smoke_lazy_enable"}:
+        fail("package audit must record a passed decision: fast-xml-parser-5.7.3.json")
 
     meeting_workflow = (ROOT / "meeting-agent-pi-package" / "tools" / "meeting_workflow_helpers.mjs").read_text(
         encoding="utf-8"
@@ -760,7 +783,7 @@ def validate_required_behavior_docs() -> None:
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
     for marker in (
-        "2026-08-12",
+        "2026-08-13",
         "auth-status-summary",
         "secret-scan",
         "Meeting Intelligence",
@@ -773,7 +796,7 @@ def validate_required_behavior_docs() -> None:
         "Agentic Planner",
         "Policy Gate",
         "Capability Registry",
-        "Planner Envelope",
+        "Adaptive Execution Ledger",
         "planner-selectable capability descriptions",
         "policy_gate_check",
         "package audit/install mechanism",
@@ -1180,7 +1203,7 @@ def validate_extensions() -> None:
     for marker in (
         "WeChat adapter skeleton",
         "im-event-v1",
-        "office-task-state-v1",
+        "office-task-state-v2",
         "wechat-adapter-fixture",
         "invoke-handler",
         "feishu_agent_task_handler.mjs",
@@ -1593,9 +1616,13 @@ def validate_extensions() -> None:
         encoding="utf-8"
     )
     for marker in (
-        "Planner Envelope",
+        "Adaptive Execution Ledger",
         "planner_envelope",
-        "office_agent_adaptive_control_loop",
+        "adaptive_execution_ledger",
+        "execution_ledger_reconcile",
+        "execution_ledger_todo",
+        "expectedRevision",
+        "userTodoProjection",
         "fixedWorkflow",
         "goal",
         "taskType",
@@ -1609,7 +1636,7 @@ def validate_extensions() -> None:
         'meetingContentAccess: "allowed"',
     ):
         if marker not in planner_runtime:
-            fail(f"planner-runtime.ts missing Planner Envelope marker: {marker}")
+            fail(f"planner-runtime.ts missing Adaptive Execution Ledger marker: {marker}")
 
     policy_gate = (ROOT / "meeting-agent-pi-package" / "extensions" / "policy-gate.ts").read_text(
         encoding="utf-8"
@@ -2033,7 +2060,7 @@ def validate_runtime_configs() -> None:
         "im-attachment.schema.json": ("im-attachment-v1", "audio", "sourcePath", "rawMediaExternalUpload"),
         "im-reply.schema.json": ("im-reply-v1", "reply", "publish", "rawSecretsReturned"),
         "publish-target.schema.json": ("publish-target-v1", "destructiveActionsAllowed", "folderToken", "fileToken"),
-        "office-task-state.schema.json": ("office-task-state-v1", "accepted", "processing", "completed", "unsupported"),
+        "office-task-state.schema.json": ("office-task-state-v2", "objective", "requestedDocuments", "completedWorkUnits", "openQuestions", "completed", "blocked", "rawSecretsReturned"),
         "office-context.schema.json": ("office-context-v1", "version", "channel", "context", "actor", "conversation", "workspace", "sourceRun", "rawSecretsReturned"),
         "office-object.schema.json": ("office-object-v1", "version", "objectType", "channel", "context", "sourceRun", "pointers", "artifactPointer", "rawMediaExternalUpload"),
         "document-lifecycle.schema.json": ("document-lifecycle-v1", "version", "documentId", "channel", "context", "sourceRun", "lifecycleEvents", "diffPointer", "destructiveActionsAllowed", "rawMediaExternalUpload"),

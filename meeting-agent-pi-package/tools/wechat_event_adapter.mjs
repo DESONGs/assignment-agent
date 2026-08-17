@@ -221,7 +221,21 @@ async function normalizeImAttachment(input, index = 0) {
 function buildOfficeState(runId, imEvent, fileContexts) {
   const unsupported = fileContexts.find((context) => context.status === "unsupported");
   return {
-    schemaVersion: "office-task-state-v1",
+    schemaVersion: "office-task-state-v2",
+    planId: null,
+    planRevision: null,
+    objective: imEvent.messageText || "处理微信输入",
+    operation: imEvent.attachments.length > 0 ? "analyze_source" : "respond",
+    requestedDocuments: [],
+    sourceCount: fileContexts.length,
+    segmentCount: 0,
+    meetingState: null,
+    phase: unsupported ? "blocked" : "pending",
+    completedDocuments: [],
+    pendingDocuments: [],
+    completedWorkUnits: [],
+    openQuestions: unsupported?.unsupportedReason ? [unsupported.unsupportedReason] : [],
+    updatedAt: nowIso(),
     taskId: runId,
     channel: "wechat",
     status: unsupported ? "unsupported" : "accepted",

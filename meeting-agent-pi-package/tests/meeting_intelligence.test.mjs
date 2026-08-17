@@ -147,6 +147,16 @@ test("model meeting analysis is evidence-validated and unsafe owner attribution 
       risks: [{ text: "数据接口待确认。", evidenceSegmentIds: [segments[2].segmentId] }],
       openQuestions: [{ text: "接口来源是什么？", evidenceSegmentIds: [segments[2].segmentId] }],
     }],
+    productDiscovery: {
+      userProblems: [{ text: "用户需要更快获得区域旅游信息。", state: "inferred", evidenceSegmentIds: [segments[0].segmentId, segments[1].segmentId] }],
+      targetUsers: [{ text: "旅游规划用户", state: "inferred", evidenceSegmentIds: [segments[0].segmentId] }],
+      workflows: [{ text: "用户提出目的地后检索云南信息。", state: "inferred", evidenceSegmentIds: [segments[1].segmentId] }],
+      desiredOutcomes: [{ text: "获得可用的目的地信息。", state: "inferred", evidenceSegmentIds: [segments[1].segmentId] }],
+      constraints: [{ text: "数据接口尚未确定。", state: "confirmed", evidenceSegmentIds: [segments[2].segmentId] }],
+      acceptanceSignals: [{ text: "云南地区信息可以稳定检索。", state: "inferred", evidenceSegmentIds: [segments[1].segmentId] }],
+      assumptions: [{ text: "单一区域足以验证价值。", state: "inferred", evidenceSegmentIds: [segments[0].segmentId] }],
+      clarificationQuestions: [{ question: "首期数据接口来自哪里？", why: "接口来源会影响架构和数据质量。", priority: "high", blocks: ["architecture", "implementation"], evidenceSegmentIds: [segments[2].segmentId] }],
+    },
     agentPlan: {
       meetingComplexity: "simple",
       narrativeMode: "decision_driven",
@@ -160,6 +170,10 @@ test("model meeting analysis is evidence-validated and unsafe owner attribution 
   assert.equal(analysis.topicMap[0].actions[0].ownerSpeakerId, null);
   assert.equal(analysis.topicMap[0].actions[0].dueDate, null);
   assert.deepEqual(analysis.agentPlan.suggestedFollowUpDocuments, ["prd"]);
+  assert.equal(analysis.productDiscovery.userProblems[0].state, "inferred");
+  assert.equal(analysis.productDiscovery.clarificationQuestions[0].question, "首期数据接口来自哪里？");
+  assert.equal(analysis.productDiscovery.prdReadiness.status, "needs_clarification");
+  assert.equal(analysis.agentPlan.prdReadiness.status, "needs_clarification");
   const actionClaim = analysis.evidenceMap.find((claim) => claim.claimType === "action");
   assert.equal(actionClaim.evidenceQuality, "needs_review_only");
 });

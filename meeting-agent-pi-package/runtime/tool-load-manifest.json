@@ -68,6 +68,14 @@
       "office-runtime.ts",
       "context-offload.ts"
     ],
+    "url_source_pack": [
+      "planner-runtime.ts",
+      "model-routing.ts",
+      "model-provider.ts",
+      "qa-gate.ts",
+      "policy-gate.ts",
+      "public-url-source.ts"
+    ],
     "publish_only": [
       "planner-runtime.ts",
       "qa-gate.ts",

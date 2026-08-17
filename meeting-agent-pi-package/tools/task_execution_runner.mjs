@@ -3,11 +3,11 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect } from "node:net";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { AUDIO_NORMALIZE_VERSION, TARGET_AUDIO_SPEC, normalizeAudioBatch } from "./audio_normalize_helpers.mjs";
-import { isCloudAsrMedia, mediaExtension } from "./asr_media_formats.mjs";
+import { cloudAsrMediaKind, isCloudAsrMedia, mediaExtension } from "./asr_media_formats.mjs";
 import { fetchFeishuDocumentReviewContext } from "./feishu_document_review_context_helpers.mjs";
 import {
   buildFallbackMeetingAnalysis,
@@ -32,6 +32,18 @@ import {
   persistMeetingMemory,
   reconcileMeetingMemoryCandidates,
 } from "./meeting_memory_helpers.mjs";
+import { extractPublicUrls, redactSensitiveUrlsInText, sanitizeUrlForArtifact } from "./public_url_security.mjs";
+import { resolvePublicMediaSource, resolutionArtifactView } from "./public_url_source_helpers.mjs";
+import {
+  buildKnowledgeSourcePack,
+  buildProvenanceIndex,
+  buildSourceChapterPrompt,
+  normalizeSourceChapterAnalysis,
+  normalizeSourceSegments,
+  partitionSourceSegments,
+  renderKnowledgeSourcePack,
+  writeOfficialTranscriptArtifacts,
+} from "./public_url_source_pack_helpers.mjs";
 
 /**
  * Thin task execution runner.
@@ -69,6 +81,7 @@ const RUNNER_EXECUTION_PROFILES = new Set([
   "document_generation",
   "document_revision",
   "multi_source_synthesis",
+  "url_source_pack",
 ]);
 const FULL_DOCUMENT_EXECUTION_PROFILES = new Set([
   "audio_minutes",
@@ -132,6 +145,7 @@ function defaultExecutionProfiles() {
       document_generation: { runnerEligible: true, pipeline: "full_document", routeTaskType: "document_shard", reasoningDepth: "deep" },
       document_revision: { runnerEligible: true, pipeline: "full_document", routeTaskType: "document_shard", reasoningDepth: "deep", operation: "document_revision" },
       multi_source_synthesis: { runnerEligible: true, pipeline: "full_document", routeTaskType: "document_shard", reasoningDepth: "deep" },
+      url_source_pack: { runnerEligible: true, pipeline: "url_source_pack", routeTaskType: "document_shard", reasoningDepth: "deep" },
       publish_only: { runnerEligible: false, pipeline: "immediate" },
       unsupported: { runnerEligible: false, pipeline: "immediate" },
     },
@@ -176,7 +190,7 @@ function titlePlanPath(artifactsDir) {
 }
 
 function redactString(value) {
-  return String(value ?? "")
+  return redactSensitiveUrlsInText(String(value ?? ""))
     .replace(/(app_secret|client_secret|refresh_token|access_token|authorization|cookie|session)\s*[:=]\s*["']?[^"',\s]+/gi, "[redacted]")
     .replace(/bearer\s+[A-Za-z0-9._-]+/gi, "[redacted]");
 }
@@ -187,7 +201,7 @@ function sanitize(value) {
   if (value && typeof value === "object") {
     const output = {};
     for (const [key, entryValue] of Object.entries(value)) {
-      if (/secret|cookie|session|authorization/i.test(key) && key !== "rawSecretsReturned" && !/folderToken|fileToken|wikiToken/i.test(key)) {
+      if (/secret|cookie|session|authorization/i.test(key) && !["rawSecretsReturned", "cookiesUsed"].includes(key) && !/folderToken|fileToken|wikiToken/i.test(key)) {
         output[key] = "[redacted]";
       } else {
         output[key] = sanitize(entryValue);
@@ -200,6 +214,10 @@ function sanitize(value) {
 
 function hashText(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function uniqueStrings(values, limit = 100) {
+  return [...new Set((values ?? []).map((value) => String(value ?? "").trim()).filter(Boolean))].slice(0, limit);
 }
 
 function workspaceRelative(path) {
@@ -676,6 +694,34 @@ function fileSummaryContextPath(outputDir) {
   return join(outputDir, "file-summary-context.json");
 }
 
+function publicSourceDir(outputDir) {
+  return join(outputDir, "public-source");
+}
+
+function publicSourceResolutionPath(outputDir) {
+  return join(publicSourceDir(outputDir), "source-resolution.json");
+}
+
+function publicSourceMetadataPath(outputDir) {
+  return join(publicSourceDir(outputDir), "source-metadata.json");
+}
+
+function publicSourcePackDir(outputDir) {
+  return join(publicSourceDir(outputDir), "source-pack");
+}
+
+function publicSourcePackPath(outputDir) {
+  return join(publicSourcePackDir(outputDir), "source-pack.json");
+}
+
+function publicSourcePackReadablePath(outputDir) {
+  return join(publicSourcePackDir(outputDir), "source-pack.readable.md");
+}
+
+function publicSourceProvenancePath(outputDir) {
+  return join(publicSourceDir(outputDir), "provenance", "evidence-index.json");
+}
+
 function reviewContextPath(outputDir) {
   return join(outputDir, "review-context.json");
 }
@@ -706,6 +752,14 @@ function internalEvidenceMapPath(outputDir) {
 
 function agentPlanPath(outputDir) {
   return join(meetingIntelligenceDir(outputDir), "agent-plan.json");
+}
+
+function productDiscoveryPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "product-discovery.json");
+}
+
+function nextStepOptionsPath(outputDir) {
+  return join(meetingIntelligenceDir(outputDir), "next-step-options.json");
 }
 
 function agenticOrchestrationPath(outputDir) {
@@ -1126,6 +1180,8 @@ async function ensureCloudAsrWithPaths(task, paths, options, hooks, audios, prov
     timeoutMs: Number(options.cloudAsrTimeoutMs ?? process.env.ALIYUN_ASR_TIMEOUT_MS ?? DEFAULT_CLOUD_ASR_TIMEOUT_MS),
     audioNormalizeTimeoutMs: Number(options.audioNormalizeTimeoutMs ?? process.env.FEISHU_AGENT_AUDIO_NORMALIZE_TIMEOUT_MS ?? 1_200_000),
     audioTranscoder: options.audioTranscoder ?? process.env.FEISHU_AGENT_AUDIO_TRANSCODER,
+    mockFileProvider: options.cloudAsrMockFileProvider === true,
+    mockFileSentences: options.cloudAsrMockFileSentences,
   }, paths, options);
   if (result?.status !== "completed") {
     const reason = result?.reason ?? result?.failureClass ?? "cloud_asr_provider_error";
@@ -2329,6 +2385,20 @@ async function ensureMeetingIntelligence(task, paths, options, hooks) {
   writeJson(topicMapPath(paths.artifactsDir), { schemaVersion: "meeting-topic-map-v1", topics: analysis.topicMap });
   writeJson(internalEvidenceMapPath(paths.artifactsDir), { schemaVersion: "meeting-evidence-map-v1", claims: analysis.evidenceMap });
   writeJson(agentPlanPath(paths.artifactsDir), { schemaVersion: "meeting-agent-plan-v1", ...analysis.agentPlan });
+  writeJson(productDiscoveryPath(paths.artifactsDir), analysis.productDiscovery ?? {
+    schemaVersion: "meeting-product-discovery-v1",
+    status: "not_available",
+    clarificationQuestions: [],
+    nextStepOptions: [],
+  });
+  writeJson(nextStepOptionsPath(paths.artifactsDir), {
+    schemaVersion: "meeting-next-step-options-v1",
+    prdReadiness: analysis.productDiscovery?.prdReadiness ?? null,
+    options: analysis.productDiscovery?.nextStepOptions ?? analysis.agentPlan?.nextStepOptions ?? [],
+    clarificationQuestions: analysis.productDiscovery?.clarificationQuestions ?? [],
+    suggestedFollowUpDocuments: analysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+    rawSecretsReturned: false,
+  });
   writeJson(agenticOrchestrationPath(paths.artifactsDir), orchestration);
   const delegatedReview = await executeMeetingAgenticOrchestration(orchestration, task, paths, options, hooks);
   const delegationReconciliation = reconcilePiMeetingOrchestrationResult(
@@ -2413,6 +2483,37 @@ async function buildEvidencePack(task, paths, options = {}) {
       privacy: source.privacy,
     }));
     sources.push(...sourceSummary);
+  }
+
+  const sourceRunId = String(sourcePreparation.sourceRunId ?? "").trim();
+  if (sourceRunId) {
+    const sourceRunDir = resolve(dirname(paths.runDir), safeSegment(sourceRunId));
+    if (isInside(dirname(paths.runDir), sourceRunDir) && existsSync(sourceRunDir)) {
+      const reusable = [
+        ["meeting_analysis", join(sourceRunDir, "artifacts", "meeting-intelligence", "meeting-analysis.json")],
+        ["meeting_minutes", ...(() => {
+          const artifactsDir = join(sourceRunDir, "artifacts");
+          if (!existsSync(artifactsDir)) return [""];
+          const file = readdirSync(artifactsDir).find((name) => name.endsWith(".md") && /会议纪要/u.test(name));
+          return [file ? join(artifactsDir, file) : ""];
+        })()],
+        ["source_planner", join(sourceRunDir, "planner-envelope.json")],
+      ];
+      for (const [kind, path] of reusable) {
+        if (!path || !existsSync(path)) continue;
+        contexts.push({
+          fileType: kind === "meeting_minutes" ? "markdown" : "json",
+          fileName: basename(path),
+          extension: kind === "meeting_minutes" ? ".md" : ".json",
+          contextMode: "source_run_artifact",
+          status: "ready",
+          sourcePath: path,
+          extractedTextPath: path,
+          externalLlmAllowed: true,
+          sourceRunId,
+        });
+      }
+    }
   }
 
   const reviewContext = isDocumentRevisionTask(task) ? await buildReviewContext(task, paths, sources, contexts, options) : null;
@@ -2807,11 +2908,381 @@ function blockedOutput(summary, details = {}) {
   };
 }
 
+function publicSourceArtifacts(paths) {
+  return [
+    existsSync(publicSourceResolutionPath(paths.artifactsDir)) ? { kind: "public-source-resolution", name: "source-resolution.json", localPath: publicSourceResolutionPath(paths.artifactsDir) } : null,
+    existsSync(publicSourceMetadataPath(paths.artifactsDir)) ? { kind: "public-source-metadata", name: "source-metadata.json", localPath: publicSourceMetadataPath(paths.artifactsDir) } : null,
+    existsSync(transcriptPath(paths.artifactsDir)) ? { kind: "public-source-transcript", name: "transcript.full.json", localPath: transcriptPath(paths.artifactsDir) } : null,
+    existsSync(join(paths.artifactsDir, "transcripts", "transcript.readable.md")) ? { kind: "public-source-readable-transcript", name: "transcript.readable.md", localPath: join(paths.artifactsDir, "transcripts", "transcript.readable.md") } : null,
+    existsSync(publicSourceProvenancePath(paths.artifactsDir)) ? { kind: "public-source-provenance", name: "evidence-index.json", localPath: publicSourceProvenancePath(paths.artifactsDir) } : null,
+    existsSync(publicSourcePackPath(paths.artifactsDir)) ? { kind: "knowledge-source-pack", name: "source-pack.json", localPath: publicSourcePackPath(paths.artifactsDir) } : null,
+    existsSync(publicSourcePackReadablePath(paths.artifactsDir)) ? { kind: "knowledge-source-pack-readable", name: "source-pack.readable.md", localPath: publicSourcePackReadablePath(paths.artifactsDir) } : null,
+    existsSync(join(paths.runDir, "qa-gate.json")) ? { kind: "qa-gate", name: "qa-gate.json", localPath: join(paths.runDir, "qa-gate.json") } : null,
+    existsSync(join(paths.runDir, "policy-gate.json")) ? { kind: "policy-gate", name: "policy-gate.json", localPath: join(paths.runDir, "policy-gate.json") } : null,
+  ].filter(Boolean);
+}
+
+async function runUrlSourcePackPipeline(task, paths, options = {}, profileConfig = {}) {
+  const hooks = {
+    onStep: options.onStep,
+    onMetric: options.onMetric,
+    progressReply: options.progressReply,
+  };
+  const executionProfile = "url_source_pack";
+  const outputRoot = dirname(paths.runDir);
+  const urls = uniqueStrings([
+    ...(task.taskIntent?.sourcePreparation?.publicUrls ?? []),
+    ...extractPublicUrls(task.sourceEvent?.message?.text ?? ""),
+  ], 4);
+  const sourceUrl = urls[0] ?? null;
+  let activeLedger = null;
+  let externalWebPolicy = null;
+
+  const finishBlocked = async (summary, reason, stepId, details = {}) => {
+    if (activeLedger && stepId) {
+      const reconciled = await callRuntimeTool("execution_ledger_reconcile", {
+        runId: task.runId,
+        outputRoot,
+        expectedRevision: activeLedger.revision,
+        operationId: `public-source-blocked:${stepId}:${reason}`,
+        actor: "task-execution-runner",
+        stepUpdates: [{ stepId, status: "blocked", blockedReason: reason }],
+        interactionAdditions: [{
+          kind: "question",
+          label: summary,
+          description: details.recovery ?? "修复来源、网络或配置后可重试同一 URL。",
+          priority: "high",
+          options: ["retry-public-url", "provide-alternate-public-url"],
+          blocks: [stepId],
+        }],
+      }, paths, options);
+      if (reconciled?.schemaVersion === "adaptive-execution-ledger-v1") activeLedger = reconciled;
+    }
+    const output = blockedOutput(summary, {
+      reason,
+      ...details,
+      todo: activeLedger?.userTodoProjection ?? null,
+      interactionItems: activeLedger?.interactionItems ?? [],
+    });
+    output.executionProfile = executionProfile;
+    output.artifacts = publicSourceArtifacts(paths);
+    if (externalWebPolicy) output.policyGate = externalWebPolicy;
+    if (details.qaGate) output.qaGate = details.qaGate;
+    if (details.policyGate) output.policyGate = details.policyGate;
+    writeJson(paths.agentOutputPath, output);
+    await hooks.onStep?.("task_execution_runner_completed", "blocked", { artifact: paths.agentOutputPath, executionProfile, reason });
+    return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+  };
+
+  const transition = async (operationId, stepUpdates, interactionAdditions = []) => {
+    const reconciled = await callRuntimeTool("execution_ledger_reconcile", {
+      runId: task.runId,
+      outputRoot,
+      expectedRevision: activeLedger.revision,
+      operationId,
+      actor: "task-execution-runner",
+      stepUpdates,
+      interactionAdditions,
+    }, paths, options);
+    if (reconciled?.schemaVersion === "adaptive-execution-ledger-v1") activeLedger = reconciled;
+    return reconciled;
+  };
+
+  try {
+    await hooks.onStep?.("task_execution_runner_started", "running", { taskType: task.taskIntent?.taskType, executionProfile, runnerRole: "profile_dispatch" });
+    if (!sourceUrl) return await finishBlocked("没有检测到可处理的公开 URL。", "public_url_missing", null);
+
+    const planner = await callRuntimeTool("planner_envelope_plan", {
+      runId: task.runId,
+      goal: "解析用户提供的公开音视频来源，优先取得官方文稿，否则使用云端 ASR，并生成可交接的知识 source pack。",
+      taskType: "knowledge_source",
+      taskDescription: "公开 URL 知识来源处理",
+      requestedOutputs: [],
+      availableArtifacts: [],
+      successCriteria: ["来源解析完整", "完整带时间戳转写可用", "source pack 所有判断可追溯", "部分结果不冒充完整知识"],
+      constraints: ["不绕过登录、付费墙、DRM、地区限制或平台访问控制", "不使用 Cookie 或 Authorization", "长媒体只分章分析转写证据"],
+    }, paths, options);
+    if (planner.status === "blocked") return await finishBlocked("公开 URL 任务计划未通过。", planner.reason ?? "public_url_plan_blocked", null, planner);
+    await callRuntimeTool("planner_envelope_write", { runId: task.runId, envelope: planner, outputRoot }, paths, options);
+    activeLedger = planner;
+    await transition("public-source-resolution-started", [{ stepId: "resolve-public-url", status: "in_progress" }]);
+    externalWebPolicy = await callRuntimeTool("policy_gate_check", {
+      actionIntent: "external_web",
+      capabilityId: "public-url-source",
+      audience: "explicit_public_source",
+      payloadClass: "public_media_source",
+      riskLevel: "medium",
+      artifacts: [sanitizeUrlForArtifact(sourceUrl)],
+      externalWebAllowed: true,
+      sourceRecordRequired: true,
+      containsSecrets: false,
+      rawMediaExternalUpload: false,
+      rawTranscriptIncluded: false,
+      channel: task.sourceEvent?.eventType?.startsWith("im.") ? "feishu" : "local",
+      feishuInbound: task.sourceEvent?.eventType?.startsWith("im."),
+      explicitUserRequest: true,
+      userRequestedAction: true,
+      destructiveAction: false,
+      targetSpecified: true,
+    }, paths, options);
+    await callRuntimeTool("policy_gate_write", { runId: task.runId, decision: externalWebPolicy, outputRoot }, paths, options);
+    await hooks.onStep?.("policy_gate_completed", externalWebPolicy.status === "pass" ? "completed" : externalWebPolicy.status ?? "blocked", { artifact: join(paths.runDir, "policy-gate.json"), status: externalWebPolicy.status, actionIntent: "external_web" });
+    if (externalWebPolicy.status !== "pass") {
+      return await finishBlocked("公开 URL 获取未通过外部访问边界检查。", "public_url_policy_gate_not_passed", "resolve-public-url", { policyGate: externalWebPolicy, recovery: externalWebPolicy.safeAlternative ?? "请确认来源 URL 与访问范围后重试。" });
+    }
+    await hooks.progressReply?.("正在安全解析公开 URL。", "public_url_resolving");
+    await hooks.onStep?.("public_url_resolving", "running", { url: sanitizeUrlForArtifact(sourceUrl) });
+
+    const sourceResolver = options.publicUrlResolver ?? resolvePublicMediaSource;
+    const resolution = await sourceResolver(sourceUrl, {
+      ...options,
+      resolveOnly: options.publicUrlResolveOnly === true,
+      inputDir: paths.inputsDir,
+      maxPageBytes: options.publicUrlMaxPageBytes,
+      maxTranscriptBytes: options.publicUrlMaxTranscriptBytes,
+      maxMediaBytes: options.publicUrlMaxMediaBytes,
+      maxDurationSec: options.publicUrlMaxDurationSec,
+      timeoutMs: options.publicUrlTimeoutMs,
+      mediaTimeoutMs: options.publicUrlMediaTimeoutMs,
+      ytDlpBin: options.ytDlpBin,
+    });
+    writeJson(publicSourceResolutionPath(paths.artifactsDir), resolutionArtifactView(resolution));
+    if (resolution.status !== "resolved") {
+      await hooks.onStep?.("public_url_resolving", "blocked", { reason: resolution.reason, artifact: publicSourceResolutionPath(paths.artifactsDir) });
+      return await finishBlocked("公开来源解析失败，未生成不完整知识包。", resolution.reason ?? "public_url_resolution_failed", "resolve-public-url", resolution);
+    }
+    writeJson(publicSourceMetadataPath(paths.artifactsDir), { schemaVersion: "public-source-metadata-v1", ...resolution.source, rawSecretsReturned: false });
+    await transition("public-source-resolution-completed", [{ stepId: "resolve-public-url", status: "completed", resultRefs: [workspaceRelative(publicSourceResolutionPath(paths.artifactsDir)), workspaceRelative(publicSourceMetadataPath(paths.artifactsDir))], acceptancePassed: true }]);
+    await hooks.onStep?.("public_url_resolving", "completed", { platform: resolution.source.platform, title: resolution.source.title, artifact: publicSourceResolutionPath(paths.artifactsDir) });
+
+    await transition("public-source-acquisition-started", [{ stepId: "acquire-source-content", status: "in_progress" }]);
+    const acquisitionRefs = [workspaceRelative(publicSourceMetadataPath(paths.artifactsDir))];
+    if (resolution.media?.localPath) acquisitionRefs.push(workspaceRelative(resolution.media.localPath));
+    await transition("public-source-acquisition-completed", [{ stepId: "acquire-source-content", status: "completed", resultRefs: acquisitionRefs, acceptancePassed: true }]);
+
+    if (options.publicUrlResolveOnly === true) {
+      await transition("public-source-resolve-only-transcription-skipped", [{ stepId: "transcribe-source-media", status: "skipped" }]);
+      await transition("public-source-resolve-only-analysis-skipped", [{ stepId: "analyze-source-content", status: "skipped" }]);
+      await transition("public-source-resolve-only-verification-skipped", [{ stepId: "verify-source-pack", status: "skipped" }]);
+      const output = directOutput("completed", `已解析公开来源：${resolution.source.title ?? resolution.source.platform}。当前为 resolve-only，未下载媒体、未启动 ASR、未生成 source pack。`, {
+        source: resolution.source,
+        sourceResolutionPath: workspaceRelative(publicSourceResolutionPath(paths.artifactsDir)),
+        sourcePackPath: null,
+        fallbackRequired: resolution.fallback?.required === true,
+        todo: activeLedger.userTodoProjection,
+      }, publicSourceArtifacts(paths), executionProfile);
+      writeJson(paths.agentOutputPath, output);
+      await hooks.onStep?.("task_execution_runner_completed", "completed", { artifact: paths.agentOutputPath, executionProfile, resolveOnly: true });
+      return { status: "completed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    }
+
+    let transcriptInfo;
+    let transcriptMethod;
+    let normalizedSegments;
+    if (resolution.transcript?.status === "completed") {
+      transcriptInfo = writeOfficialTranscriptArtifacts({ outputDir: paths.artifactsDir, runId: task.runId, source: resolution.source, transcript: resolution.transcript });
+      transcriptMethod = resolution.transcript.origin ?? "official_transcript";
+      normalizedSegments = transcriptInfo.segments;
+      await transition("public-source-transcription-official", [{ stepId: "transcribe-source-media", status: "skipped", resultRefs: [workspaceRelative(transcriptInfo.fullPath)] }]);
+      await hooks.progressReply?.("已取得官方带时间戳文稿，正在分章整理。", "public_source_official_transcript");
+    } else {
+      if (!resolution.media?.localPath || !existsSync(resolution.media.localPath)) {
+        return await finishBlocked("来源没有可靠官方文稿，也未能取得可转写媒体。", "public_source_media_missing_for_asr", "transcribe-source-media", resolution);
+      }
+      await transition("public-source-cloud-asr-started", [{ stepId: "transcribe-source-media", status: "in_progress" }]);
+      const mediaName = basename(resolution.media.localPath);
+      const mediaTask = {
+        ...task,
+        attachments: [{
+          resourceType: /video\//i.test(resolution.media.contentType ?? "") || cloudAsrMediaKind(resolution.media.localPath) === "video" ? "video" : "audio",
+          name: mediaName,
+          localPath: resolution.media.localPath,
+          sha256: resolution.media.sha256 ?? null,
+          sizeBytes: resolution.media.sizeBytes ?? statSync(resolution.media.localPath).size,
+          sourceKind: "public_url_media",
+        }],
+      };
+      const asr = await ensureAsrTranscription(mediaTask, paths, {
+        ...options,
+        asrProvider: "aliyun_dashscope_paraformer",
+        asrFallbackProvider: "none",
+      }, hooks);
+      if (asr.status !== "completed") return await finishBlocked(userMessageForAsrFailure(asr), asr.reason ?? "public_source_cloud_asr_failed", "transcribe-source-media", asr);
+      const fullTranscript = loadJson(transcriptPath(paths.artifactsDir));
+      transcriptMethod = "aliyun_dashscope_paraformer";
+      normalizedSegments = normalizeSourceSegments(fullTranscript, {
+        originType: transcriptMethod,
+        sourceUrl: resolution.source.finalSourceUrl,
+        language: resolution.source.language,
+      });
+      transcriptInfo = {
+        fullPath: transcriptPath(paths.artifactsDir),
+        readablePath: join(paths.artifactsDir, "transcripts", "transcript.readable.md"),
+        summaryPath: asrSummaryPath(paths.artifactsDir),
+        summary: completeAsrSummary(paths.artifactsDir),
+      };
+      await transition("public-source-cloud-asr-completed", [{ stepId: "transcribe-source-media", status: "completed", resultRefs: [workspaceRelative(transcriptInfo.fullPath), workspaceRelative(transcriptInfo.summaryPath)], acceptancePassed: true }]);
+    }
+
+    if (!normalizedSegments?.length) return await finishBlocked("完整转写没有可用的时间戳片段。", "public_source_timestamped_transcript_missing", "transcribe-source-media");
+    const provenance = buildProvenanceIndex(resolution.source, normalizedSegments, transcriptMethod);
+    writeJson(publicSourceProvenancePath(paths.artifactsDir), provenance);
+    await transition("public-source-analysis-started", [{ stepId: "analyze-source-content", status: "in_progress" }]);
+    await hooks.progressReply?.("完整转写已就绪，正在按时间章节分析，不会把长转写整体重复发送给模型。", "public_source_chapter_analysis");
+
+    const chapters = partitionSourceSegments(normalizedSegments, {
+      maxChapterDurationMs: options.publicUrlChapterDurationMs,
+      maxChapterChars: options.publicUrlChapterChars,
+      chapterMarkers: resolution.source.chapters,
+    });
+    if (chapters.length === 0) return await finishBlocked("完整转写无法形成可分析章节。", "public_source_chapters_missing", "analyze-source-content");
+    const oversizedChapter = chapters.find((chapter) => chapter.bounded === false);
+    if (oversizedChapter) {
+      return await finishBlocked("来源存在超出单章上下文上限的异常长片段，未直接发送给模型。", "public_source_chapter_size_limit_exceeded", "analyze-source-content", { chapterId: oversizedChapter.chapterId, charCount: oversizedChapter.charCount });
+    }
+    const { routePlan, candidate } = await planFastDraftRoute(task, paths, options, hooks, executionProfile, profileConfig);
+    if (routePlan.status !== "selected" || !candidate) return await finishBlocked("当前没有可用模型分析来源转写。", "public_source_model_unavailable", "analyze-source-content", routePlan);
+    const chapterAnalyses = [];
+    for (const chapter of chapters) {
+      const mockClaim = chapter.segments[0];
+      const generation = await callModelGenerateText({
+        provider: candidate.provider,
+        model: candidate.model,
+        prompt: buildSourceChapterPrompt(chapter, resolution.source),
+        systemPrompt: "你是知识来源分析器。只输出 JSON；每个判断必须引用当前章节给出的 segmentId。",
+        temperature: 0.1,
+        maxTokens: Number(options.publicUrlChapterMaxTokens ?? 1800),
+        timeoutMs: options.modelTimeoutMs ?? options.runtimeToolTimeoutMs ?? 600000,
+        mockResponse: JSON.stringify({ chapterTitle: `第 ${chapter.order} 章`, summary: mockClaim?.text ?? "测试章节", claims: [{ claimType: "author_view", text: mockClaim?.text ?? "测试观点", evidenceSegmentIds: [mockClaim?.segmentId], confidence: "medium" }], suggestedRelatedTopics: [resolution.source.program ?? resolution.source.title ?? "公开来源"] }),
+        modelRoute: candidate.provider === "mock" ? undefined : routePlan,
+      }, paths, options, executionProfile);
+      if (generation.status !== "completed") {
+        chapterAnalyses.push({ status: "blocked", reason: generation.reason ?? "source_chapter_generation_failed", chapterId: chapter.chapterId });
+        break;
+      }
+      const normalized = normalizeSourceChapterAnalysis(generation.content, chapter);
+      chapterAnalyses.push(normalized);
+      writeJson(join(publicSourcePackDir(paths.artifactsDir), "chapters", `${chapter.chapterId}.json`), normalized);
+      if (normalized.status !== "completed") break;
+    }
+
+    const sourceForPack = {
+      ...resolution.source,
+      acquisitionMethod: transcriptMethod === "aliyun_dashscope_paraformer"
+        ? `${resolution.source.acquisitionMethod}+cloud_asr`
+        : resolution.source.acquisitionMethod,
+    };
+    writeJson(publicSourceMetadataPath(paths.artifactsDir), { schemaVersion: "public-source-metadata-v1", ...sourceForPack, rawSecretsReturned: false });
+    const pack = buildKnowledgeSourcePack({
+      source: sourceForPack,
+      transcript: {
+        status: "complete",
+        quality: transcriptInfo.summary?.status === "complete" ? "complete" : resolution.transcript?.quality ?? "ready",
+        fullTranscriptPath: workspaceRelative(transcriptInfo.fullPath),
+        readableTranscriptPath: workspaceRelative(transcriptInfo.readablePath),
+      },
+      segments: normalizedSegments,
+      chapterAnalyses,
+      transcriptMethod,
+      provenancePath: workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)),
+    });
+    if (pack.status !== "complete") return await finishBlocked("分章分析未完整完成，未把部分结果标记为可交接知识包。", pack.reason ?? "source_pack_incomplete", "analyze-source-content", pack);
+    const qaGate = await callRuntimeTool("qa_gate_evaluate", {
+      publishIntent: false,
+      checks: {
+        security: { rawSecretsReturned: false, secretsLeaked: false },
+        webAccess: {
+          used: true,
+          allowed: true,
+          sources: [resolution.source.finalSourceUrl ?? resolution.source.originalUrl].filter(Boolean),
+        },
+        evidence: {
+          missingEvidenceClaims: pack.provenance.allClaimsHaveEvidence ? [] : ["source_pack_claim_without_evidence"],
+        },
+        sourcePack: {
+          required: true,
+          completeTranscriptAvailable: pack.quality.completeTranscriptAvailable,
+          failedChapterCount: pack.quality.failedChapterCount,
+          allClaimsHaveEvidence: pack.provenance.allClaimsHaveEvidence,
+          partialResultsPublished: pack.quality.partialResultsPublished,
+          provenancePath: workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)),
+        },
+      },
+    }, paths, options);
+    await callRuntimeTool("qa_gate_write", { runId: task.runId, gate: qaGate, outputRoot }, paths, options);
+    await hooks.onStep?.("qa_gate_completed", qaGate.status === "pass" ? "completed" : qaGate.status ?? "blocked", { artifact: join(paths.runDir, "qa-gate.json"), status: qaGate.status });
+    if (qaGate.status !== "pass") {
+      return await finishBlocked("source pack 未通过完整性与证据验收，未生成可交接结果。", "source_pack_qa_not_passed", "analyze-source-content", { qaGate, recovery: "修复缺失转写、章节或 provenance 后重试。" });
+    }
+    const packClaims = [
+      ...pack.explicitFacts,
+      ...pack.authorViews,
+      ...pack.agentInferences,
+      ...pack.controversiesOrRisks,
+      ...pack.openQuestions,
+    ];
+    writeJson(publicSourceProvenancePath(paths.artifactsDir), {
+      ...provenance,
+      claimCount: packClaims.length,
+      claims: packClaims.map((claim) => ({
+        claimId: claim.claimId,
+        claimType: claim.claimType,
+        chapterId: claim.chapterId,
+        evidenceSegmentIds: claim.evidenceSegmentIds,
+        transcriptOrigin: transcriptMethod,
+      })),
+    });
+    writeJson(publicSourcePackPath(paths.artifactsDir), pack);
+    writeText(publicSourcePackReadablePath(paths.artifactsDir), renderKnowledgeSourcePack(pack));
+    await transition("public-source-analysis-completed", [{ stepId: "analyze-source-content", status: "completed", resultRefs: [workspaceRelative(publicSourcePackPath(paths.artifactsDir)), workspaceRelative(publicSourcePackReadablePath(paths.artifactsDir))], acceptancePassed: true }]);
+    await transition("public-source-verification-completed", [{ stepId: "verify-source-pack", status: "completed", resultRefs: [workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)), workspaceRelative(publicSourcePackPath(paths.artifactsDir))], acceptancePassed: pack.provenance.allClaimsHaveEvidence && pack.quality.failedChapterCount === 0 }], [{
+      kind: "suggestion",
+      label: "选择 source pack 的下一步",
+      description: "可先在当前对话审阅交接包，或仅保留本地文件，之后再由知识库 Agent 决定是否入库。",
+      priority: "medium",
+      options: ["review-source-pack", "keep-source-pack-local"],
+    }]);
+
+    const keyPointPreview = pack.keyPoints.slice(0, 3).map((claim) => `- ${claim.text}`).join("\n");
+
+    const output = {
+      status: "completed",
+      executionProfile,
+      summary: [`已完成公开来源解析与知识整理：${sourceForPack.title ?? sourceForPack.platform}。共 ${pack.chapters.length} 章、${normalizedSegments.length} 个时间戳片段；source pack 已生成，但未写入任何外部知识库。`, keyPointPreview ? `关键观点预览：\n${keyPointPreview}` : ""].filter(Boolean).join("\n"),
+      documents: [],
+      artifacts: publicSourceArtifacts(paths),
+      qaGate,
+      policyGate: externalWebPolicy,
+      details: {
+        source: sourceForPack,
+        sourcePackPath: workspaceRelative(publicSourcePackPath(paths.artifactsDir)),
+        readableSourcePackPath: workspaceRelative(publicSourcePackReadablePath(paths.artifactsDir)),
+        provenancePath: workspaceRelative(publicSourceProvenancePath(paths.artifactsDir)),
+        transcriptMethod,
+        transcriptSegmentCount: normalizedSegments.length,
+        chapterCount: pack.chapters.length,
+        todo: activeLedger.userTodoProjection,
+        interactionItems: activeLedger.interactionItems,
+        knowledgeBaseWritePerformed: false,
+      },
+      rawSecretsReturned: false,
+      rawMediaExternalUpload: transcriptMethod === "aliyun_dashscope_paraformer",
+    };
+    writeJson(paths.agentOutputPath, output);
+    await hooks.onStep?.("public_source_pack_generated", "completed", { artifact: publicSourcePackPath(paths.artifactsDir), chapterCount: pack.chapters.length, transcriptMethod });
+    await hooks.onStep?.("task_execution_runner_completed", "completed", { artifact: paths.agentOutputPath, executionProfile });
+    return { status: "completed", output, mode: "task-execution-runner", rawSecretsReturned: false };
+  } catch (error) {
+    return await finishBlocked("公开来源处理失败，可修复后重试。", "public_url_source_pipeline_failed", activeLedger ? activeLedger.currentStepIds?.[0] ?? null : null, { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 export async function runTaskExecutionPipeline(task, paths, options = {}) {
   const profile = executionProfileForTask(task);
   const executionProfile = profile?.id ?? "unknown";
   if (executionProfile === "fast_answer") return runFastAnswerPipeline(task, paths, options, profile.config);
   if (executionProfile === "file_summary") return runFileSummaryPipeline(task, paths, options, profile.config);
+  if (executionProfile === "url_source_pack") return runUrlSourcePackPipeline(task, paths, options, profile.config);
   if (FULL_DOCUMENT_EXECUTION_PROFILES.has(executionProfile)) return runFullDocumentPipeline(task, paths, options, profile.config);
 
   const output = directOutput("blocked", "当前执行 profile 不支持任务执行 Runner。", {
@@ -3009,6 +3480,7 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
     }
 
     const planner = await callRuntimeTool("planner_envelope_plan", {
+      runId: task.runId,
       goal: revisionMode ? "基于飞书文档正文和批注/修改上下文修订既有办公文档并发布" : "基于飞书多源上下文生成用户请求的办公文档并发布",
       taskType: task.taskIntent?.taskType ?? "document_pipeline",
       taskDescription: cleanUserPrompt(task.sourceEvent?.message?.text ?? ""),
@@ -3040,11 +3512,34 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
             orchestrationMode: meetingIntelligence.analysis.agentPlan?.orchestrationMode ?? null,
             specialistCount: meetingIntelligence.analysis.agentPlan?.specialistCount ?? 0,
             suggestedFollowUpDocuments: meetingIntelligence.analysis.agentPlan?.suggestedFollowUpDocuments ?? [],
+            productDiscoverySummary: meetingIntelligence.analysis.productDiscovery ?? null,
           }
         : null,
     }, paths, options);
     await callRuntimeTool("planner_envelope_write", { runId: task.runId, envelope: planner, outputRoot }, paths, options);
     await hooks.onStep?.("planner_envelope_completed", planner.status === "blocked" ? "blocked" : "completed", { artifact: join(paths.runDir, "planner-envelope.json") });
+    if (planner.status === "blocked") {
+      const output = blockedOutput("任务计划未通过，暂未开始文档生成。", planner);
+      writeJson(paths.agentOutputPath, output);
+      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    }
+    const readyDocumentStepIds = requestedDocuments
+      .map((docType) => `generate-${docType}`)
+      .filter((stepId) => planner.steps?.some((step) => step.stepId === stepId && step.status === "ready"));
+    const startedLedger = await callRuntimeTool("execution_ledger_reconcile", {
+      runId: task.runId,
+      outputRoot,
+      expectedRevision: planner.revision,
+      operationId: "document-generation-started",
+      actor: "task-execution-runner",
+      stepUpdates: readyDocumentStepIds.map((stepId) => ({ stepId, status: "in_progress" })),
+    }, paths, options);
+    if (startedLedger.status === "blocked") {
+      const output = blockedOutput("任务账本无法进入文档生成步骤。", startedLedger);
+      writeJson(paths.agentOutputPath, output);
+      return { status: "blocked", output, mode: "task-execution-runner", rawSecretsReturned: false };
+    }
+    let activeLedger = startedLedger;
 
     const primaryDoc = requestedDocuments[0] ?? "document";
     const routeTaskType = primaryDoc === "meeting-minutes" && requestedDocuments.length === 1 ? "meeting_minutes" : "document_shard";
@@ -3281,6 +3776,31 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       writeText(localDocPath, markdown);
       return { docType, title, fileName, markdown, titleBasis: planned?.titleBasis ?? null, localPath: localDocPath };
     });
+    const remainingLedgerDocuments = [...documents];
+    while (remainingLedgerDocuments.length > 0) {
+      const completedStepIds = new Set((activeLedger.steps ?? []).filter((step) => step.status === "completed").map((step) => step.stepId));
+      const readyIndex = remainingLedgerDocuments.findIndex((document) => {
+        const step = activeLedger.steps?.find((item) => item.stepId === `generate-${document.docType}`);
+        return step && (step.dependsOn ?? []).every((dependency) => completedStepIds.has(dependency));
+      });
+      if (readyIndex < 0) break;
+      const [document] = remainingLedgerDocuments.splice(readyIndex, 1);
+      const completedLedger = await callRuntimeTool("execution_ledger_reconcile", {
+        runId: task.runId,
+        outputRoot,
+        expectedRevision: activeLedger.revision,
+        operationId: `document-generation-completed:${document.docType}`,
+        actor: "task-execution-runner",
+        stepUpdates: [{
+          stepId: `generate-${document.docType}`,
+          status: "completed",
+          resultRefs: [workspaceRelative(document.localPath)],
+          acceptancePassed: true,
+        }],
+      }, paths, options);
+      if (completedLedger.status === "blocked") break;
+      activeLedger = completedLedger;
+    }
     let lifecycleResult = null;
     if (revisionMode) {
       lifecycleResult = await callRuntimeTool("document_lifecycle_write", {
@@ -3316,6 +3836,8 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       meetingIntelligence.analysis ? { kind: "topic-map", name: "topic-map.json", localPath: topicMapPath(paths.artifactsDir) } : null,
       meetingIntelligence.analysis ? { kind: "evidence-map", name: "evidence-map.json", localPath: internalEvidenceMapPath(paths.artifactsDir) } : null,
       meetingIntelligence.analysis ? { kind: "agent-plan", name: "agent-plan.json", localPath: agentPlanPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "product-discovery", name: "product-discovery.json", localPath: productDiscoveryPath(paths.artifactsDir) } : null,
+      meetingIntelligence.analysis ? { kind: "next-step-options", name: "next-step-options.json", localPath: nextStepOptionsPath(paths.artifactsDir) } : null,
       meetingIntelligence.analysis ? { kind: "agentic-orchestration", name: "agentic-orchestration.json", localPath: agenticOrchestrationPath(paths.artifactsDir) } : null,
       meetingIntelligence.analysis ? { kind: "agentic-orchestration-result", name: "agentic-orchestration-result.json", localPath: agenticOrchestrationResultPath(paths.artifactsDir) } : null,
       meetingIntelligence.analysis && existsSync(agenticOrchestrationEventsPath(paths.artifactsDir))
@@ -3330,6 +3852,22 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
       { kind: "qa-gate", name: "qa-gate.json", localPath: join(paths.runDir, "qa-gate.json") },
       { kind: "policy-gate", name: "policy-gate.json", localPath: join(paths.runDir, "policy-gate.json") },
     ].filter(Boolean);
+    if (publishable && activeLedger.steps?.some((step) => step.stepId === "verify-deliverables" && step.status === "ready")) {
+      const verifiedLedger = await callRuntimeTool("execution_ledger_reconcile", {
+        runId: task.runId,
+        outputRoot,
+        expectedRevision: activeLedger.revision,
+        operationId: "deliverables-verified",
+        actor: "task-execution-runner",
+        stepUpdates: [{
+          stepId: "verify-deliverables",
+          status: "completed",
+          resultRefs: [workspaceRelative(join(paths.runDir, "qa-gate.json")), workspaceRelative(join(paths.runDir, "policy-gate.json"))],
+          acceptancePassed: true,
+        }],
+      }, paths, options);
+      if (verifiedLedger.status !== "blocked") activeLedger = verifiedLedger;
+    }
     const gateFailureReport = publishable ? null : {
       schemaVersion: "document-workflow-final-failure-v1",
       terminalReason: qaGate.status !== "pass" ? "qa_gate_not_publishable" : "policy_gate_not_publishable",
@@ -3370,6 +3908,9 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
               orchestrationMode: meetingIntelligence.analysis?.agentPlan?.orchestrationMode ?? null,
               specialistCount: meetingIntelligence.analysis?.agentPlan?.specialistCount ?? 0,
               suggestedFollowUpDocuments: meetingIntelligence.analysis?.agentPlan?.suggestedFollowUpDocuments ?? [],
+              prdReadiness: meetingIntelligence.analysis?.productDiscovery?.prdReadiness ?? null,
+              nextStepOptions: meetingIntelligence.analysis?.productDiscovery?.nextStepOptions ?? [],
+              clarificationQuestionCount: meetingIntelligence.analysis?.productDiscovery?.clarificationQuestions?.length ?? 0,
             },
             meetingMemory: meetingMemory
               ? {
@@ -3380,6 +3921,8 @@ async function runFullDocumentPipeline(task, paths, options = {}, profileConfig 
                   artifact: workspaceRelative(meetingMemoryResultPath(paths.artifactsDir)),
                 }
               : null,
+            todo: activeLedger.userTodoProjection ?? planner.userTodoProjection ?? null,
+            interactionItems: activeLedger.interactionItems ?? planner.interactionItems ?? [],
           }
         : { finalFailureReport: gateFailureReport },
       rawSecretsReturned: false,

@@ -388,6 +388,25 @@
       "guardrails": ["confirmation before mutation", "record action artifact before notify"]
     },
     {
+      "capabilityId": "public-url-source",
+      "status": "available",
+      "description": "Resolves explicit public YouTube, podcast/RSS, Xiaoyuzhou, and direct media URLs; prefers official timestamped transcripts, otherwise uses bounded media download plus cloud ASR and emits a provenance-backed source pack.",
+      "defaultLoad": false,
+      "contextCost": "medium",
+      "toolPackage": "local-extension",
+      "toolIntents": ["read", "external_web", "draft", "write_private"],
+      "policy": ["explicit user URL only", "no cookies or access-control bypass", "no external knowledge-base write"],
+      "observability": ["plannerDecisions", "toolCalls", "generatedArtifacts", "cloudAsrEvents"],
+      "installState": "local",
+      "securityReview": {
+        "status": "passed",
+        "summary": "Pins validated public DNS results, checks every redirect, bounds bytes and duration, blocks private networks and signed credential output, and keeps full media/transcripts in ignored runtime directories."
+      },
+      "triggers": ["public URL", "YouTube", "podcast", "RSS", "Xiaoyuzhou", "小宇宙", "公开视频", "公开音频", "source pack"],
+      "commands": ["node meeting-agent-pi-package/tools/public_url_source_cli.mjs", "yt-dlp (YouTube fallback only)", "ffprobe"],
+      "guardrails": ["official timestamped transcript first", "cloud ASR only when needed", "SSRF and redirect validation", "bounded file size and duration", "no login/paywall/DRM/region bypass", "podcast is not meeting minutes", "partial result never marked complete"]
+    },
+    {
       "capabilityId": "local-asr",
       "status": "available",
       "description": "Runs local audio transcription without external raw media upload; video素材 is not accepted by the Feishu bridge.",

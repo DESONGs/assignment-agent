@@ -803,7 +803,7 @@ function taskStatePathForItems(items: DocumentWorkItem[]) {
 function updateDocumentTaskState(
   items: DocumentWorkItem[],
   results: any[],
-  phase: "running" | "completed",
+  phase: "running" | "completed" | "blocked" | "needs_fix" | "failed",
 ) {
   const path = taskStatePathForItems(items);
   if (!path || !existsSync(path)) return;
@@ -2229,6 +2229,16 @@ export default function (pi: ExtensionAPI) {
           retryPolicy: params.retryPolicy,
         });
         const dependencyPlan = dependencyWaves(documentWorkItems);
+        if (dependencyPlan.dependencyCycleDetected) {
+          updateDocumentTaskState(documentWorkItems, [], "blocked");
+          const blocked = {
+            status: "blocked",
+            reason: "document_dependency_cycle_blocked",
+            dependencyCycleDetected: true,
+            rawSecretsReturned: false,
+          };
+          return { content: [{ type: "text", text: JSON.stringify(blocked, null, 2) }], details: blocked };
+        }
         const completedByDocType = new Map<string, any>();
         const results: any[] = new Array(documentWorkItems.length);
         updateDocumentTaskState(documentWorkItems, [], "running");
@@ -2266,7 +2276,12 @@ export default function (pi: ExtensionAPI) {
           updateDocumentTaskState(documentWorkItems, results.filter(Boolean), "running");
         }
         const orderedResults = results.sort((a, b) => a.taskIndex - b.taskIndex);
-        updateDocumentTaskState(documentWorkItems, orderedResults, "completed");
+        const aggregateResultStatus = aggregateStatus(orderedResults);
+        updateDocumentTaskState(
+          documentWorkItems,
+          orderedResults,
+          aggregateResultStatus === "completed" ? "completed" : aggregateResultStatus === "needs_fix" ? "needs_fix" : "blocked",
+        );
         const workflowSummary = summarizeWorkflow(workflow, orderedResults);
         if (workflowSummary.manifestPath) {
           writeJson(workflowSummary.manifestPath, {
@@ -2329,7 +2344,7 @@ export default function (pi: ExtensionAPI) {
           runtimeBudgetMs: deadline.runtimeBudgetMs,
           deadlineReserveMs: deadline.deadlineReserveMs,
         }, params.outputRoot);
-        const status = aggregateStatus(orderedResults);
+        const status = aggregateResultStatus;
         const finalFailureReport = buildFinalFailureReport(orderedResults, workflowSummary, status);
         const details = {
           status,

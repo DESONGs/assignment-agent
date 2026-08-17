@@ -1,27 +1,46 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://meeting-agent.local/schemas/planner-envelope.schema.json",
-  "title": "Agentic Office Planner Envelope",
+  "title": "Adaptive Execution Ledger",
   "type": "object",
   "required": [
+    "schemaVersion",
+    "planId",
+    "revision",
+    "status",
     "goal",
     "taskType",
     "successCriteria",
     "constraints",
     "capabilitiesNeeded",
     "toolPlan",
+    "steps",
+    "currentStepIds",
+    "nextStepIds",
+    "interactionItems",
+    "userTodoProjection",
     "parallelizableWorkers",
     "policyRisks",
     "requiredArtifacts",
-    "stopConditions"
+    "stopConditions",
+    "artifactIndex",
+    "checkpointRefs",
+    "openQuestions",
+    "events",
+    "rawSecretsReturned"
   ],
   "properties": {
-    "schemaVersion": { "const": "planner-envelope-v1" },
+    "schemaVersion": { "const": "adaptive-execution-ledger-v1" },
+    "planId": { "type": "string", "minLength": 1 },
+    "runId": { "type": ["string", "null"] },
+    "revision": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["active", "awaiting_user", "blocked", "completed", "cancelled"] },
     "goal": { "type": "string", "minLength": 1 },
     "taskType": {
       "enum": [
         "meeting_minutes",
         "doc_writer",
+        "document_revision",
         "feishu_bot",
         "wechat_adapter",
         "document_lifecycle",
@@ -29,17 +48,12 @@
         "calendar",
         "task_management",
         "research",
+        "knowledge_source",
         "mixed"
       ]
     },
-    "successCriteria": {
-      "type": "array",
-      "items": { "type": "string" }
-    },
-    "constraints": {
-      "type": "array",
-      "items": { "type": "string" }
-    },
+    "successCriteria": { "type": "array", "items": { "type": "string" } },
+    "constraints": { "type": "array", "items": { "type": "string" } },
     "capabilitiesNeeded": {
       "type": "array",
       "items": {
@@ -61,17 +75,7 @@
         "required": ["toolIntent", "toolName", "reason", "policyCheckRequired"],
         "properties": {
           "toolIntent": {
-            "enum": [
-              "read",
-              "draft",
-              "write_private",
-              "publish_customer_visible",
-              "notify_people",
-              "mutate_calendar",
-              "assign_task",
-              "external_web",
-              "install_dependency"
-            ]
+            "enum": ["read", "draft", "interact", "review", "write_private", "publish_customer_visible", "notify_people", "mutate_calendar", "assign_task", "external_web", "install_dependency"]
           },
           "toolName": { "type": "string" },
           "reason": { "type": "string" },
@@ -80,6 +84,19 @@
         "additionalProperties": false
       }
     },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "currentStepIds": { "type": "array", "items": { "type": "string" } },
+    "nextStepIds": { "type": "array", "items": { "type": "string" } },
+    "interactionItems": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/interaction" }
+    },
+    "userTodoProjection": { "$ref": "#/$defs/todoProjection" },
     "parallelizableWorkers": {
       "type": "array",
       "items": {
@@ -99,36 +116,93 @@
         "type": "object",
         "required": ["actionIntent", "reason"],
         "properties": {
-          "actionIntent": {
-            "enum": [
-              "read",
-              "draft",
-              "write_private",
-              "publish_customer_visible",
-              "notify_people",
-              "mutate_calendar",
-              "assign_task",
-              "external_web",
-              "install_dependency"
-            ]
-          },
+          "actionIntent": { "type": "string" },
           "reason": { "type": "string" }
         },
         "additionalProperties": false
       }
     },
-    "requiredArtifacts": {
+    "requiredArtifacts": { "type": "array", "items": { "type": "string" } },
+    "stopConditions": { "type": "array", "items": { "type": "string" } },
+    "artifactIndex": { "type": "object", "additionalProperties": { "type": "string" } },
+    "checkpointRefs": { "type": "array", "items": { "type": "string" } },
+    "openQuestions": { "type": "array", "items": { "type": "string" } },
+    "events": {
       "type": "array",
-      "items": { "type": "string" }
-    },
-    "stopConditions": {
-      "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "object",
+        "required": ["eventId", "type", "at", "actor"],
+        "properties": {
+          "eventId": { "type": "string" },
+          "type": { "type": "string" },
+          "at": { "type": "string" },
+          "actor": { "type": "string" },
+          "operationId": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
     },
     "fixedWorkflow": { "const": false },
+    "plannerMode": { "const": "adaptive_execution_ledger" },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" },
     "rawSecretsReturned": { "const": false },
-    "meetingContentAccess": { "const": "allowed" },
-    "createdAt": { "type": "string" }
+    "meetingContentAccess": { "const": "allowed" }
   },
-  "additionalProperties": true
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": ["stepId", "title", "description", "status", "dependsOn", "owner", "capabilityId", "acceptance", "inputRefs", "resultRefs", "attempts", "blockedReason"],
+      "properties": {
+        "stepId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "enum": ["pending", "ready", "in_progress", "completed", "blocked", "failed", "cancelled", "skipped"] },
+        "dependsOn": { "type": "array", "items": { "type": "string" } },
+        "owner": { "type": "string" },
+        "capabilityId": { "type": ["string", "null"] },
+        "acceptance": { "type": "array", "items": { "type": "string" } },
+        "inputRefs": { "type": "array", "items": { "type": "string" } },
+        "resultRefs": { "type": "array", "items": { "type": "string" } },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "blockedReason": { "type": ["string", "null"] },
+        "completedAt": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "interaction": {
+      "type": "object",
+      "required": ["itemId", "kind", "label", "description", "status", "priority", "order", "options", "blocks", "evidenceSegmentIds", "suggestedDocuments"],
+      "properties": {
+        "itemId": { "type": "string" },
+        "kind": { "enum": ["progress", "decision", "question", "suggestion"] },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "enum": ["pending", "answered", "dismissed"] },
+        "priority": { "enum": ["high", "medium", "low"] },
+        "order": { "type": "integer" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "blocks": { "type": "array", "items": { "type": "string" } },
+        "evidenceSegmentIds": { "type": "array", "items": { "type": "string" } },
+        "suggestedDocuments": { "type": "array", "items": { "type": "string" } },
+        "answer": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "todoProjection": {
+      "type": "object",
+      "required": ["schemaVersion", "planId", "revision", "completed", "total", "awaitingUser", "items"],
+      "properties": {
+        "schemaVersion": { "const": "execution-todo-projection-v1" },
+        "planId": { "type": ["string", "null"] },
+        "revision": { "type": "integer" },
+        "completed": { "type": "integer" },
+        "total": { "type": "integer" },
+        "awaitingUser": { "type": "boolean" },
+        "items": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
 }

@@ -1,6 +1,6 @@
 # Office Agent 开发与运行规则
 
-更新时间：2026-08-12。
+更新时间：2026-08-17。
 
 本文只记录当前有效的项目级约束。历史方案、故障记录和过往取舍保存在 `wiki/` 的日期化目录中，但不覆盖本文、代码或当前架构文档。
 
@@ -22,6 +22,7 @@
 - Sub-agent/workflow：`wiki/06-agent-team-index.md`
 - 测试：`wiki/07-test-plan.md`
 - 运行存储：`wiki/14-local-data-storage-cache-backend.md`
+- 公开媒体 URL：`wiki/16-public-url-source-pack.md`
 
 ## 当前运行基线
 
@@ -36,15 +37,16 @@
 
 1. 识别用户目标、输入类型、预期交付物、成功标准与外部动作。
 2. 父 Agent 建立任务控制状态与 artifact index，选择最小能力集合；普通问答、单文件与局部修订不进入会议链路。
-3. 复杂任务按独立工作轴选择父 Agent 直做、一个 fresh sub-agent 或 Dynamic Workflow；父级持有依赖、冲突与最终验收。
+3. 复杂任务先建立 Adaptive Execution Ledger；按独立工作轴选择父 Agent 直做、一个 fresh sub-agent 或 Dynamic Workflow。父级持有唯一账本、依赖、冲突与最终验收，Todo/频道状态只做投影。
 4. 文档与分析 work unit 只接收任务契约、相关证据、必要上游摘要和 artifact pointers，不反复拼接全量来源。
-5. 会议输入额外执行 ASR 与 Meeting Intelligence：生成完整 transcript、readable transcript、speaker/quality 元数据、evidence index，以及参会人/议题/决定/行动/风险图。
-6. 父 Agent 对委派结果做来源和 segment id 集合校验；越界证据必须隔离。
-7. Prompt Registry 与 Document Workers 生成交付物，QA 负责质量验收，Policy 只检查凭证与高影响外部动作。
-8. 已通过 QA 的完整音频会议按需唤醒一次 `meeting-memory-curator`；父 Agent 校验 claim/segment、去重、隔离冲突并更新项目长期记忆。
-9. 按用户要求交付本地文件或发布飞书；明确目标的用户写入/发布请求不重复确认。
+5. 公开媒体 URL 进入 `url_source_pack`：先取官方带时间戳文稿；缺失时受限下载媒体并走云端文件 ASR，再按章节生成带 provenance 的知识交接包，不进入会议纪要或外部知识库写入。
+6. 会议输入额外执行 ASR 与 Meeting Intelligence：生成完整 transcript、readable transcript、speaker/quality 元数据、evidence index，以及参会人/议题/决定/行动/风险图。
+7. 父 Agent 对委派结果做来源和 segment id 集合校验；越界证据必须隔离。
+8. Prompt Registry 与 Document Workers 生成交付物，QA 负责质量验收，Policy 只检查凭证与高影响外部动作。
+9. 客户/产品会议额外建立 productDiscovery 和 PRD readiness，把潜在需求、假设、缺口和下一轮问题投影到 Todo；已通过 QA 的完整音频会议再按需唤醒一次 `meeting-memory-curator`。
+10. 按用户要求交付本地文件或发布飞书；明确目标的用户写入/发布请求不重复确认。
 
-这是一条办公任务控制循环，不是所有任务都必须执行的固定 DAG。`fast_answer`、`file_summary`、文档修订、多源综合和会议会按 execution profile 选择所需阶段。
+这是一条办公任务控制循环，不是所有任务都必须执行的固定 DAG。`fast_answer`、`file_summary`、`url_source_pack`、文档修订、多源综合和会议会按 execution profile 选择所需阶段。
 
 ## Agent 决策边界
 
@@ -74,6 +76,14 @@
 - 只有 provider 拒绝容器或本地模型需要时才重封装/转码；不得把模型输入约束暴露为产品格式限制。
 - 云端与本地 cache key 必须包含 provider/model/mode/diarization 等配置，不能相互污染。
 - 云端失败必须区分鉴权、网络、模型、格式、超时和 partial；不得把 partial transcript 当完整会议生成纪要。
+
+## 公开 URL 来源规则
+
+- 只处理用户明确提供的公开 URL 或已授权来源，支持 YouTube、播客/RSS、小宇宙单集和直接公开音视频。
+- 优先发布方官方带时间戳文稿；show notes、简介或 AI 摘要指针不能冒充完整文稿。没有可靠文稿时才下载媒体并固定使用云端 DashScope 文件 ASR。
+- 解析和重定向必须通过 SSRF、公网 DNS、大小与时长检查；不使用 Cookie、登录态，不绕过付费、DRM、地区或平台限制。
+- 长 transcript 由有界章节分别分析；source pack 必须区分事实、作者观点、Agent 推断、争议/风险与开放问题，并保留 segment provenance。
+- 完整媒体、完整逐字稿和运行诊断只写入已忽略的 `runtime-runs/`。URL 链路只交付本地 source pack，不直接修改外部知识库仓库。
 
 ## 内容与凭证边界
 
@@ -108,6 +118,7 @@ git diff --check
 
 - 提交 `.env.local`、模型/OSS/飞书凭证、录音、转录或 `runtime-runs/`。
 - 将文件端 ASR 与实时流 ASR 混为同一 endpoint。
+- 用节目简介、show notes、部分字幕或 partial ASR 冒充完整来源，或让 URL 链路自动写入外部知识库。
 - 用 mock、fallback 或计划文件冒充真实 sub-agent/workflow 执行。
 - 用多数投票创造会议事实，或让子 Agent 绕过父级证据回收。
 - 让记忆子 Agent 自行写文件、修改生产 prompt/skill，或让 Docker worker 执行飞书发布。

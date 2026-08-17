@@ -14,6 +14,8 @@
 
 `Meeting Intelligence` 提供 `meetingProfile`、`participantResolution`、`topicMap`、`evidenceMap` 和 `agentPlan`；`Selected Source Evidence` 提供当前 work unit 的原始证据；`ASR Speaker Evidence` 提供 diarization、单录混音和质量信息。若结构化状态与原始证据冲突，以原始证据为准，并在正文中体现冲突或待确认。
 
+如果存在 `productDiscovery`，它用于帮助识别会议中已表达的客户问题、工作流、期望结果、约束、产品假设和澄清问题。会议纪要正文仍以会议事实为主；推断出的潜在需求不得伪装成会议决定，可在风险与待确认事项中标注为“Agent 推断/建议后续确认”。
+
 ## 2. 事实层级
 
 清楚区分四类内容：

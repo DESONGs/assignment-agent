@@ -47,6 +47,10 @@ NODE_CHECK_TARGETS = [
     "meeting-agent-pi-package/tools/feishu_event_runner.mjs",
     "meeting-agent-pi-package/tools/task_router.mjs",
     "meeting-agent-pi-package/tools/task_execution_runner.mjs",
+    "meeting-agent-pi-package/tools/public_url_security.mjs",
+    "meeting-agent-pi-package/tools/public_url_source_helpers.mjs",
+    "meeting-agent-pi-package/tools/public_url_source_pack_helpers.mjs",
+    "meeting-agent-pi-package/tools/public_url_source_cli.mjs",
     "meeting-agent-pi-package/tools/runtime_tool_cli.mjs",
     "meeting-agent-pi-package/tools/local_docker_runtime_queue.mjs",
     "meeting-agent-pi-package/tools/local_docker_document_worker.mjs",
@@ -67,6 +71,7 @@ TS_CHECK_TARGETS = [
     "meeting-agent-pi-package/extensions/policy-gate.ts",
     "meeting-agent-pi-package/extensions/runtime-observability.ts",
     "meeting-agent-pi-package/extensions/meeting-agentic-orchestrator.ts",
+    "meeting-agent-pi-package/extensions/public-url-source.ts",
 ]
 
 

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { attachmentKind } from "./im_file_context_helpers.mjs";
+import { extractPublicUrls } from "./public_url_security.mjs";
 
 export const TASK_INTENT_SCHEMA_VERSION = "task-intent-v1";
 export const UNSUPPORTED_FEATURE_REPLY = "目前暂不支持该功能";
@@ -21,6 +22,7 @@ const KNOWN_EXECUTION_PROFILES = [
   "document_generation",
   "document_revision",
   "multi_source_synthesis",
+  "url_source_pack",
   "publish_only",
   "unsupported",
 ];
@@ -30,6 +32,15 @@ export function cleanUserPrompt(text) {
     .replace(/@\S+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isFeishuWorkspaceUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+    return ["feishu.cn", "feishu.com", "larksuite.cn", "larksuite.com"].some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
 }
 
 function requiresAsr(attachments) {
@@ -107,6 +118,7 @@ function executionProfileForIntent(intent) {
   if (intent.responseMode === "unsupported" || intent.taskType === "unsupported") return "unsupported";
   if (intent.taskType === "publish_only") return "publish_only";
   if (intent.operation === "document_revision" || intent.taskType === "document_revision") return "document_revision";
+  if (intent.taskType === "knowledge_source" || intent.responseMode === "source_pack") return "url_source_pack";
   if (intent.taskType === "meeting_minutes" && intent.requiresLocalAsr) return "audio_minutes";
   if (
     intent.responseMode === "document_pipeline" &&
@@ -120,7 +132,7 @@ function executionProfileForIntent(intent) {
 }
 
 function reasoningDepthForProfile(profile) {
-  return ["audio_minutes", "document_generation", "document_revision"].includes(profile) ? "deep" : "fast";
+  return ["audio_minutes", "document_generation", "document_revision", "url_source_pack"].includes(profile) ? "deep" : "fast";
 }
 
 function dedupeStages(stages) {
@@ -164,6 +176,12 @@ function stagePlanForIntent(intent, profile) {
       skipStages: ["direct_answer"],
     };
   }
+  if (profile === "url_source_pack") {
+    return {
+      requiredStages: ["policy_gate", "public_url_resolve", "official_transcript_or_media", "cloud_asr_if_needed", "chapter_analysis", "source_pack", "provenance", "qa_gate", "reply"],
+      skipStages: ["meeting_intelligence", "meeting_minutes", "document_workers", "publish"],
+    };
+  }
   if (profile === "document_revision") {
     return {
       requiredStages: dedupeStages([
@@ -204,6 +222,7 @@ function finalizeTaskIntent(intent) {
 export function classifyTaskIntent(event, attachments = [], fileContextBatch = {}, attachmentResolution = {}) {
   const rawText = event.message?.text ?? "";
   const prompt = cleanUserPrompt(rawText);
+  const publicUrls = extractPublicUrls(rawText).filter((value) => !isFeishuWorkspaceUrl(value));
   const explicitDocs = requestedDocumentsFromText(prompt, attachments);
   const contexts = fileContextBatch.contexts ?? [];
   const inferredDocs = inferRequestedDocumentsFromContexts(contexts);
@@ -241,6 +260,24 @@ export function classifyTaskIntent(event, attachments = [], fileContextBatch = {
       responseMode: "unsupported",
       unsupportedReason: "destructive_action_not_supported",
       immediateResponse: UNSUPPORTED_FEATURE_REPLY,
+    });
+  }
+  if (publicUrls.length > 0) {
+    return finalizeTaskIntent({
+      taskType: "knowledge_source",
+      requestedDocuments: [],
+      hasAttachments,
+      hasFileContexts,
+      requiresAsr: false,
+      requiresLocalAsr: false,
+      sourcePreparation: {
+        ...sourcePreparation,
+        inputModalities: [...new Set([...sourcePreparation.inputModalities, "public_url"])],
+        publicUrls,
+        sourceSetMode: "explicit_public_url",
+        requestedDocuments: [],
+      },
+      responseMode: "source_pack",
     });
   }
   if (UNSUPPORTED_REQUEST_PATTERN.test(prompt)) {

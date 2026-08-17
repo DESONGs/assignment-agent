@@ -16,6 +16,7 @@
         "document_generation",
         "document_revision",
         "multi_source_synthesis",
+        "url_source_pack",
         "publish_only",
         "unsupported"
       ],
@@ -26,6 +27,7 @@
         "document_generation": { "$ref": "#/$defs/profile" },
         "document_revision": { "$ref": "#/$defs/profile" },
         "multi_source_synthesis": { "$ref": "#/$defs/profile" },
+        "url_source_pack": { "$ref": "#/$defs/profile" },
         "publish_only": { "$ref": "#/$defs/profile" },
         "unsupported": { "$ref": "#/$defs/profile" }
       },
@@ -39,7 +41,7 @@
       "required": ["runnerEligible", "pipeline", "publishDocuments", "qaGate", "policyGate", "documentWorkers", "localAsr", "rawMediaExternalUpload"],
       "properties": {
         "runnerEligible": { "type": "boolean" },
-        "pipeline": { "enum": ["fast_answer", "file_summary", "full_document", "immediate"] },
+        "pipeline": { "enum": ["fast_answer", "file_summary", "full_document", "url_source_pack", "immediate"] },
         "routeTaskType": { "type": "string" },
         "reasoningDepth": { "enum": ["fast", "deep"] },
         "operation": { "const": "document_revision" },
